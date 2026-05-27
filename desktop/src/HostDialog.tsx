@@ -49,7 +49,7 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
     }
   }, [initial]);
 
-  // Probe vault availability when user selects vault tab
+  // Probe vault unlock state when user selects vault tab
   useEffect(() => {
     if (authKind !== "vault") return;
     vaultKeys()
@@ -58,6 +58,7 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
         setVaultKeyOptions(keys);
       })
       .catch(() => {
+        // vault locked or not configured — show hint
         setVaultAvailable(false);
         setVaultKeyOptions([]);
       });

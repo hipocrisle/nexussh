@@ -114,6 +114,7 @@ impl Handler for AcceptAllHandler {
 pub async fn ssh_connect(
     app: AppHandle,
     state: State<'_, Arc<SessionManager>>,
+    vault: State<'_, crate::vault::VaultState>,
     args: ConnectArgs,
 ) -> Result<ConnectResult, SshError> {
     let session_id = Uuid::new_v4().to_string();
@@ -141,9 +142,8 @@ pub async fn ssh_connect(
                 .success()
         }
         AuthMethod::Vault { key } => {
-            // Resolve secret via our vault CLI, use as password.
-            let secret = crate::vault::vault_get(key.clone())
-                .await
+            // Resolve secret from our in-memory vault (must be unlocked).
+            let secret = crate::vault::resolve(&vault, key)
                 .map_err(|e| SshError::Other(e.to_string()))?;
             session
                 .authenticate_password(&args.user, &secret)

@@ -30,4 +30,6 @@ russh-keys = "0.49.2"
 tokio = { version = "1.52.3", features = ["full"] }
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 tauri-plugin-store = "2.4.3"
+age = { version = "0.11.3", features = ["armor"] }
+tauri-plugin-dialog = "2.7.1"
 

@@ -1,11 +1,14 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { Lock, Unlock, KeyRound } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar, TabInfo } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { LanguageSwitcher } from "./LanguageSwitcher";
+import { VaultPanel } from "./VaultPanel";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
+import { VaultStatus, vaultStatus } from "./vault";
 import "./App.css";
 
 interface Tab extends TabInfo {
@@ -17,6 +20,13 @@ function App() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [vault, setVault] = useState<VaultStatus | null>(null);
+  const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+
+  // Poll vault status on mount; refresh after VaultPanel changes
+  useEffect(() => {
+    vaultStatus().then(setVault).catch(() => {});
+  }, []);
 
   async function openHost(h: HostRecord) {
     setError(null);
@@ -78,7 +88,31 @@ function App() {
         <span className="ml-3 text-[#4a5560] font-mono text-xs italic">
           {t("app.tagline")}
         </span>
-        <div className="ml-auto">
+        <button
+          onClick={() => setVaultPanelOpen(true)}
+          title={t("vault.open_panel")}
+          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
+        >
+          {vault?.unlocked ? (
+            <Unlock size={12} className="text-[#00ff95]" />
+          ) : vault?.configured ? (
+            <Lock size={12} className="text-[#f5d76e]" />
+          ) : (
+            <KeyRound size={12} className="text-[#4a5560]" />
+          )}
+          <span
+            className={
+              vault?.unlocked
+                ? "text-[#00ff95]"
+                : vault?.configured
+                  ? "text-[#f5d76e]"
+                  : "text-[#4a5560]"
+            }
+          >
+            vault
+          </span>
+        </button>
+        <div className="ml-3">
           <LanguageSwitcher />
         </div>
       </header>
@@ -130,6 +164,13 @@ function App() {
           </div>
         </div>
       </div>
+
+      {vaultPanelOpen && (
+        <VaultPanel
+          onClose={() => setVaultPanelOpen(false)}
+          onChange={setVault}
+        />
+      )}
     </main>
   );
 }

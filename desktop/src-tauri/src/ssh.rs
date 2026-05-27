@@ -31,8 +31,6 @@ pub enum SshError {
     AuthFailed,
     #[error("session {0} not found")]
     SessionNotFound(String),
-    #[error("invalid host:port")]
-    InvalidAddr,
     #[error("other: {0}")]
     Other(String),
 }

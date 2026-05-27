@@ -1,4 +1,6 @@
 // Terminal component: wraps xterm.js, wires to our Tauri SSH commands.
+// One instance per session — kept mounted while the tab exists; visibility
+// is toggled by parent via CSS so xterm state persists across tab switches.
 
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
@@ -15,10 +17,11 @@ import {
 
 interface Props {
   sessionId: string;
-  onClose?: () => void;
+  visible: boolean;
+  /** Called when the SSH session ends (remote close / disconnect / error). */
+  onSessionClosed?: (reason: string) => void;
 }
 
-// Matrix theme — applied to xterm directly. Tailwind handles outer chrome.
 const MATRIX_THEME = {
   background: "#0a0e0e",
   foreground: "#c9d1d9",
@@ -43,11 +46,16 @@ const MATRIX_THEME = {
   brightWhite: "#ffffff",
 };
 
-export function TerminalView({ sessionId, onClose }: Props) {
+export function TerminalView({
+  sessionId,
+  visible,
+  onSessionClosed,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
 
+  // Initialize terminal once per session
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -67,7 +75,6 @@ export function TerminalView({ sessionId, onClose }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Forward keystrokes to SSH session
     const onDataDisposable = term.onData((data) => {
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
     });
@@ -75,7 +82,6 @@ export function TerminalView({ sessionId, onClose }: Props) {
       sshResize(sessionId, cols, rows).catch(console.error);
     });
 
-    // Subscribe to backend ssh-data events
     let unlistenData: (() => void) | undefined;
     let unlistenClosed: (() => void) | undefined;
     onSshData((ev) => {
@@ -85,14 +91,11 @@ export function TerminalView({ sessionId, onClose }: Props) {
     onSshClosed((ev) => {
       if (ev.session_id !== sessionId) return;
       term.writeln(`\r\n\x1b[33m[session closed: ${ev.reason}]\x1b[0m`);
-      onClose?.();
+      onSessionClosed?.(ev.reason);
     }).then((u) => (unlistenClosed = u));
 
-    // Window resize → xterm fit
     const onWinResize = () => fit.fit();
     window.addEventListener("resize", onWinResize);
-
-    // Initial sync: emit resize for the freshly-sized terminal
     sshResize(sessionId, term.cols, term.rows).catch(console.error);
 
     return () => {
@@ -104,13 +107,28 @@ export function TerminalView({ sessionId, onClose }: Props) {
       sshDisconnect(sessionId).catch(() => {});
       term.dispose();
     };
-  }, [sessionId, onClose]);
+    // sessionId never changes per mount — TerminalView is keyed by it in parent
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fit when tab becomes visible (window dimensions might have changed
+  // while we were hidden)
+  useEffect(() => {
+    if (!visible || !fitRef.current) return;
+    requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      termRef.current?.focus();
+    });
+  }, [visible]);
 
   return (
     <div
       ref={containerRef}
       className="w-full h-full bg-[#0a0e0e]"
-      style={{ minHeight: 0 }}
+      style={{
+        display: visible ? "block" : "none",
+        minHeight: 0,
+      }}
     />
   );
 }

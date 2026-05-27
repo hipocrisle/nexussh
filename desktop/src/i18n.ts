@@ -105,7 +105,10 @@ const ru = {
     search_all_ph: "поиск во всех сессиях...",
     search_btn: "найти",
     clear_search: "сбросить",
-    filter_in_session_ph: "фильтр строк в этой сессии...",
+    filter_in_session_ph: "поиск в этой сессии...",
+    find_next: "след. совпадение",
+    find_prev: "пред. совпадение",
+    chunks: "событий",
   },
   settings: {
     open: "настройки",
@@ -228,7 +231,10 @@ const en = {
     search_all_ph: "search across all sessions...",
     search_btn: "search",
     clear_search: "clear",
-    filter_in_session_ph: "filter lines in this session...",
+    filter_in_session_ph: "search in this session...",
+    find_next: "next match",
+    find_prev: "prev match",
+    chunks: "events",
   },
   settings: {
     open: "settings",

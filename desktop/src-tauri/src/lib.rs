@@ -33,6 +33,7 @@ pub fn run() {
             sync::sync_pull,
             history::history_list,
             history::history_read,
+            history::history_read_events,
             history::history_delete,
             history::history_search,
             history::history_export,

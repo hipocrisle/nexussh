@@ -29,6 +29,28 @@ export async function historyRead(sessionId: string): Promise<Uint8Array> {
   return new Uint8Array(arr);
 }
 
+export interface CastEvent {
+  /** seconds since session start */
+  t: number;
+  /** utf-8 chunk (may contain ANSI escapes) */
+  d: string;
+}
+
+export async function historyReadEvents(
+  sessionId: string,
+): Promise<CastEvent[]> {
+  return await invoke<CastEvent[]>("history_read_events", { sessionId });
+}
+
+/** Strip alternate-screen-buffer toggles from a chunk so all output flows
+ *  into the terminal's main buffer (= huge scrollable history). Without
+ *  this, Claude Code / vim / htop redraws disappear when they exit. */
+export function filterAltBuffer(s: string): string {
+  // ESC[?1049h, ESC[?1049l, ESC[?1047h, ESC[?1047l, ESC[?47h, ESC[?47l
+  // Also save-cursor variants that pair with alt-buffer.
+  return s.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+}
+
 export async function historyDelete(sessionId: string): Promise<void> {
   await invoke("history_delete", { sessionId });
 }

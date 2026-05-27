@@ -175,9 +175,17 @@ pub async fn ssh_connect(
 
     // Open per-session log file for history.
     // Failure to open the log is non-fatal — we still let the user connect.
-    let logger = SessionLogger::open(&app, &session_id, &args.host, args.port, &args.user)
-        .ok()
-        .map(Arc::new);
+    let logger = SessionLogger::open(
+        &app,
+        &session_id,
+        &args.host,
+        args.port,
+        &args.user,
+        cols,
+        rows,
+    )
+    .ok()
+    .map(Arc::new);
 
     let sid = session_id.clone();
     let app_handle = app.clone();

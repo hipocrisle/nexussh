@@ -3,20 +3,28 @@
 //!
 //! Зачем: Claude Code / vim / htop используют alternate-screen-buffer.
 //! Когда они закрываются, alt-buffer контент пропадает из xterm.js scrollback
-//! и пользователь не может прокрутить вверх. Мы пишем raw-байты в файл
-//! независимо от того что делает терминал, а UI показывает ANSI-stripped
-//! текст для чтения.
+//! и пользователь не может прокрутить вверх.
+//!
+//! Формат файла — asciinema v2 `.cast` (NDJSON):
+//!   Line 0: `{"version":2,"width":80,"height":24,"timestamp":...,"title":...}`
+//!   Line N: `[<relative_seconds>, "o", "<utf8 string>"]`
+//!
+//! Этот формат даёт нам три фичи бесплатно:
+//!   1. per-chunk timestamps — можем показать когда строка была написана
+//!   2. совместим с `asciinema play` — пользователь может replay-нуть
+//!   3. JSONL — стримим append-only, не нужно держать в памяти
 //!
 //! Layout на диске:
-//!   <app_data>/sessions/<session-id>.log   — raw bytes
-//!   <app_data>/sessions/<session-id>.json  — { session_id, host, port, user,
-//!                                              started_at, ended_at, byte_count }
+//!   <app_data>/sessions/<session-id>.cast  — NDJSON event stream (новый формат)
+//!   <app_data>/sessions/<session-id>.log   — raw bytes (legacy, читаем для compat)
+//!   <app_data>/sessions/<session-id>.json  — meta sidecar
 
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Manager};
 
 const SESSIONS_DIR: &str = "sessions";
@@ -89,13 +97,14 @@ fn sessions_dir(app: &AppHandle) -> Result<PathBuf, HistoryError> {
     Ok(p)
 }
 
-/// One open log file + meta sidecar.
+/// One open .cast file + meta sidecar.
 /// `ssh.rs` owns an `Arc<SessionLogger>` per session and calls `append`
 /// on every chunk of bytes from the server, then `finalize` on close.
 pub struct SessionLogger {
     file: Mutex<File>,
     meta_path: PathBuf,
     meta: Mutex<SessionMeta>,
+    start: Instant,
 }
 
 impl SessionLogger {
@@ -105,11 +114,28 @@ impl SessionLogger {
         host: &str,
         port: u16,
         user: &str,
+        cols: u16,
+        rows: u16,
     ) -> Result<Self, HistoryError> {
         let dir = sessions_dir(app)?;
-        let log_path = dir.join(format!("{}.log", session_id));
+        let cast_path = dir.join(format!("{}.cast", session_id));
         let meta_path = dir.join(format!("{}.json", session_id));
-        let file = OpenOptions::new().create(true).append(true).open(&log_path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(&cast_path)?;
+
+        let unix_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let header = serde_json::json!({
+            "version": 2,
+            "width": cols,
+            "height": rows,
+            "timestamp": unix_ts,
+            "title": format!("{}@{}:{}", user, host, port),
+            "env": { "TERM": "xterm-256color" },
+        });
+        writeln!(file, "{}", serde_json::to_string(&header)?)?;
+
         let meta = SessionMeta {
             session_id: session_id.into(),
             host: host.into(),
@@ -124,12 +150,22 @@ impl SessionLogger {
             file: Mutex::new(file),
             meta_path,
             meta: Mutex::new(meta),
+            start: Instant::now(),
         })
     }
 
     pub fn append(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let elapsed = self.start.elapsed().as_secs_f64();
+        // asciinema v2: data is UTF-8 string. Invalid bytes → replacement char.
+        let text = String::from_utf8_lossy(data);
+        let event = serde_json::json!([elapsed, "o", text.as_ref()]);
         if let Ok(mut f) = self.file.lock() {
-            let _ = f.write_all(data);
+            if let Ok(line) = serde_json::to_string(&event) {
+                let _ = writeln!(f, "{}", line);
+            }
         }
         if let Ok(mut m) = self.meta.lock() {
             m.byte_count += data.len() as u64;
@@ -148,6 +184,35 @@ impl SessionLogger {
             let _ = f.sync_all();
         }
     }
+}
+
+/// Read all output bytes from a session, regardless of underlying format.
+/// Handles both new `.cast` (NDJSON) and legacy `.log` (raw bytes).
+fn read_session_bytes(dir: &Path, session_id: &str) -> Result<Vec<u8>, HistoryError> {
+    let cast = dir.join(format!("{}.cast", session_id));
+    if cast.exists() {
+        let text = std::fs::read_to_string(&cast)?;
+        let mut out = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if i == 0 || line.is_empty() {
+                continue;
+            }
+            let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(line) else {
+                continue;
+            };
+            if arr.len() >= 3 && arr[1].as_str() == Some("o") {
+                if let Some(s) = arr[2].as_str() {
+                    out.extend_from_slice(s.as_bytes());
+                }
+            }
+        }
+        return Ok(out);
+    }
+    let log = dir.join(format!("{}.log", session_id));
+    if log.exists() {
+        return Ok(std::fs::read(&log)?);
+    }
+    Err(HistoryError::NotFound)
 }
 
 #[tauri::command]
@@ -185,11 +250,53 @@ pub async fn history_read(
     session_id: String,
 ) -> Result<Vec<u8>, HistoryError> {
     let dir = sessions_dir(&app)?;
-    let path = dir.join(format!("{}.log", session_id));
-    if !path.exists() {
-        return Err(HistoryError::NotFound);
+    read_session_bytes(&dir, &session_id)
+}
+
+/// One asciinema event projected for the UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct CastEvent {
+    /// seconds since session start
+    pub t: f64,
+    /// utf-8 chunk (may contain ANSI escapes)
+    pub d: String,
+}
+
+#[tauri::command]
+pub async fn history_read_events(
+    app: AppHandle,
+    session_id: String,
+) -> Result<Vec<CastEvent>, HistoryError> {
+    let dir = sessions_dir(&app)?;
+    let cast = dir.join(format!("{}.cast", session_id));
+    if cast.exists() {
+        let text = std::fs::read_to_string(&cast)?;
+        let mut events = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if i == 0 || line.is_empty() {
+                continue;
+            }
+            let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(line) else {
+                continue;
+            };
+            if arr.len() >= 3 && arr[1].as_str() == Some("o") {
+                let t = arr[0].as_f64().unwrap_or(0.0);
+                let d = arr[2].as_str().unwrap_or("").to_string();
+                events.push(CastEvent { t, d });
+            }
+        }
+        return Ok(events);
     }
-    Ok(std::fs::read(&path)?)
+    // Legacy .log — return as single event at t=0
+    let log = dir.join(format!("{}.log", session_id));
+    if log.exists() {
+        let bytes = std::fs::read(&log)?;
+        return Ok(vec![CastEvent {
+            t: 0.0,
+            d: String::from_utf8_lossy(&bytes).into_owned(),
+        }]);
+    }
+    Err(HistoryError::NotFound)
 }
 
 #[tauri::command]
@@ -198,13 +305,11 @@ pub async fn history_delete(
     session_id: String,
 ) -> Result<(), HistoryError> {
     let dir = sessions_dir(&app)?;
-    let log = dir.join(format!("{}.log", session_id));
-    let meta = dir.join(format!("{}.json", session_id));
-    if log.exists() {
-        std::fs::remove_file(&log)?;
-    }
-    if meta.exists() {
-        std::fs::remove_file(&meta)?;
+    for ext in ["cast", "log", "json"] {
+        let p = dir.join(format!("{}.{}", session_id, ext));
+        if p.exists() {
+            std::fs::remove_file(&p)?;
+        }
     }
     Ok(())
 }
@@ -220,10 +325,12 @@ pub async fn history_search(
     let dir = sessions_dir(&app)?;
     let needle = query.to_lowercase();
     let mut hits = Vec::new();
+
+    // Walk meta sidecars to enumerate sessions regardless of format.
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
         let stem = path
@@ -231,15 +338,17 @@ pub async fn history_search(
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-        let meta_path = dir.join(format!("{}.json", stem));
-        let meta: Option<SessionMeta> = std::fs::read(&meta_path)
+        if stem.is_empty() {
+            continue;
+        }
+        let meta: Option<SessionMeta> = std::fs::read(&path)
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok());
         let (host, started_at) = meta
             .map(|m| (m.host, m.started_at))
             .unwrap_or_else(|| (String::new(), String::new()));
 
-        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(bytes) = read_session_bytes(&dir, &stem) else { continue };
         let stripped = strip_ansi(&bytes);
         let text = String::from_utf8_lossy(&stripped);
         for line in text.lines() {
@@ -268,13 +377,21 @@ pub async fn history_export(
     strip: bool,
 ) -> Result<(), HistoryError> {
     let dir = sessions_dir(&app)?;
-    let log = dir.join(format!("{}.log", session_id));
-    if !log.exists() {
-        return Err(HistoryError::NotFound);
+    if strip {
+        let bytes = read_session_bytes(&dir, &session_id)?;
+        std::fs::write(out_path, strip_ansi(&bytes))?;
+    } else {
+        // Raw export: prefer .cast (replayable with asciinema), fall back to .log
+        let cast = dir.join(format!("{}.cast", session_id));
+        let log = dir.join(format!("{}.log", session_id));
+        if cast.exists() {
+            std::fs::copy(&cast, out_path)?;
+        } else if log.exists() {
+            std::fs::copy(&log, out_path)?;
+        } else {
+            return Err(HistoryError::NotFound);
+        }
     }
-    let bytes = std::fs::read(&log)?;
-    let out_bytes = if strip { strip_ansi(&bytes) } else { bytes };
-    std::fs::write(out_path, out_bytes)?;
     Ok(())
 }
 

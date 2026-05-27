@@ -1,49 +1,47 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+import { ConnectForm } from "./ConnectForm";
+import { TerminalView } from "./Terminal";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+type Screen =
+  | { kind: "connect" }
+  | { kind: "terminal"; sessionId: string };
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+function App() {
+  const [screen, setScreen] = useState<Screen>({ kind: "connect" });
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <main className="h-full w-full flex flex-col bg-[#0a0e0e]">
+      <header className="h-9 border-b border-[#1f3a3a] flex items-center px-4 select-none">
+        <span className="text-[#00ff95] font-mono text-sm tracking-wider">
+          NexuSSH
+        </span>
+        <span className="ml-2 text-[#4a5560] font-mono text-xs">v0.0.1</span>
+        {screen.kind === "terminal" && (
+          <button
+            onClick={() => setScreen({ kind: "connect" })}
+            className="ml-auto text-[#7fd7ff] hover:text-[#00ff95] font-mono text-xs"
+          >
+            + new connection
+          </button>
+        )}
+      </header>
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {screen.kind === "connect" && (
+          <div className="h-full flex items-center justify-center">
+            <ConnectForm
+              onConnected={(sessionId) => setScreen({ kind: "terminal", sessionId })}
+            />
+          </div>
+        )}
+        {screen.kind === "terminal" && (
+          <TerminalView
+            sessionId={screen.sessionId}
+            onClose={() => setScreen({ kind: "connect" })}
+          />
+        )}
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
     </main>
   );
 }

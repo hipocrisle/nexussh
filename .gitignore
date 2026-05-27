@@ -27,9 +27,8 @@ dist-ssr/
 target/
 **/target/
 
-# Tauri build output
-src-tauri/Cargo.lock
-src-tauri/gen/
+# Tauri build output (keep Cargo.lock — this is an application, not a library)
+**/src-tauri/gen/
 
 # Local env
 .env

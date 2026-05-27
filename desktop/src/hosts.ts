@@ -15,7 +15,8 @@ export interface HostRecord {
   user: string;
   auth:
     | { kind: "password"; password: string }
-    | { kind: "key"; path: string; passphrase?: string };
+    | { kind: "key"; path: string; passphrase?: string }
+    | { kind: "vault"; key: string };
   /** Optional grouping/folder name */
   group?: string;
   /** ISO timestamp of last successful connection — for sorting */

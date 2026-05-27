@@ -54,6 +54,11 @@ pub enum AuthMethod {
         path: String,
         passphrase: Option<String>,
     },
+    /// Resolve credential at runtime from an external secret manager.
+    /// `key` is the path the manager will look up (e.g. `tggrep.bot_token` for
+    /// our vault CLI). For now we treat the resolved secret as a password.
+    #[serde(rename = "vault")]
+    Vault { key: String },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -132,6 +137,16 @@ pub async fn ssh_connect(
                         session.best_supported_rsa_hash().await?.flatten(),
                     ),
                 )
+                .await?
+                .success()
+        }
+        AuthMethod::Vault { key } => {
+            // Resolve secret via our vault CLI, use as password.
+            let secret = crate::vault::vault_get(key.clone())
+                .await
+                .map_err(|e| SshError::Other(e.to_string()))?;
+            session
+                .authenticate_password(&args.user, &secret)
                 .await?
                 .success()
         }

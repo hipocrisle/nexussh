@@ -3,6 +3,9 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { HostRecord, saveHost, newHostId } from "./hosts";
+import { vaultKeys } from "./vault";
+
+type AuthKind = "password" | "key" | "vault";
 
 interface Props {
   initial?: HostRecord;
@@ -18,10 +21,13 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
   const [user, setUser] = useState("");
   const [group, setGroup] = useState("");
   const [note, setNote] = useState("");
-  const [authKind, setAuthKind] = useState<"password" | "key">("password");
+  const [authKind, setAuthKind] = useState<AuthKind>("password");
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState("");
   const [keyPass, setKeyPass] = useState("");
+  const [vaultKey, setVaultKey] = useState("");
+  const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
+  const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,11 +41,27 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
     setAuthKind(initial.auth.kind);
     if (initial.auth.kind === "password") {
       setPassword(initial.auth.password);
-    } else {
+    } else if (initial.auth.kind === "key") {
       setKeyPath(initial.auth.path);
       setKeyPass(initial.auth.passphrase ?? "");
+    } else if (initial.auth.kind === "vault") {
+      setVaultKey(initial.auth.key);
     }
   }, [initial]);
+
+  // Probe vault availability when user selects vault tab
+  useEffect(() => {
+    if (authKind !== "vault") return;
+    vaultKeys()
+      .then((keys) => {
+        setVaultAvailable(true);
+        setVaultKeyOptions(keys);
+      })
+      .catch(() => {
+        setVaultAvailable(false);
+        setVaultKeyOptions([]);
+      });
+  }, [authKind]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -47,14 +69,12 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
     if (!host.trim()) return setError(t("dialog.err_host_required"));
     if (!user.trim()) return setError(t("dialog.err_user_required"));
     try {
-      const auth =
+      const auth: HostRecord["auth"] =
         authKind === "password"
-          ? { kind: "password" as const, password }
-          : {
-              kind: "key" as const,
-              path: keyPath,
-              passphrase: keyPass || undefined,
-            };
+          ? { kind: "password", password }
+          : authKind === "key"
+            ? { kind: "key", path: keyPath, passphrase: keyPass || undefined }
+            : { kind: "vault", key: vaultKey };
       const rec: HostRecord = {
         id: initial?.id ?? newHostId(),
         name: name.trim() || `${user}@${host}`,
@@ -144,7 +164,7 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
           </div>
 
           <div className="flex gap-2 pt-2">
-            {(["password", "key"] as const).map((k) => (
+            {(["password", "key", "vault"] as const).map((k) => (
               <button
                 key={k}
                 type="button"
@@ -161,7 +181,7 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
             ))}
           </div>
 
-          {authKind === "password" ? (
+          {authKind === "password" && (
             <div>
               <label className={labelBase}>{t("dialog.password")}</label>
               <input
@@ -171,7 +191,8 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
                 className={inputBase}
               />
             </div>
-          ) : (
+          )}
+          {authKind === "key" && (
             <>
               <div>
                 <label className={labelBase}>{t("dialog.key_path")}</label>
@@ -192,6 +213,28 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
                 />
               </div>
             </>
+          )}
+          {authKind === "vault" && (
+            <div>
+              <label className={labelBase}>{t("dialog.vault_key")}</label>
+              <input
+                value={vaultKey}
+                onChange={(e) => setVaultKey(e.target.value)}
+                placeholder={t("dialog.vault_key_ph")}
+                list="vault-keys"
+                className={inputBase}
+              />
+              <datalist id="vault-keys">
+                {vaultKeyOptions.map((k) => (
+                  <option key={k} value={k} />
+                ))}
+              </datalist>
+              {vaultAvailable === false && (
+                <div className="text-[#f5d76e] text-xs font-mono mt-1">
+                  ⚠ {t("dialog.vault_unavailable")}
+                </div>
+              )}
+            </div>
           )}
 
           <div>

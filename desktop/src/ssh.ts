@@ -5,7 +5,8 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
 export type AuthMethod =
   | { kind: "password"; password: string }
-  | { kind: "key"; path: string; passphrase?: string };
+  | { kind: "key"; path: string; passphrase?: string }
+  | { kind: "vault"; key: string };
 
 export interface ConnectArgs {
   host: string;

@@ -1,4 +1,5 @@
 mod ssh;
+mod vault;
 
 use std::sync::Arc;
 
@@ -13,6 +14,8 @@ pub fn run() {
             ssh::ssh_send,
             ssh::ssh_resize,
             ssh::ssh_disconnect,
+            vault::vault_get,
+            vault::vault_keys,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -281,7 +281,7 @@ pub async fn history_export(
 /// Strip ANSI/VT escape sequences, keep printable text + newlines.
 /// Handles: CSI (`ESC [ ... letter`), OSC (`ESC ] ... BEL or ESC \`),
 /// SS2/SS3/single-char ESC sequences, control chars except \n \r \t.
-fn strip_ansi(data: &[u8]) -> Vec<u8> {
+pub(crate) fn strip_ansi(data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(data.len());
     let mut i = 0;
     while i < data.len() {
@@ -350,3 +350,90 @@ fn strip_ansi(data: &[u8]) -> Vec<u8> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(&strip_ansi(bytes)).to_string()
+    }
+
+    #[test]
+    fn plain_text_untouched() {
+        assert_eq!(s(b"hello world\n"), "hello world\n");
+        assert_eq!(s(b"line1\nline2\r\n"), "line1\nline2\r\n");
+        assert_eq!(s(b"\ttabbed"), "\ttabbed");
+    }
+
+    #[test]
+    fn csi_sgr_color_stripped() {
+        // Red "hello" reset
+        assert_eq!(s(b"\x1b[31mhello\x1b[0m"), "hello");
+        // Bold + color compound
+        assert_eq!(s(b"\x1b[1;33mWARN\x1b[m done"), "WARN done");
+    }
+
+    #[test]
+    fn csi_cursor_movement_stripped() {
+        assert_eq!(s(b"abc\x1b[2Jdef"), "abcdef");
+        assert_eq!(s(b"\x1b[H\x1b[J$ ls"), "$ ls");
+        // CUP with two params
+        assert_eq!(s(b"\x1b[10;20Htop"), "top");
+    }
+
+    #[test]
+    fn alt_screen_buffer_toggle_stripped() {
+        // ESC[?1049h enter alt buffer / ESC[?1049l leave — classic Claude Code
+        let claude_like = b"\x1b[?1049h\x1b[H\x1b[2JClaude is thinking...\x1b[?1049l$ ";
+        assert_eq!(s(claude_like), "Claude is thinking...$ ");
+    }
+
+    #[test]
+    fn osc_window_title_stripped() {
+        // OSC 0 ; title BEL
+        assert_eq!(s(b"\x1b]0;my title\x07prompt$ "), "prompt$ ");
+        // OSC with ESC \ terminator
+        assert_eq!(s(b"\x1b]2;another\x1b\\rest"), "rest");
+    }
+
+    #[test]
+    fn dcs_apc_stripped() {
+        // DCS body ST
+        assert_eq!(s(b"before\x1bPsixel-data\x1b\\after"), "beforeafter");
+        // APC
+        assert_eq!(s(b"x\x1b_secret\x07y"), "xy");
+    }
+
+    #[test]
+    fn truncated_escape_sequences_safe() {
+        // Lone ESC at end
+        assert_eq!(s(b"hello\x1b"), "hello");
+        // CSI without final byte
+        assert_eq!(s(b"hello\x1b[31"), "hello");
+        // OSC without terminator — consumes rest
+        assert_eq!(s(b"hello\x1b]0;forever"), "hello");
+    }
+
+    #[test]
+    fn control_chars_dropped_except_whitespace() {
+        // Bell, NUL, etc. dropped; \n \r \t kept
+        assert_eq!(s(b"a\x00b\x07c\nd"), "abc\nd");
+    }
+
+    #[test]
+    fn two_char_esc_sequences() {
+        // ESC c (RIS), ESC = (DECKPAM), ESC D (IND)
+        assert_eq!(s(b"\x1bcboot\x1b=mode"), "bootmode");
+    }
+
+    #[test]
+    fn large_input_perf_sanity() {
+        let big: Vec<u8> = (0..100_000).map(|i| (i % 128) as u8).collect();
+        let out = strip_ansi(&big);
+        // Should not panic, should be smaller (control chars dropped)
+        assert!(!out.is_empty());
+        assert!(out.len() <= big.len());
+    }
+}
+

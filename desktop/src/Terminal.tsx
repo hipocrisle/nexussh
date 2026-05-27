@@ -3,6 +3,7 @@
 // is toggled by parent via CSS so xterm state persists across tab switches.
 
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -51,9 +52,13 @@ export function TerminalView({
   visible,
   onSessionClosed,
 }: Props) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Keep latest t() in a ref so the mount-once effect always gets fresh translation
+  const tRef = useRef(t);
+  tRef.current = t;
 
   // Initialize terminal once per session
   useEffect(() => {
@@ -90,7 +95,8 @@ export function TerminalView({
     }).then((u) => (unlistenData = u));
     onSshClosed((ev) => {
       if (ev.session_id !== sessionId) return;
-      term.writeln(`\r\n\x1b[33m[session closed: ${ev.reason}]\x1b[0m`);
+      const msg = tRef.current("terminal.session_closed", { reason: ev.reason });
+      term.writeln(`\r\n\x1b[33m[${msg}]\x1b[0m`);
       onSessionClosed?.(ev.reason);
     }).then((u) => (unlistenClosed = u));
 

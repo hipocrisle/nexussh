@@ -1,6 +1,7 @@
 // Sidebar — host list, search, add button.
 
 import { useEffect, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Search, Server, Pencil, Trash2 } from "lucide-react";
 import { HostRecord, listHosts, deleteHost } from "./hosts";
 import { HostDialog } from "./HostDialog";
@@ -10,9 +11,12 @@ interface Props {
 }
 
 export function Sidebar({ onConnect }: Props) {
+  const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [filter, setFilter] = useState("");
-  const [dialog, setDialog] = useState<{ kind: "add" } | { kind: "edit"; rec: HostRecord } | null>(null);
+  const [dialog, setDialog] = useState<
+    { kind: "add" } | { kind: "edit"; rec: HostRecord } | null
+  >(null);
 
   const reload = async () => setHosts(await listHosts());
 
@@ -35,11 +39,10 @@ export function Sidebar({ onConnect }: Props) {
   const groups = useMemo(() => {
     const m = new Map<string, HostRecord[]>();
     for (const h of filtered) {
-      const g = h.group ?? "—";
+      const g = h.group ?? t("sidebar.no_group");
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(h);
     }
-    // Sort hosts inside each group by lastUsedAt desc, then name
     for (const list of m.values()) {
       list.sort((a, b) => {
         if (a.lastUsedAt && b.lastUsedAt) {
@@ -51,10 +54,10 @@ export function Sidebar({ onConnect }: Props) {
       });
     }
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered]);
+  }, [filtered, t]);
 
   async function remove(h: HostRecord) {
-    if (!confirm(`Удалить ${h.name}?`)) return;
+    if (!confirm(t("dialog.delete_confirm", { name: h.name }))) return;
     await deleteHost(h.id);
     reload();
   }
@@ -66,12 +69,12 @@ export function Sidebar({ onConnect }: Props) {
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="filter..."
+          placeholder={t("sidebar.filter_placeholder")}
           className="flex-1 bg-transparent text-[#c9d1d9] placeholder-[#4a5560] font-mono text-sm focus:outline-none"
         />
         <button
           onClick={() => setDialog({ kind: "add" })}
-          title="Add host"
+          title={t("sidebar.add_host")}
           className="text-[#00ff95] hover:text-[#5fffb4]"
         >
           <Plus size={16} />
@@ -81,13 +84,13 @@ export function Sidebar({ onConnect }: Props) {
       <div className="flex-1 overflow-y-auto py-1">
         {groups.length === 0 && (
           <div className="text-center text-[#4a5560] font-mono text-xs p-6">
-            no hosts yet
+            {t("sidebar.empty_state")}
             <br />
             <button
               onClick={() => setDialog({ kind: "add" })}
               className="mt-2 text-[#00ff95] hover:text-[#5fffb4] underline"
             >
-              + add the first one
+              {t("sidebar.add_first")}
             </button>
           </div>
         )}
@@ -119,7 +122,7 @@ export function Sidebar({ onConnect }: Props) {
                       setDialog({ kind: "edit", rec: h });
                     }}
                     className="text-[#7fd7ff] hover:text-[#00ff95]"
-                    title="Edit"
+                    title={t("sidebar.edit")}
                   >
                     <Pencil size={12} />
                   </button>
@@ -129,7 +132,7 @@ export function Sidebar({ onConnect }: Props) {
                       remove(h);
                     }}
                     className="text-[#ff6b6b]/70 hover:text-[#ff6b6b]"
-                    title="Delete"
+                    title={t("sidebar.delete")}
                   >
                     <Trash2 size={12} />
                   </button>

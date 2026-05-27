@@ -1,7 +1,9 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Sidebar } from "./Sidebar";
 import { TabBar, TabInfo } from "./TabBar";
 import { TerminalView } from "./Terminal";
+import { LanguageSwitcher } from "./LanguageSwitcher";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import "./App.css";
@@ -11,20 +13,20 @@ interface Tab extends TabInfo {
 }
 
 function App() {
+  const { t } = useTranslation();
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function openHost(h: HostRecord) {
     setError(null);
-    // Placeholder tab while connecting — we'll swap its id once we have one
     const pending: Tab = {
       id: "pending-" + crypto.randomUUID(),
       title: h.name,
       status: "connecting",
       host: h,
     };
-    setTabs((t) => [...t, pending]);
+    setTabs((tabs) => [...tabs, pending]);
     setActiveId(pending.id);
     try {
       const sid = await sshConnect({
@@ -34,21 +36,21 @@ function App() {
         auth: h.auth,
       });
       bumpLastUsed(h.id).catch(() => {});
-      setTabs((t) =>
-        t.map((x) =>
+      setTabs((tabs) =>
+        tabs.map((x) =>
           x.id === pending.id ? { ...x, id: sid, status: "connected" } : x,
         ),
       );
       setActiveId(sid);
     } catch (e) {
-      setTabs((t) => t.filter((x) => x.id !== pending.id));
+      setTabs((tabs) => tabs.filter((x) => x.id !== pending.id));
       setError(String(e));
     }
   }
 
   async function closeTab(id: string) {
-    const t = tabs.find((x) => x.id === id);
-    if (t && t.status === "connected") {
+    const target = tabs.find((x) => x.id === id);
+    if (target && target.status === "connected") {
       sshDisconnect(id).catch(() => {});
     }
     setTabs((all) => all.filter((x) => x.id !== id));
@@ -66,12 +68,19 @@ function App() {
 
   return (
     <main className="h-full w-full flex flex-col bg-[#0a0e0e]">
-      {/* Top bar */}
       <header className="h-9 border-b border-[#1f3a3a] flex items-center px-4 select-none shrink-0">
         <span className="text-[#00ff95] font-mono text-sm tracking-wider">
           NexuSSH
         </span>
-        <span className="ml-2 text-[#4a5560] font-mono text-xs">v0.0.1</span>
+        <span className="ml-2 text-[#4a5560] font-mono text-xs">
+          {t("app.version_label")}0.0.1
+        </span>
+        <span className="ml-3 text-[#4a5560] font-mono text-xs italic">
+          {t("app.tagline")}
+        </span>
+        <div className="ml-auto">
+          <LanguageSwitcher />
+        </div>
       </header>
 
       <div className="flex-1 min-h-0 flex">
@@ -91,26 +100,30 @@ function App() {
                     ✗ {error}
                   </div>
                 ) : (
-                  <span>&gt; select a host on the left to connect</span>
+                  <span>&gt; {t("terminal.select_host")}</span>
                 )}
               </div>
             )}
-            {tabs.map((t) =>
-              t.status === "connecting" ? (
-                t.id === activeId ? (
+            {tabs.map((t_) =>
+              t_.status === "connecting" ? (
+                t_.id === activeId ? (
                   <div
-                    key={t.id}
+                    key={t_.id}
                     className="absolute inset-0 flex items-center justify-center text-[#f5d76e] font-mono text-sm"
                   >
-                    connecting to {t.host.user}@{t.host.host}:{t.host.port}...
+                    {t("terminal.connecting_to", {
+                      user: t_.host.user,
+                      host: t_.host.host,
+                      port: t_.host.port,
+                    })}
                   </div>
                 ) : null
               ) : (
                 <TerminalView
-                  key={t.id}
-                  sessionId={t.id}
-                  visible={t.id === activeId}
-                  onSessionClosed={() => markClosed(t.id)}
+                  key={t_.id}
+                  sessionId={t_.id}
+                  visible={t_.id === activeId}
+                  onSessionClosed={() => markClosed(t_.id)}
                 />
               ),
             )}

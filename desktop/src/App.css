@@ -1,12 +1,48 @@
 @import "tailwindcss";
 
-/* NexuSSH Matrix theme — global base. */
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+}
+
 :root {
-  font-family: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular,
-    monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   color-scheme: dark;
   background-color: #0a0e0e;
   color: #c9d1d9;
+  /* Subtle ambient glow shared across panels */
+  --nexus-green: #00ff95;
+  --nexus-cyan: #00d4ff;
+  --nexus-border: #1f3a3a;
+  --nexus-bg: #0a0e0e;
+  --nexus-bg-darker: #080b0b;
+  --nexus-bg-input: #0e1414;
+  --nexus-text: #c9d1d9;
+  --nexus-text-dim: #4a5560;
 }
 
 html,
@@ -17,12 +53,82 @@ body,
 }
 
 body {
-  background-color: #0a0e0e;
+  background-color: var(--nexus-bg);
   overflow: hidden;
+  /* Hairline scanline overlay — subtle, optional */
+  /* background-image: linear-gradient(
+    rgba(0, 255, 149, 0.015) 50%,
+    transparent 50%
+  );
+  background-size: 100% 3px; */
 }
 
-/* xterm fonts hinting */
 .xterm,
 .xterm-screen {
   font-feature-settings: "liga" 1, "calt" 1;
+}
+
+/* Smooth fade transitions for tab/screen switches */
+.fade-in {
+  animation: fadeIn 180ms ease-out;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--nexus-bg-darker);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--nexus-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2d4a4a;
+}
+
+/* Inputs */
+input,
+textarea {
+  font-family: inherit;
+}
+
+/* Draggable titlebar region */
+.titlebar-drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* Glow on focused green accents */
+.glow-green {
+  box-shadow: 0 0 0 1px var(--nexus-green), 0 0 12px rgba(0, 255, 149, 0.3);
+}
+
+/* Small "blinking caret" decoration for empty states */
+.caret-blink::after {
+  content: "▊";
+  margin-left: 4px;
+  animation: caretBlink 1s steps(2, start) infinite;
+  color: var(--nexus-green);
+}
+@keyframes caretBlink {
+  to {
+    visibility: hidden;
+  }
 }

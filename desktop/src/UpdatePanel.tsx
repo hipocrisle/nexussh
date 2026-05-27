@@ -65,16 +65,16 @@ export function UpdatePanel({ initial, onClose }: Props) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md bg-[#0a0e0e] border border-[#1f3a3a] rounded-lg shadow-2xl"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl"
       >
-        <div className="flex items-center px-4 py-3 border-b border-[#1f3a3a]">
-          <h2 className="text-lg font-mono text-[#00ff95]">
+        <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)]">
+          <h2 className="text-lg font-mono text-[var(--nx-accent)]">
             &gt; {t("update.title")}
           </h2>
           <button
             onClick={onClose}
             disabled={installing}
-            className="ml-auto p-1.5 rounded hover:bg-[#1f3a3a] text-[#7fd7ff] disabled:opacity-30"
+            className="ml-auto p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] disabled:opacity-30"
           >
             <X size={14} />
           </button>
@@ -82,49 +82,49 @@ export function UpdatePanel({ initial, onClose }: Props) {
 
         <div className="p-5 space-y-3 text-sm font-mono">
           {info === "checking" && (
-            <div className="flex items-center gap-2 text-[#7fd7ff]">
+            <div className="flex items-center gap-2 text-[var(--nx-text-soft)]">
               <Loader2 size={14} className="animate-spin" />
               {t("update.checking")}
             </div>
           )}
           {info === null && !error && (
-            <div className="text-[#c9d1d9]">✓ {t("update.up_to_date")}</div>
+            <div className="text-[var(--nx-text-primary)]">✓ {t("update.up_to_date")}</div>
           )}
           {info && info !== "checking" && (
             <>
-              <div className="text-[#00ff95] text-base">
+              <div className="text-[var(--nx-accent)] text-base">
                 {t("update.new_available")}
               </div>
-              <div className="text-[#c9d1d9]">
-                <span className="text-[#4a5560]">{t("update.current")}: </span>
+              <div className="text-[var(--nx-text-primary)]">
+                <span className="text-[var(--nx-text-muted)]">{t("update.current")}: </span>
                 <span>{info.current_version}</span>
               </div>
-              <div className="text-[#c9d1d9]">
-                <span className="text-[#4a5560]">{t("update.new")}: </span>
-                <span className="text-[#00ff95]">{info.version}</span>
+              <div className="text-[var(--nx-text-primary)]">
+                <span className="text-[var(--nx-text-muted)]">{t("update.new")}: </span>
+                <span className="text-[var(--nx-accent)]">{info.version}</span>
               </div>
               {info.date && (
-                <div className="text-[#4a5560] text-xs">
+                <div className="text-[var(--nx-text-muted)] text-xs">
                   {t("update.released_on", { date: info.date })}
                 </div>
               )}
               {info.body && (
-                <div className="mt-3 bg-[#0e1414] border border-[#1f3a3a] rounded p-3 text-xs text-[#c9d1d9] whitespace-pre-wrap max-h-48 overflow-y-auto">
+                <div className="mt-3 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded p-3 text-xs text-[var(--nx-text-primary)] whitespace-pre-wrap max-h-48 overflow-y-auto">
                   {info.body}
                 </div>
               )}
             </>
           )}
           {error && (
-            <div className="text-[#ff6b6b] text-xs break-all">✗ {error}</div>
+            <div className="text-[var(--nx-error)] text-xs break-all">✗ {error}</div>
           )}
         </div>
 
-        <div className="flex gap-2 px-4 py-3 border-t border-[#1f3a3a]">
+        <div className="flex gap-2 px-4 py-3 border-t border-[var(--nx-border)]">
           <button
             onClick={runCheck}
             disabled={info === "checking" || installing}
-            className="flex-1 py-2 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono rounded border border-[#1f3a3a] disabled:opacity-50"
+            className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)] disabled:opacity-50"
           >
             {t("update.check_again")}
           </button>
@@ -132,7 +132,7 @@ export function UpdatePanel({ initial, onClose }: Props) {
             <button
               onClick={runInstall}
               disabled={installing}
-              className="flex-1 py-2 bg-[#00ff95] hover:bg-[#5fffb4] text-[#0a0e0e] font-mono font-bold rounded disabled:opacity-50 flex items-center justify-center gap-2"
+              className="flex-1 py-2 bg-[var(--nx-accent)] hover:bg-[var(--nx-accent)] text-[var(--nx-bg-base)] font-mono font-bold rounded disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {installing ? (
                 <>

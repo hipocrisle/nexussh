@@ -35,6 +35,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   const [vaultKey, setVaultKey] = useState("");
   const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
   const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
+  const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
     setUser(initial.user || settings.defaultUser);
     setGroup(initial.group ?? "");
     setNote(initial.note ?? "");
+    setAlwaysAskPassword(!!initial.alwaysAskPassword);
     setAuthKind(initial.auth.kind);
     if (initial.auth.kind === "password") {
       setPassword(initial.auth.password);
@@ -93,6 +95,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
         group: group.trim() || undefined,
         note: note.trim() || undefined,
         lastUsedAt: initial?.lastUsedAt,
+        alwaysAskPassword: authKind === "password" ? alwaysAskPassword : undefined,
       };
       await saveHost(rec);
       onSaved(rec);
@@ -102,9 +105,9 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   }
 
   const inputBase =
-    "w-full bg-[#0e1414] border border-[#1f3a3a] rounded px-3 py-2 text-[#c9d1d9] " +
-    "focus:outline-none focus:border-[#00ff95] placeholder-[#4a5560] font-mono text-sm";
-  const labelBase = "text-xs uppercase tracking-wider text-[#7fd7ff] mb-1 block";
+    "w-full bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-3 py-2 text-[var(--nx-text-primary)] " +
+    "focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-sm";
+  const labelBase = "text-xs uppercase tracking-wider text-[var(--nx-text-soft)] mb-1 block";
 
   return (
     <div
@@ -114,9 +117,9 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
       <form
         onSubmit={submit}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md bg-[#0a0e0e] border border-[#1f3a3a] rounded-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto"
       >
-        <h2 className="text-xl font-mono text-[#00ff95] mb-5">
+        <h2 className="text-xl font-mono text-[var(--nx-accent)] mb-5">
           &gt; {initial ? t("dialog.edit_host") : t("dialog.new_host")}
         </h2>
 
@@ -190,8 +193,8 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
                 className={
                   "px-3 py-1 rounded text-sm font-mono " +
                   (authKind === k
-                    ? "bg-[#00ff95] text-[#0a0e0e]"
-                    : "bg-[#0e1414] text-[#7fd7ff] border border-[#1f3a3a]")
+                    ? "bg-[var(--nx-accent)] text-[var(--nx-bg-base)]"
+                    : "bg-[var(--nx-bg-panel)] text-[var(--nx-text-soft)] border border-[var(--nx-border)]")
                 }
               >
                 {t(`dialog.auth_${k}`)}
@@ -200,15 +203,39 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
           </div>
 
           {authKind === "password" && (
-            <div>
-              <label className={labelBase}>{t("dialog.password")}</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className={inputBase}
-              />
-            </div>
+            <>
+              <div>
+                <label className={labelBase}>{t("dialog.password")}</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={alwaysAskPassword}
+                  placeholder={
+                    alwaysAskPassword
+                      ? t("dialog.password_ask_each_time_ph")
+                      : undefined
+                  }
+                  className={
+                    inputBase + (alwaysAskPassword ? " opacity-50" : "")
+                  }
+                />
+              </div>
+              <label className="flex items-start gap-2 text-xs font-mono text-[var(--nx-text-primary)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={alwaysAskPassword}
+                  onChange={(e) => setAlwaysAskPassword(e.target.checked)}
+                  className="mt-0.5 accent-[var(--nx-accent)]"
+                />
+                <div>
+                  <div>{t("dialog.always_ask_password")}</div>
+                  <div className="text-[10px] text-[var(--nx-text-muted)]">
+                    {t("dialog.always_ask_password_hint")}
+                  </div>
+                </div>
+              </label>
+            </>
           )}
           {authKind === "key" && (
             <>
@@ -248,7 +275,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
                 ))}
               </datalist>
               {vaultAvailable === false && (
-                <div className="text-[#f5d76e] text-xs font-mono mt-1">
+                <div className="text-[var(--nx-warning)] text-xs font-mono mt-1">
                   ⚠ {t("dialog.vault_unavailable")}
                 </div>
               )}
@@ -267,20 +294,20 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
           </div>
 
           {error && (
-            <div className="text-[#ff6b6b] text-sm font-mono">✗ {error}</div>
+            <div className="text-[var(--nx-error)] text-sm font-mono">✗ {error}</div>
           )}
 
           <div className="flex gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-2 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono rounded border border-[#1f3a3a]"
+              className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
             >
               {t("dialog.cancel")}
             </button>
             <button
               type="submit"
-              className="flex-1 py-2 bg-[#00ff95] hover:bg-[#5fffb4] text-[#0a0e0e] font-mono font-bold rounded"
+              className="flex-1 py-2 bg-[var(--nx-accent)] hover:bg-[var(--nx-accent)] text-[var(--nx-bg-base)] font-mono font-bold rounded"
             >
               {t("dialog.save")}
             </button>

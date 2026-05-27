@@ -28,7 +28,7 @@ export function TabBar({
   onContextMenu,
 }: Props) {
   return (
-    <div className="h-9 flex items-center bg-[#080b0b] border-b border-[#1f3a3a]">
+    <div className="h-9 flex items-center bg-[var(--nx-bg-secondary)] border-b border-[var(--nx-border)]">
       <div className="flex-1 min-w-0 overflow-x-auto flex items-center h-full">
         {tabs.map((t) => {
           const active = t.id === activeId;
@@ -41,20 +41,20 @@ export function TabBar({
                 onContextMenu?.(t.id, e.clientX, e.clientY);
               }}
               className={
-                "h-full px-3 flex items-center gap-2 cursor-pointer border-r border-[#1f3a3a] min-w-0 shrink-0 " +
+                "h-full px-3 flex items-center gap-2 cursor-pointer border-r border-[var(--nx-border)] min-w-0 shrink-0 " +
                 (active
-                  ? "bg-[#0a0e0e] text-[#00ff95]"
-                  : "text-[#c9d1d9] hover:bg-[#0e1414]")
+                  ? "bg-[var(--nx-bg-base)] text-[var(--nx-accent)]"
+                  : "text-[var(--nx-text-primary)] hover:bg-[var(--nx-bg-panel)]")
               }
             >
               {t.status === "connecting" && (
-                <Loader2 size={12} className="animate-spin text-[#f5d76e]" />
+                <Loader2 size={12} className="animate-spin text-[var(--nx-warning)]" />
               )}
               {t.status === "connected" && (
-                <Wifi size={12} className="text-[#00ff95]" />
+                <Wifi size={12} className="text-[var(--nx-accent)]" />
               )}
               {t.status === "closed" && (
-                <WifiOff size={12} className="text-[#ff6b6b]/70" />
+                <WifiOff size={12} className="text-[var(--nx-error)]/70" />
               )}
               <span className="font-mono text-sm truncate max-w-[180px]">
                 {t.title}
@@ -64,7 +64,7 @@ export function TabBar({
                   e.stopPropagation();
                   onClose(t.id);
                 }}
-                className="opacity-50 hover:opacity-100 hover:text-[#ff6b6b]"
+                className="opacity-50 hover:opacity-100 hover:text-[var(--nx-error)]"
               >
                 <X size={12} />
               </button>
@@ -75,7 +75,7 @@ export function TabBar({
       <button
         onClick={onNewTab}
         title="New tab — Ctrl+T"
-        className="h-full shrink-0 px-3 flex items-center text-[#7fd7ff] hover:bg-[#0e1414] hover:text-[#00ff95] border-l border-[#1f3a3a]"
+        className="h-full shrink-0 px-3 flex items-center text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-panel)] hover:text-[var(--nx-accent)] border-l border-[var(--nx-border)]"
       >
         <Plus size={14} />
       </button>

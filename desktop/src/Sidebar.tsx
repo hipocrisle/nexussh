@@ -24,6 +24,10 @@ import {
   renameFolder,
   deleteFolder,
   moveHostToFolder,
+  loadKnownFolders,
+  addKnownFolder,
+  removeKnownFolder,
+  renameKnownFolder,
 } from "./hosts";
 import { HostDialog } from "./HostDialog";
 import { MenuItem } from "./ContextMenu";
@@ -96,12 +100,21 @@ export function Sidebar({
 
   const ungroupedLabel = t("sidebar.no_group");
 
+  const [knownFolders, setKnownFolders] = useState<string[]>(() =>
+    loadKnownFolders(),
+  );
+  const refreshFolders = useCallback(() => setKnownFolders(loadKnownFolders()), []);
+
   const groups = useMemo(() => {
     const m = new Map<string, HostRecord[]>();
     for (const h of filtered) {
       const g = h.group ?? ungroupedLabel;
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(h);
+    }
+    // Include empty folders the user created via "+ Folder"
+    for (const f of knownFolders) {
+      if (!m.has(f)) m.set(f, []);
     }
     for (const list of m.values()) {
       list.sort((a, b) => {
@@ -114,14 +127,17 @@ export function Sidebar({
       });
     }
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered, ungroupedLabel]);
+  }, [filtered, ungroupedLabel, knownFolders]);
 
   const knownGroups = useMemo(
     () =>
       Array.from(
-        new Set(hosts.map((h) => h.group).filter(Boolean) as string[]),
+        new Set([
+          ...(hosts.map((h) => h.group).filter(Boolean) as string[]),
+          ...knownFolders,
+        ]),
       ),
-    [hosts],
+    [hosts, knownFolders],
   );
 
   function toggleGroup(g: string) {
@@ -219,6 +235,8 @@ export function Sidebar({
           const name = window.prompt(t("sidebar.rename_folder_prompt"), group);
           if (name && name.trim() && name.trim() !== group) {
             await renameFolder(group, name.trim());
+            renameKnownFolder(group, name.trim());
+            refreshFolders();
             reload();
           }
         },
@@ -234,6 +252,8 @@ export function Sidebar({
           if (!confirm(t("sidebar.delete_folder_confirm", { name: group })))
             return;
           await deleteFolder(group);
+          removeKnownFolder(group);
+          refreshFolders();
           reload();
         },
         destructive: true,
@@ -241,20 +261,72 @@ export function Sidebar({
     ]);
   }
 
+  // ---------------------------------------------------------------------
+  // Drag-and-drop hosts between folders
+  // ---------------------------------------------------------------------
+  const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+
+  function onHostDragStart(e: React.DragEvent, host: HostRecord) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("application/x-nexussh-host-id", host.id);
+    // Some Linux WebKit2 builds also need text/plain to consider it a real drag.
+    e.dataTransfer.setData("text/plain", host.id);
+  }
+
+  function onFolderDragOver(e: React.DragEvent, group: string) {
+    if (!e.dataTransfer.types.includes("application/x-nexussh-host-id")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragOverGroup !== group) setDragOverGroup(group);
+  }
+
+  function onFolderDragLeave(group: string) {
+    if (dragOverGroup === group) setDragOverGroup(null);
+  }
+
+  async function onFolderDrop(e: React.DragEvent, group: string) {
+    e.preventDefault();
+    setDragOverGroup(null);
+    const id = e.dataTransfer.getData("application/x-nexussh-host-id");
+    if (!id) return;
+    const target = group === ungroupedLabel ? null : group;
+    await moveHostToFolder(id, target);
+    reload();
+  }
+
+  function makeEmptyAreaMenu(): MenuItem[] {
+    return [
+      {
+        label: t("sidebar.menu_add_host"),
+        onClick: () => setDialog({ kind: "add" }),
+      },
+      {
+        label: t("sidebar.menu_new_folder"),
+        onClick: () => {
+          const name = window.prompt(t("sidebar.new_folder_prompt"));
+          if (name && name.trim()) {
+            addKnownFolder(name.trim());
+            refreshFolders();
+          }
+        },
+      },
+    ];
+  }
+
   if (collapsed) {
     return (
-      <aside className="w-10 shrink-0 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col items-center py-2 gap-2">
+      <aside className="w-10 shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col items-center py-2 gap-2">
         <button
           onClick={onToggleCollapsed}
           title={t("sidebar.expand")}
-          className="text-[#7fd7ff] hover:text-[#00ff95] p-1"
+          className="text-[var(--nx-text-soft)] hover:text-[var(--nx-accent)] p-1"
         >
           <PanelLeftOpen size={18} />
         </button>
         <button
           onClick={() => setDialog({ kind: "add" })}
           title={t("sidebar.add_host")}
-          className="text-[#00ff95] hover:text-[#5fffb4] p-1"
+          className="text-[var(--nx-accent)] hover:text-[var(--nx-accent)] p-1"
         >
           <Plus size={18} />
         </button>
@@ -273,26 +345,26 @@ export function Sidebar({
   }
 
   return (
-    <aside className="w-64 shrink-0 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col">
-      <div className="p-3 border-b border-[#1f3a3a] flex gap-2 items-center">
-        <Search size={14} className="text-[#4a5560]" />
+    <aside className="w-64 shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col">
+      <div className="p-3 border-b border-[var(--nx-border)] flex gap-2 items-center">
+        <Search size={14} className="text-[var(--nx-text-muted)]" />
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder={t("sidebar.filter_placeholder")}
-          className="flex-1 min-w-0 bg-transparent text-[#c9d1d9] placeholder-[#4a5560] font-mono text-sm focus:outline-none"
+          className="flex-1 min-w-0 bg-transparent text-[var(--nx-text-primary)] placeholder-[var(--nx-text-muted)] font-mono text-sm focus:outline-none"
         />
         <button
           onClick={() => setDialog({ kind: "add" })}
           title={t("sidebar.add_host")}
-          className="text-[#00ff95] hover:text-[#5fffb4] shrink-0"
+          className="text-[var(--nx-accent)] hover:text-[var(--nx-accent)] shrink-0"
         >
           <Plus size={16} />
         </button>
         <button
           onClick={onToggleCollapsed}
           title={t("sidebar.collapse")}
-          className="text-[#4a5560] hover:text-[#7fd7ff] shrink-0"
+          className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
         >
           <PanelLeftClose size={16} />
         </button>
@@ -305,21 +377,16 @@ export function Sidebar({
           // child element with its own ContextMenu (host item or folder header).
           if (e.target !== e.currentTarget) return;
           e.preventDefault();
-          onContextMenu?.(e.clientX, e.clientY, [
-            {
-              label: t("sidebar.menu_add_host"),
-              onClick: () => setDialog({ kind: "add" }),
-            },
-          ]);
+          onContextMenu?.(e.clientX, e.clientY, makeEmptyAreaMenu());
         }}
       >
         {groups.length === 0 && (
-          <div className="text-center text-[#4a5560] font-mono text-xs p-6">
+          <div className="text-center text-[var(--nx-text-muted)] font-mono text-xs p-6">
             {t("sidebar.empty_state")}
             <br />
             <button
               onClick={() => setDialog({ kind: "add" })}
-              className="mt-2 text-[#00ff95] hover:text-[#5fffb4] underline"
+              className="mt-2 text-[var(--nx-accent)] hover:text-[var(--nx-accent)] underline"
             >
               {t("sidebar.add_first")}
             </button>
@@ -333,7 +400,15 @@ export function Sidebar({
               <button
                 onClick={() => toggleGroup(g)}
                 onContextMenu={(e) => onFolderContextMenu(e, g)}
-                className="w-full px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[#4a5560] font-mono hover:bg-[#0e1414] hover:text-[#7fd7ff]"
+                onDragOver={(e) => onFolderDragOver(e, g)}
+                onDragLeave={() => onFolderDragLeave(g)}
+                onDrop={(e) => onFolderDrop(e, g)}
+                className={
+                  "w-full px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--nx-text-muted)] font-mono hover:bg-[var(--nx-bg-panel)] hover:text-[var(--nx-text-soft)] " +
+                  (dragOverGroup === g
+                    ? "bg-[var(--nx-bg-panel)] text-[var(--nx-accent)]"
+                    : "")
+                }
               >
                 {isCollapsed ? (
                   <ChevronRight size={10} />
@@ -341,7 +416,7 @@ export function Sidebar({
                   <ChevronDown size={10} />
                 )}
                 <span className="truncate">{g}</span>
-                <span className="ml-auto text-[#4a5560]">{list.length}</span>
+                <span className="ml-auto text-[var(--nx-text-muted)]">{list.length}</span>
               </button>
               {!isCollapsed &&
                 list.map((h) => {
@@ -349,6 +424,8 @@ export function Sidebar({
                   return (
                     <div
                       key={h.id}
+                      draggable
+                      onDragStart={(e) => onHostDragStart(e, h)}
                       onClick={() =>
                         clickMode === "connect" ? onConnect(h) : onSelect?.(h)
                       }
@@ -358,23 +435,23 @@ export function Sidebar({
                       className={
                         "group px-3 py-1.5 flex items-center gap-2 cursor-pointer " +
                         (isSelected
-                          ? "bg-[#0e1414] border-l-2 border-[#00ff95]"
-                          : "hover:bg-[#0e1414] border-l-2 border-transparent")
+                          ? "bg-[var(--nx-bg-panel)] border-l-2 border-[var(--nx-accent)]"
+                          : "hover:bg-[var(--nx-bg-panel)] border-l-2 border-transparent")
                       }
                     >
                       <Server
                         size={12}
                         className={
                           isSelected
-                            ? "text-[#00ff95] shrink-0"
-                            : "text-[#5cc8ff] shrink-0"
+                            ? "text-[var(--nx-accent)] shrink-0"
+                            : "text-[var(--nx-accent2)] shrink-0"
                         }
                       />
                       <div className="flex-1 min-w-0">
-                        <div className="text-[#c9d1d9] font-mono text-sm truncate">
+                        <div className="text-[var(--nx-text-primary)] font-mono text-sm truncate">
                           {h.name}
                         </div>
-                        <div className="text-[#4a5560] font-mono text-xs truncate">
+                        <div className="text-[var(--nx-text-muted)] font-mono text-xs truncate">
                           {h.user}@{h.host}:{h.port}
                         </div>
                       </div>

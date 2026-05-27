@@ -93,14 +93,28 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
     [settings.font],
   );
 
+  const themeStyle = {
+    "--nx-bg-base": t.bgBase,
+    "--nx-bg-secondary": t.bgSecondary,
+    "--nx-bg-panel": t.bgPanel,
+    "--nx-bg-elevated": t.bgElevated,
+    "--nx-border": t.border,
+    "--nx-text-primary": t.textPrimary,
+    "--nx-text-muted": t.textMuted,
+    "--nx-text-soft": t.textSoft,
+    "--nx-accent": t.accent,
+    "--nx-accent2": t.accent2,
+    "--nx-warning": t.warning,
+    "--nx-error": t.error,
+    background: t.bgBase,
+    fontFamily: fontStack,
+    color: t.textPrimary,
+  } as React.CSSProperties;
+
   return (
     <div
       className="h-full w-full flex flex-col relative overflow-hidden"
-      style={{
-        background: t.bgBase,
-        fontFamily: fontStack,
-        color: t.textPrimary,
-      }}
+      style={themeStyle}
     >
       <div className="absolute inset-0 pointer-events-none">
         <MatrixRain

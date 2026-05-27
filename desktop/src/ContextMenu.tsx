@@ -53,7 +53,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   return (
     <div
       ref={ref}
-      className="fixed z-[9999] bg-[#0a0e0e] border border-[#1f3a3a] rounded shadow-xl py-1 font-mono text-xs select-none"
+      className="fixed z-[9999] bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded shadow-xl py-1 font-mono text-xs select-none"
       style={{ left: safeX, top: safeY, minWidth: W }}
       onContextMenu={(e) => e.preventDefault()}
     >
@@ -61,7 +61,7 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
         it.separator ? (
           <div
             key={`sep-${i}`}
-            className="my-1 h-px bg-[#1f3a3a] mx-2"
+            className="my-1 h-px bg-[var(--nx-border)] mx-2"
           />
         ) : (
           <button
@@ -75,10 +75,10 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
             className={
               "w-full text-left px-3 py-1.5 flex items-center gap-2 " +
               (it.disabled
-                ? "text-[#4a5560] cursor-not-allowed"
+                ? "text-[var(--nx-text-muted)] cursor-not-allowed"
                 : it.destructive
-                  ? "text-[#ff8e8e] hover:bg-[#1f3a3a]"
-                  : "text-[#c9d1d9] hover:bg-[#1f3a3a] hover:text-[#00ff95]")
+                  ? "text-[var(--nx-error)] hover:bg-[var(--nx-border)]"
+                  : "text-[var(--nx-text-primary)] hover:bg-[var(--nx-border)] hover:text-[var(--nx-accent)]")
             }
           >
             {it.icon && <span className="shrink-0">{it.icon}</span>}

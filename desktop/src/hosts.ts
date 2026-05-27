@@ -24,6 +24,10 @@ export interface HostRecord {
   lastUsedAt?: string;
   /** Free-form note */
   note?: string;
+  /** When true (password auth only), saved password is ignored; user is
+   *  prompted on every connect. Stored password is left as-is so toggling
+   *  back doesn't lose what they typed. */
+  alwaysAskPassword?: boolean;
 }
 
 const STORE_FILE = "hosts.json";
@@ -129,4 +133,42 @@ export async function moveHostToFolder(
   if (!h) return;
   h.group = folder ?? undefined;
   await saveHost(h);
+}
+
+// --- Empty folders ---------------------------------------------------------
+// Folders are normally derived from `host.group`, but the user may want to
+// create a folder BEFORE adding any hosts to it. We persist a list of "known"
+// folder names in localStorage and union it with the derived list at render.
+
+const KNOWN_FOLDERS_LS = "nexussh.knownFolders";
+
+export function loadKnownFolders(): string[] {
+  try {
+    const raw = localStorage.getItem(KNOWN_FOLDERS_LS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addKnownFolder(name: string) {
+  const n = name.trim();
+  if (!n) return;
+  const list = loadKnownFolders();
+  if (!list.includes(n)) {
+    list.push(n);
+    localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+  }
+}
+
+export function removeKnownFolder(name: string) {
+  const list = loadKnownFolders().filter((f) => f !== name);
+  localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+}
+
+export function renameKnownFolder(oldName: string, newName: string) {
+  const list = loadKnownFolders().map((f) => (f === oldName ? newName : f));
+  localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
 }

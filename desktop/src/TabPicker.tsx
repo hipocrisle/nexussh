@@ -73,7 +73,7 @@ export function TabPicker({ onPick, onClose }: Props) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md bg-[#0a0e0e] border border-[#1f3a3a] rounded-lg shadow-2xl overflow-hidden"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl overflow-hidden"
       >
         <input
           ref={inputRef}
@@ -81,11 +81,11 @@ export function TabPicker({ onPick, onClose }: Props) {
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={onKey}
           placeholder={t("picker.placeholder")}
-          className="w-full bg-[#0e1414] border-b border-[#1f3a3a] px-4 py-3 text-[#c9d1d9] focus:outline-none placeholder-[#4a5560] font-mono text-sm"
+          className="w-full bg-[var(--nx-bg-panel)] border-b border-[var(--nx-border)] px-4 py-3 text-[var(--nx-text-primary)] focus:outline-none placeholder-[var(--nx-text-muted)] font-mono text-sm"
         />
         <div className="max-h-80 overflow-y-auto">
           {filtered.length === 0 ? (
-            <div className="px-4 py-6 text-center font-mono text-xs text-[#4a5560]">
+            <div className="px-4 py-6 text-center font-mono text-xs text-[var(--nx-text-muted)]">
               {hosts.length === 0
                 ? t("picker.no_hosts")
                 : t("picker.no_match")}
@@ -100,20 +100,20 @@ export function TabPicker({ onPick, onClose }: Props) {
                 }}
                 onMouseEnter={() => setIdx(i)}
                 className={
-                  "w-full text-left px-4 py-2 font-mono text-sm border-b border-[#1f3a3a]/60 " +
+                  "w-full text-left px-4 py-2 font-mono text-sm border-b border-[var(--nx-border)]/60 " +
                   (i === idx
-                    ? "bg-[#1f3a3a] text-[#00ff95]"
-                    : "text-[#c9d1d9] hover:bg-[#0e1414]")
+                    ? "bg-[var(--nx-border)] text-[var(--nx-accent)]"
+                    : "text-[var(--nx-text-primary)] hover:bg-[var(--nx-bg-panel)]")
                 }
               >
                 <div className="flex items-center gap-2">
                   <span className="truncate">{h.name}</span>
                   {h.group && (
-                    <span className="text-[10px] text-[#7fd7ff] bg-[#0e1414] px-1 rounded">
+                    <span className="text-[10px] text-[var(--nx-text-soft)] bg-[var(--nx-bg-panel)] px-1 rounded">
                       {h.group}
                     </span>
                   )}
-                  <span className="ml-auto text-[10px] text-[#4a5560] truncate">
+                  <span className="ml-auto text-[10px] text-[var(--nx-text-muted)] truncate">
                     {h.user}@{h.host}
                     {h.port !== 22 && `:${h.port}`}
                   </span>
@@ -122,7 +122,7 @@ export function TabPicker({ onPick, onClose }: Props) {
             ))
           )}
         </div>
-        <div className="px-4 py-2 border-t border-[#1f3a3a] font-mono text-[10px] text-[#4a5560] flex gap-3">
+        <div className="px-4 py-2 border-t border-[var(--nx-border)] font-mono text-[10px] text-[var(--nx-text-muted)] flex gap-3">
           <span>↑↓ {t("picker.hint_move")}</span>
           <span>↵ {t("picker.hint_open")}</span>
           <span>Esc {t("picker.hint_close")}</span>

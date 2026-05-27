@@ -62,6 +62,22 @@ export function TerminalView({
     termRef.current = term;
     fitRef.current = fit;
 
+    // Wheel scroll: directly manipulate xterm's viewport DOM element instead
+    // of going through term.scrollLines (which silently no-ops on some
+    // WebView2 builds and inside alt-screen mode). Falls through to default
+    // behavior if the viewport isn't found (shouldn't happen).
+    const viewport = containerRef.current.querySelector(
+      ".xterm-viewport",
+    ) as HTMLElement | null;
+    const wheelHandler = (ev: WheelEvent) => {
+      if (!viewport) return;
+      viewport.scrollTop += ev.deltaY;
+      ev.preventDefault();
+    };
+    containerRef.current.addEventListener("wheel", wheelHandler, {
+      passive: false,
+    });
+
     const onDataDisposable = term.onData((data) => {
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
     });
@@ -88,6 +104,7 @@ export function TerminalView({
 
     return () => {
       window.removeEventListener("resize", onWinResize);
+      containerRef.current?.removeEventListener("wheel", wheelHandler);
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();
@@ -121,11 +138,16 @@ export function TerminalView({
   }, []);
 
   // Apply theme changes live to the running xterm instance.
+  // CRITICAL: setting `options.theme` alone leaves the canvas blank and the
+  // container background reads through as a solid block, hiding the active
+  // session. We must explicitly `refresh()` the visible rows to repaint.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const palette = THEMES[settings.theme];
     term.options.theme = xtermThemeOf(palette);
+    // refresh ALL rows including scrollback so older lines repaint too.
+    term.refresh(0, term.rows - 1);
   }, [settings.theme]);
 
   // Apply font family/size changes live.
@@ -134,7 +156,10 @@ export function TerminalView({
     if (!term) return;
     term.options.fontFamily = fontStackOf(settings.font);
     term.options.fontSize = settings.fontSize;
-    requestAnimationFrame(() => fitRef.current?.fit());
+    requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      term.refresh(0, term.rows - 1);
+    });
   }, [settings.font, settings.fontSize]);
 
   return (

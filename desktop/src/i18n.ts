@@ -8,6 +8,7 @@ const ru = {
   app: {
     version_label: "v",
     tagline: "терминал нового поколения",
+    password_prompt: "Пароль для {{user}}@{{host}}:",
   },
   sidebar: {
     filter_placeholder: "поиск...",
@@ -25,6 +26,7 @@ const ru = {
     menu_duplicate: "Дублировать",
     menu_delete: "Удалить",
     menu_add_host: "+ Добавить хост",
+    menu_new_folder: "+ Новая папка...",
     menu_rename_folder: "Переименовать папку",
     menu_delete_folder: "Удалить папку",
     menu_collapse_group: "Свернуть/развернуть",
@@ -68,6 +70,9 @@ const ru = {
     delete_confirm: "Удалить {{name}}?",
     err_host_required: "Укажите хост",
     err_user_required: "Укажите пользователя",
+    always_ask_password: "Спрашивать пароль каждый раз",
+    always_ask_password_hint: "Безопаснее: пароль не сохраняется на диск и не уходит в sync. При подключении появится prompt.",
+    password_ask_each_time_ph: "(пароль не сохраняется)",
   },
   terminal: {
     select_host: "выберите хост слева, чтобы подключиться",
@@ -131,6 +136,8 @@ const ru = {
     find_next: "след. совпадение",
     find_prev: "пред. совпадение",
     chunks: "событий",
+    fullscreen: "полноэкранный режим",
+    exit_fullscreen: "выйти из полноэкранного",
   },
   settings: {
     open: "настройки",
@@ -298,6 +305,7 @@ const en = {
   app: {
     version_label: "v",
     tagline: "next-gen terminal",
+    password_prompt: "Password for {{user}}@{{host}}:",
   },
   sidebar: {
     filter_placeholder: "filter...",
@@ -315,6 +323,7 @@ const en = {
     menu_duplicate: "Duplicate",
     menu_delete: "Delete",
     menu_add_host: "+ Add host",
+    menu_new_folder: "+ New folder...",
     menu_rename_folder: "Rename folder",
     menu_delete_folder: "Delete folder",
     menu_collapse_group: "Collapse/expand",
@@ -358,6 +367,9 @@ const en = {
     delete_confirm: "Delete {{name}}?",
     err_host_required: "Host is required",
     err_user_required: "User is required",
+    always_ask_password: "Ask for password every time",
+    always_ask_password_hint: "More secure: password isn't saved to disk or pushed via sync. You'll be prompted on each connect.",
+    password_ask_each_time_ph: "(not saved)",
   },
   terminal: {
     select_host: "select a host on the left to connect",
@@ -421,6 +433,8 @@ const en = {
     find_next: "next match",
     find_prev: "prev match",
     chunks: "events",
+    fullscreen: "fullscreen",
+    exit_fullscreen: "exit fullscreen",
   },
   settings: {
     open: "settings",

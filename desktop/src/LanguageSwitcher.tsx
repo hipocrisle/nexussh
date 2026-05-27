@@ -13,8 +13,8 @@ export function LanguageSwitcher() {
           className={
             "px-2 py-0.5 rounded " +
             (cur === l
-              ? "text-[#00ff95]"
-              : "text-[#4a5560] hover:text-[#7fd7ff]")
+              ? "text-[var(--nx-accent)]"
+              : "text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)]")
           }
         >
           {l.toUpperCase()}

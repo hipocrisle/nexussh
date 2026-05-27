@@ -14,7 +14,15 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { save } from "@tauri-apps/plugin-dialog";
-import { Trash2, Download, Search, X, RefreshCw } from "lucide-react";
+import {
+  Trash2,
+  Download,
+  Search,
+  X,
+  RefreshCw,
+  Maximize2,
+  Minimize2,
+} from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
@@ -32,46 +40,43 @@ import {
   filterAltBuffer,
   CastEvent,
 } from "./history";
+import { useSettings } from "./settings/settings-store";
+import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
+import { fontStackOf } from "./settings/fonts";
 
 interface Props {
   onClose: () => void;
 }
 
-const SEARCH_DECORATIONS = {
-  matchBackground: "#1f3a3a",
-  matchBorder: "#00ff95",
-  matchOverviewRuler: "#00ff95",
-  activeMatchBackground: "#00ff95",
-  activeMatchBorder: "#00ff95",
-  activeMatchColorOverviewRuler: "#00d4ff",
-} as const;
+// xterm.js needs literal colors — CSS vars don't resolve in its theme spec.
+// Build search-decoration colors from the active theme palette.
+function searchDecorations(t: ThemePalette) {
+  return {
+    matchBackground: t.border,
+    matchBorder: t.accent,
+    matchOverviewRuler: t.accent,
+    activeMatchBackground: t.accent,
+    activeMatchBorder: t.accent,
+    activeMatchColorOverviewRuler: t.accent2,
+  };
+}
 
-const MATRIX_THEME = {
-  background: "#0a0e0e",
-  foreground: "#c9d1d9",
-  cursor: "#00ff95",
-  cursorAccent: "#0a0e0e",
-  selectionBackground: "#1f3a3a",
-  black: "#0a0e0e",
-  red: "#ff6b6b",
-  green: "#00ff95",
-  yellow: "#f5d76e",
-  blue: "#5cc8ff",
-  magenta: "#d391ff",
-  cyan: "#00d4ff",
-  white: "#c9d1d9",
-  brightBlack: "#4a5560",
-  brightRed: "#ff8e8e",
-  brightGreen: "#5fffb4",
-  brightYellow: "#ffe28a",
-  brightBlue: "#7fd7ff",
-  brightMagenta: "#e1b3ff",
-  brightCyan: "#5feaff",
-  brightWhite: "#ffffff",
-};
+const FULLSCREEN_LS_KEY = "nexussh.historyFullscreen";
 
 export function HistoryPanel({ onClose }: Props) {
   const { t } = useTranslation();
+  const [settings] = useSettings();
+  const palette = THEMES[settings.theme];
+  const [fullscreen, setFullscreen] = useState<boolean>(
+    () => localStorage.getItem(FULLSCREEN_LS_KEY) === "1",
+  );
+  function toggleFullscreen() {
+    setFullscreen((v) => {
+      const next = !v;
+      localStorage.setItem(FULLSCREEN_LS_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<CastEvent[] | null>(null);
@@ -117,8 +122,8 @@ export function HistoryPanel({ onClose }: Props) {
   useEffect(() => {
     if (!termContainerRef.current) return;
     const term = new Terminal({
-      theme: MATRIX_THEME,
-      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+      theme: xtermThemeOf(palette),
+      fontFamily: fontStackOf(settings.font),
       fontSize: 13,
       cursorBlink: false,
       scrollback: 1_000_000,
@@ -136,20 +141,37 @@ export function HistoryPanel({ onClose }: Props) {
     fitRef.current = fit;
     searchRef.current = search;
 
-    term.attachCustomWheelEventHandler((ev: WheelEvent) => {
-      const lines = Math.max(1, Math.round(Math.abs(ev.deltaY) / 24));
-      term.scrollLines(ev.deltaY > 0 ? lines : -lines);
+    // Direct DOM viewport scroll for reliability
+    const viewport = termContainerRef.current.querySelector(
+      ".xterm-viewport",
+    ) as HTMLElement | null;
+    const wheelHandler = (ev: WheelEvent) => {
+      if (!viewport) return;
+      viewport.scrollTop += ev.deltaY;
       ev.preventDefault();
-      return false;
+    };
+    termContainerRef.current.addEventListener("wheel", wheelHandler, {
+      passive: false,
     });
 
     const onWinResize = () => fit.fit();
     window.addEventListener("resize", onWinResize);
     return () => {
       window.removeEventListener("resize", onWinResize);
+      termContainerRef.current?.removeEventListener("wheel", wheelHandler);
       term.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Live theme/font updates — xterm needs explicit refresh after options swap
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = xtermThemeOf(palette);
+    term.options.fontFamily = fontStackOf(settings.font);
+    term.refresh(0, term.rows - 1);
+  }, [settings.theme, settings.font, palette]);
 
   // Replay events into xterm
   useEffect(() => {
@@ -194,7 +216,7 @@ export function HistoryPanel({ onClose }: Props) {
     if (!inSessionQuery.trim()) return;
     search.findNext(inSessionQuery, {
       caseSensitive: false,
-      decorations: SEARCH_DECORATIONS,
+      decorations: searchDecorations(palette),
     });
   }, [inSessionQuery]);
 
@@ -259,44 +281,59 @@ export function HistoryPanel({ onClose }: Props) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-7xl h-[90vh] bg-[#0a0e0e] border border-[#1f3a3a] rounded-lg shadow-2xl flex flex-col overflow-hidden"
+        className={
+          fullscreen
+            ? "w-screen h-screen bg-[var(--nx-bg-base)] flex flex-col overflow-hidden"
+            : "w-full max-w-7xl h-[90vh] bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl flex flex-col overflow-hidden"
+        }
       >
         {/* Header */}
-        <div className="flex items-center px-4 py-3 border-b border-[#1f3a3a] shrink-0">
-          <h2 className="text-lg font-mono text-[#00ff95]">
+        <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)] shrink-0">
+          <h2 className="text-lg font-mono text-[var(--nx-accent)]">
             &gt; {t("history.title")}
           </h2>
-          <p className="ml-3 text-xs text-[#4a5560] font-mono italic">
+          <p className="ml-3 text-xs text-[var(--nx-text-muted)] font-mono italic">
             {t("history.subtitle")}
           </p>
           <button
             onClick={refresh}
             title={t("history.refresh")}
-            className="ml-auto p-1.5 rounded hover:bg-[#1f3a3a] text-[#7fd7ff]"
+            className="ml-auto p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
           >
             <RefreshCw size={14} />
           </button>
           <button
+            onClick={toggleFullscreen}
+            title={
+              fullscreen
+                ? t("history.exit_fullscreen")
+                : t("history.fullscreen")
+            }
+            className="ml-2 p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
+          >
+            {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+          </button>
+          <button
             onClick={onClose}
-            className="ml-2 p-1.5 rounded hover:bg-[#1f3a3a] text-[#7fd7ff]"
+            className="ml-2 p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
           >
             <X size={14} />
           </button>
         </div>
 
         {/* Cross-session search */}
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-[#1f3a3a] shrink-0">
-          <Search size={14} className="text-[#7fd7ff]" />
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--nx-border)] shrink-0">
+          <Search size={14} className="text-[var(--nx-text-soft)]" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && runSearch()}
             placeholder={t("history.search_all_ph")}
-            className="flex-1 bg-[#0e1414] border border-[#1f3a3a] rounded px-2 py-1 text-[#c9d1d9] focus:outline-none focus:border-[#00ff95] placeholder-[#4a5560] font-mono text-xs"
+            className="flex-1 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-2 py-1 text-[var(--nx-text-primary)] focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-xs"
           />
           <button
             onClick={runSearch}
-            className="px-3 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a]"
+            className="px-3 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
           >
             {t("history.search_btn")}
           </button>
@@ -306,7 +343,7 @@ export function HistoryPanel({ onClose }: Props) {
                 setHits(null);
                 setQuery("");
               }}
-              className="px-3 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#f5d76e] font-mono text-xs rounded border border-[#1f3a3a]"
+              className="px-3 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-warning)] font-mono text-xs rounded border border-[var(--nx-border)]"
             >
               {t("history.clear_search")} ({hits.length})
             </button>
@@ -314,7 +351,7 @@ export function HistoryPanel({ onClose }: Props) {
         </div>
 
         {error && (
-          <div className="px-4 py-2 text-[#ff6b6b] text-xs font-mono border-b border-[#1f3a3a] shrink-0 break-all">
+          <div className="px-4 py-2 text-[var(--nx-error)] text-xs font-mono border-b border-[var(--nx-border)] shrink-0 break-all">
             ✗ {error}
           </div>
         )}
@@ -322,9 +359,9 @@ export function HistoryPanel({ onClose }: Props) {
         {/* Two-pane */}
         <div className="flex-1 min-h-0 flex">
           {/* Sessions list */}
-          <div className="w-72 shrink-0 border-r border-[#1f3a3a] overflow-y-auto">
+          <div className="w-72 shrink-0 border-r border-[var(--nx-border)] overflow-y-auto">
             {filteredEntries.length === 0 ? (
-              <div className="p-4 text-xs text-[#4a5560] font-mono">
+              <div className="p-4 text-xs text-[var(--nx-text-muted)] font-mono">
                 {hits !== null ? t("history.no_hits") : t("history.empty")}
               </div>
             ) : (
@@ -332,22 +369,22 @@ export function HistoryPanel({ onClose }: Props) {
                 <button
                   key={e.session_id}
                   onClick={() => setSelectedId(e.session_id)}
-                  className={`w-full text-left px-3 py-2 border-b border-[#1f3a3a] hover:bg-[#0e1414] group ${
-                    selectedId === e.session_id ? "bg-[#0e1414]" : ""
+                  className={`w-full text-left px-3 py-2 border-b border-[var(--nx-border)] hover:bg-[var(--nx-bg-panel)] group ${
+                    selectedId === e.session_id ? "bg-[var(--nx-bg-panel)]" : ""
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
-                      <div className="font-mono text-sm text-[#c9d1d9] truncate">
+                      <div className="font-mono text-sm text-[var(--nx-text-primary)] truncate">
                         {e.user}@{e.host}
                         {e.port !== 22 && `:${e.port}`}
                       </div>
-                      <div className="font-mono text-[10px] text-[#4a5560] flex gap-2">
+                      <div className="font-mono text-[10px] text-[var(--nx-text-muted)] flex gap-2">
                         <span>{fmtTs(e.started_at)}</span>
                         <span>·</span>
                         <span>{fmtBytes(e.byte_count)}</span>
                         {e.still_active && (
-                          <span className="text-[#00ff95]">● live</span>
+                          <span className="text-[var(--nx-accent)]">● live</span>
                         )}
                       </div>
                     </div>
@@ -357,7 +394,7 @@ export function HistoryPanel({ onClose }: Props) {
                         onDelete(e.session_id);
                       }}
                       title={t("history.delete")}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[#1f3a3a] text-[#ff8e8e]"
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--nx-border)] text-[var(--nx-error)]"
                     >
                       <Trash2 size={12} />
                     </button>
@@ -371,17 +408,17 @@ export function HistoryPanel({ onClose }: Props) {
           <div className="flex-1 min-w-0 flex flex-col relative">
             {selectedId && (
               <>
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1f3a3a] shrink-0 text-xs font-mono">
+                <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--nx-border)] shrink-0 text-xs font-mono">
                   {selectedMeta && (
-                    <span className="text-[#4a5560]">
+                    <span className="text-[var(--nx-text-muted)]">
                       {selectedMeta.user}@{selectedMeta.host} ·{" "}
-                      <span className="text-[#7fd7ff]">
+                      <span className="text-[var(--nx-text-soft)]">
                         {fmtTs(selectedMeta.started_at)}
                       </span>
                       {durationLabel && (
                         <>
                           {" · "}
-                          <span className="text-[#7fd7ff]">{durationLabel}</span>
+                          <span className="text-[var(--nx-text-soft)]">{durationLabel}</span>
                         </>
                       )}
                       {" · "}
@@ -397,22 +434,22 @@ export function HistoryPanel({ onClose }: Props) {
                       if (e.key === "Enter") {
                         searchRef.current?.findNext(inSessionQuery, {
                           caseSensitive: false,
-                          decorations: SEARCH_DECORATIONS,
+                          decorations: searchDecorations(palette),
                         });
                       }
                     }}
                     placeholder={t("history.filter_in_session_ph")}
-                    className="ml-auto w-64 bg-[#0e1414] border border-[#1f3a3a] rounded px-2 py-1 text-[#c9d1d9] focus:outline-none focus:border-[#00ff95] placeholder-[#4a5560] font-mono text-xs"
+                    className="ml-auto w-64 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-2 py-1 text-[var(--nx-text-primary)] focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-xs"
                   />
                   <button
                     onClick={() =>
                       searchRef.current?.findPrevious(inSessionQuery, {
                         caseSensitive: false,
-                        decorations: SEARCH_DECORATIONS,
+                        decorations: searchDecorations(palette),
                       })
                     }
                     title={t("history.find_prev")}
-                    className="px-2 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a]"
+                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
                   >
                     ↑
                   </button>
@@ -420,45 +457,45 @@ export function HistoryPanel({ onClose }: Props) {
                     onClick={() =>
                       searchRef.current?.findNext(inSessionQuery, {
                         caseSensitive: false,
-                        decorations: SEARCH_DECORATIONS,
+                        decorations: searchDecorations(palette),
                       })
                     }
                     title={t("history.find_next")}
-                    className="px-2 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a]"
+                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
                   >
                     ↓
                   </button>
                   <button
                     onClick={() => onExport(selectedId, true)}
                     title={t("history.export_stripped")}
-                    className="px-2 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a] flex items-center gap-1"
+                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)] flex items-center gap-1"
                   >
                     <Download size={12} /> .txt
                   </button>
                   <button
                     onClick={() => onExport(selectedId, false)}
                     title={t("history.export_raw")}
-                    className="px-2 py-1 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a] flex items-center gap-1"
+                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)] flex items-center gap-1"
                   >
                     <Download size={12} /> .cast
                   </button>
                 </div>
                 {loading && (
-                  <div className="px-3 py-1 text-[#7fd7ff] font-mono text-xs">
+                  <div className="px-3 py-1 text-[var(--nx-text-soft)] font-mono text-xs">
                     {t("history.loading")}
                   </div>
                 )}
               </>
             )}
             {!selectedId && (
-              <div className="absolute inset-0 flex items-center justify-center text-[#4a5560] font-mono text-sm z-10 pointer-events-none">
+              <div className="absolute inset-0 flex items-center justify-center text-[var(--nx-text-muted)] font-mono text-sm z-10 pointer-events-none">
                 {t("history.select_session")}
               </div>
             )}
             {/* xterm container always mounted so termRef stays valid */}
             <div
               ref={termContainerRef}
-              className="flex-1 min-h-0 bg-[#0a0e0e] p-1"
+              className="flex-1 min-h-0 bg-[var(--nx-bg-base)] p-1"
             />
           </div>
         </div>

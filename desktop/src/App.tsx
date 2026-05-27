@@ -113,24 +113,36 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Suppress default WebView context menu everywhere except input/textarea/
-  // contenteditable. Use closest() so we still allow native menu when the
-  // click target is a wrapping span inside the input (some browser engines
-  // bubble the contextmenu to the visible element).
+  // Suppress default WebView context menu everywhere except real form fields.
+  // Bind on mousedown (button 2) AND contextmenu — some WebView2 builds need
+  // the early intercept to avoid the brief native flash. Exclude xterm's
+  // hidden helper textarea so the terminal area gets no native menu.
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const isFormField = (target: HTMLElement | null) => {
+      if (!target) return false;
+      const inXterm = target.closest(".xterm, .xterm-helper-textarea");
+      if (inXterm) return false;
+      return !!target.closest(
+        "input, textarea, [contenteditable='true']",
+      );
+    };
+    const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        target.closest("input, textarea, [contenteditable='true']")
-      ) {
-        return;
-      }
+      if (isFormField(target)) return;
       e.preventDefault();
     };
-    // Capture phase so we run before any other listener might re-fire.
-    window.addEventListener("contextmenu", handler, true);
-    return () => window.removeEventListener("contextmenu", handler, true);
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 2) return;
+      const target = e.target as HTMLElement | null;
+      if (isFormField(target)) return;
+      e.preventDefault();
+    };
+    window.addEventListener("contextmenu", onContextMenu, true);
+    window.addEventListener("mousedown", onMouseDown, true);
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu, true);
+      window.removeEventListener("mousedown", onMouseDown, true);
+    };
   }, []);
 
   // Poll vault + sync status on mount
@@ -141,6 +153,15 @@ function App() {
 
   async function openHost(h: HostRecord) {
     setError(null);
+    // If user opted to always ask for password, prompt before opening tab.
+    let auth = h.auth;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const entered = window.prompt(
+        t("app.password_prompt", { user: h.user, host: h.host }),
+      );
+      if (entered === null) return; // cancelled
+      auth = { kind: "password", password: entered };
+    }
     const pending: Tab = {
       id: "pending-" + crypto.randomUUID(),
       title: h.name,
@@ -154,7 +175,7 @@ function App() {
         host: h.host,
         port: h.port,
         user: h.user,
-        auth: h.auth,
+        auth,
       });
       bumpLastUsed(h.id).catch(() => {});
       setTabs((tabs) =>
@@ -266,15 +287,29 @@ function App() {
     );
   }
 
+  // Propagate active theme as CSS variables on the root, so every Tailwind
+  // arbitrary-value class anywhere in the tree (e.g. `bg-[var(--nx-bg-base)]`)
+  // re-themes for free when the user picks a different palette.
+  const themeStyle = {
+    "--nx-bg-base": theme.bgBase,
+    "--nx-bg-secondary": theme.bgSecondary,
+    "--nx-bg-panel": theme.bgPanel,
+    "--nx-bg-elevated": theme.bgElevated,
+    "--nx-border": theme.border,
+    "--nx-text-primary": theme.textPrimary,
+    "--nx-text-muted": theme.textMuted,
+    "--nx-text-soft": theme.textSoft,
+    "--nx-accent": theme.accent,
+    "--nx-accent2": theme.accent2,
+    "--nx-warning": theme.warning,
+    "--nx-error": theme.error,
+    background: theme.bgBase,
+    color: theme.textPrimary,
+    fontFamily: fontStack,
+  } as React.CSSProperties;
+
   return (
-    <main
-      className="h-full w-full flex flex-col relative"
-      style={{
-        background: theme.bgBase,
-        color: theme.textPrimary,
-        fontFamily: fontStack,
-      }}
-    >
+    <main className="h-full w-full flex flex-col relative" style={themeStyle}>
       {/* Optional Matrix Rain background */}
       <div className="absolute inset-0 pointer-events-none">
         <MatrixRain
@@ -288,7 +323,15 @@ function App() {
 
       <header
         className="relative z-10 h-9 border-b flex items-center px-4 select-none shrink-0"
-        style={{ background: theme.bgSecondary, borderColor: theme.border }}
+        style={{
+          // If Matrix Rain is on, let it bleed through the chrome strips so
+          // the effect is visible app-wide rather than just in Settings.
+          background: settings.rainOn
+            ? `color-mix(in srgb, ${theme.bgSecondary} 75%, transparent)`
+            : theme.bgSecondary,
+          borderColor: theme.border,
+          backdropFilter: settings.rainOn ? "blur(2px)" : undefined,
+        }}
       >
         <span
           className="font-mono text-sm tracking-wider"

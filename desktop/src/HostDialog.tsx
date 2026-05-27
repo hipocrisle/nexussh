@@ -7,6 +7,9 @@ import { vaultKeys } from "./vault";
 
 type AuthKind = "password" | "key" | "vault";
 
+const advancedEnabled = () =>
+  localStorage.getItem("nexussh.advanced") === "1";
+
 interface Props {
   initial?: HostRecord;
   onClose: () => void;
@@ -165,7 +168,11 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
           </div>
 
           <div className="flex gap-2 pt-2">
-            {(["password", "key", "vault"] as const).map((k) => (
+            {(
+              advancedEnabled()
+                ? (["password", "key", "vault"] as const)
+                : (["password", "key"] as const)
+            ).map((k) => (
               <button
                 key={k}
                 type="button"

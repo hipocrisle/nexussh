@@ -83,6 +83,8 @@ struct ActiveSession {
     sender: mpsc::UnboundedSender<SessionCommand>,
 }
 
+use crate::history::SessionLogger;
+
 enum SessionCommand {
     Data(Vec<u8>),
     Resize { cols: u16, rows: u16 },
@@ -171,12 +173,29 @@ pub async fn ssh_connect(
         },
     );
 
+    // Open per-session log file for history.
+    // Failure to open the log is non-fatal — we still let the user connect.
+    let logger = SessionLogger::open(&app, &session_id, &args.host, args.port, &args.user)
+        .ok()
+        .map(Arc::new);
+
     let sid = session_id.clone();
     let app_handle = app.clone();
     let manager = state.inner().clone();
 
     tokio::spawn(async move {
-        let close_reason = run_session_loop(&app_handle, &sid, &mut channel, &mut rx, session).await;
+        let close_reason = run_session_loop(
+            &app_handle,
+            &sid,
+            &mut channel,
+            &mut rx,
+            session,
+            logger.as_deref(),
+        )
+        .await;
+        if let Some(l) = logger.as_ref() {
+            l.finalize();
+        }
         manager.sessions.lock().await.remove(&sid);
         let _ = app_handle.emit(
             "ssh-closed",
@@ -208,6 +227,7 @@ async fn run_session_loop(
     channel: &mut russh::Channel<client::Msg>,
     rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
     session: client::Handle<AcceptAllHandler>,
+    logger: Option<&SessionLogger>,
 ) -> String {
     loop {
         tokio::select! {
@@ -235,6 +255,7 @@ async fn run_session_loop(
                 let Some(msg) = msg else { return "server closed channel".into(); };
                 match msg {
                     ChannelMsg::Data { data } => {
+                        if let Some(l) = logger { l.append(&data); }
                         let _ = app.emit("ssh-data", DataEvent {
                             session_id: sid.to_string(),
                             data: data.to_vec(),
@@ -242,6 +263,7 @@ async fn run_session_loop(
                     }
                     ChannelMsg::ExtendedData { data, .. } => {
                         // stderr arrives here in some shells; merge into the same stream
+                        if let Some(l) = logger { l.append(&data); }
                         let _ = app.emit("ssh-data", DataEvent {
                             session_id: sid.to_string(),
                             data: data.to_vec(),

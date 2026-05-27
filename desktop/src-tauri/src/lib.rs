@@ -1,3 +1,4 @@
+mod history;
 mod ssh;
 mod sync;
 mod vault;
@@ -30,6 +31,11 @@ pub fn run() {
             sync::sync_lock,
             sync::sync_push,
             sync::sync_pull,
+            history::history_list,
+            history::history_read,
+            history::history_delete,
+            history::history_search,
+            history::history_export,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

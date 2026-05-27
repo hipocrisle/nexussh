@@ -227,6 +227,23 @@ export function BehaviorSection({ s, set, t }: Props) {
       </Row>
 
       <Row
+        label={tr("settings.behavior.putty_mouse")}
+        hint={tr("settings.behavior.putty_mouse_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.puttyMouse}
+          onChange={(v) => set({ puttyMouse: v })}
+          t={t}
+          label={tr("settings.behavior.putty_mouse_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      <Row
         label={tr("settings.behavior.advanced")}
         hint={tr("settings.behavior.advanced_hint")}
         t={t}

@@ -27,6 +27,9 @@ export interface NexuSettings {
   autoReconnect: boolean;
   confirmClose: boolean;
   advanced: boolean;
+  /** PuTTY-style mouse: selection auto-copies, right-click pastes
+   *  (Shift+right-click still shows the context menu). */
+  puttyMouse: boolean;
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -48,6 +51,7 @@ export const DEFAULTS: NexuSettings = {
   autoReconnect: false,
   confirmClose: true,
   advanced: false,
+  puttyMouse: false,
 };
 
 const STORAGE_KEY = "nexussh.settings.v1";

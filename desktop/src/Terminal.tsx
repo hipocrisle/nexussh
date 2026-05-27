@@ -54,6 +54,10 @@ export function TerminalView({
   // right-clicks, but we register the listener once at mount.
   const onContextMenuRef = useRef(onContextMenu);
   onContextMenuRef.current = onContextMenu;
+  // Latest settings via ref so the mount-once effects pick up changes to
+  // settings.puttyMouse without resubscribing every render.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   // Initialize terminal once per session — uses INITIAL settings; later
   // changes are pushed via the effects below.
@@ -98,11 +102,32 @@ export function TerminalView({
       capture: true,
     });
 
-    // Custom right-click menu — xterm-helper-textarea swallows native menu,
-    // and even if it didn't, the browser menu is "Writing Direction" garbage.
-    // Build a real terminal menu: Copy / Paste / Select All / Clear.
+    // PuTTY-style mouse — when enabled in Settings: selection auto-copies
+    // (keeping the visual selection), right-click pastes from clipboard
+    // immediately. Shift+right-click still opens the regular context menu.
+    const mouseupHandler = () => {
+      if (!settingsRef.current.puttyMouse) return;
+      // 0-ms timer lets xterm finalize its selection model first.
+      setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      }, 0);
+    };
+    containerRef.current.addEventListener("mouseup", mouseupHandler);
+
+    // Custom right-click — xterm-helper-textarea swallows native menu, and
+    // the browser menu is "Writing Direction" garbage anyway. Behaviour
+    // depends on settings.puttyMouse: instant paste vs Copy/Paste/Select
+    // All/Clear menu.
     const ctxHandler = (ev: MouseEvent) => {
       ev.preventDefault();
+      if (settingsRef.current.puttyMouse && !ev.shiftKey) {
+        navigator.clipboard
+          .readText()
+          .then((text) => text && term.paste(text))
+          .catch(() => {});
+        return;
+      }
       const tr = tRef.current;
       const selection = term.getSelection();
       const items: TerminalAction[] = [
@@ -193,6 +218,7 @@ export function TerminalView({
     return () => {
       window.removeEventListener("resize", onWinResize);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
+      containerRef.current?.removeEventListener("mouseup", mouseupHandler);
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();

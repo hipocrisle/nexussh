@@ -28,6 +28,9 @@ import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 
+// Local copy of the useSettings hook for the read-only transcript view —
+// only needs to react to puttyMouse / theme / font changes.
+
 interface MenuItem {
   label: string;
   onClick: () => void;
@@ -50,11 +53,13 @@ export function TranscriptOverlay({
   onContextMenu,
 }: Props) {
   const { t } = useTranslation();
+  const [settings] = useSettings();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const onContextMenuRef = useRef(onContextMenu);
   onContextMenuRef.current = onContextMenu;
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const [settings] = useSettings();
   const palette = THEMES[settings.theme];
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -101,6 +106,17 @@ export function TranscriptOverlay({
       passive: false,
       capture: true,
     });
+
+    // PuTTY-style auto-copy on selection release. Read-only view so no
+    // paste branch.
+    const mouseupHandler = () => {
+      if (!settingsRef.current.puttyMouse) return;
+      setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+      }, 0);
+    };
+    containerRef.current.addEventListener("mouseup", mouseupHandler);
 
     // Right-click → Copy / Select All (no Paste — read-only)
     const ctxHandler = (ev: MouseEvent) => {
@@ -152,6 +168,7 @@ export function TranscriptOverlay({
       window.removeEventListener("resize", onWin);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("contextmenu", ctxHandler);
+      containerRef.current?.removeEventListener("mouseup", mouseupHandler);
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

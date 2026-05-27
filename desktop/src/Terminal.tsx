@@ -85,11 +85,31 @@ export function TerminalView({
     // behavior translates wheel events into `\x1bOA`/`\x1bOB` when the remote
     // is in alt-screen mode (Claude Code, vim, htop, less, tmux), which is
     // disorienting for users expecting browser-like scroll.
+    //
+    // We attach BOTH the xterm custom handler AND a native capture-phase
+    // listener on the container. The xterm handler covers the case where
+    // wheel events go through xterm's own machinery; the native handler
+    // catches events that xterm's canvas absorbs before its handler runs.
+    // Belt-and-suspenders because the v0.0.2 version only used the xterm
+    // hook and it silently no-op'd in alt-screen mode.
+    const scrollByWheel = (deltaY: number) => {
+      if (deltaY === 0) return;
+      const lines = Math.max(1, Math.round(Math.abs(deltaY) / 24));
+      term.scrollLines(deltaY > 0 ? lines : -lines);
+    };
     term.attachCustomWheelEventHandler((ev: WheelEvent) => {
-      const lines = Math.max(1, Math.round(Math.abs(ev.deltaY) / 24));
-      term.scrollLines(ev.deltaY > 0 ? lines : -lines);
+      scrollByWheel(ev.deltaY);
       ev.preventDefault();
       return false;
+    });
+    const nativeWheel = (ev: WheelEvent) => {
+      scrollByWheel(ev.deltaY);
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    containerRef.current.addEventListener("wheel", nativeWheel, {
+      passive: false,
+      capture: true,
     });
 
     const onDataDisposable = term.onData((data) => {
@@ -118,6 +138,7 @@ export function TerminalView({
 
     return () => {
       window.removeEventListener("resize", onWinResize);
+      containerRef.current?.removeEventListener("wheel", nativeWheel, true as any);
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();
@@ -138,6 +159,17 @@ export function TerminalView({
       termRef.current?.focus();
     });
   }, [visible]);
+
+  // Re-fit on container ResizeObserver — covers sidebar collapse and any
+  // other layout change that resizes our slot without firing window resize.
+  useEffect(() => {
+    if (!containerRef.current || !fitRef.current) return;
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(() => fitRef.current?.fit());
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <div

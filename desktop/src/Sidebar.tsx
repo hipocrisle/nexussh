@@ -1,25 +1,41 @@
 // Sidebar — host list, search, add button, collapsible groups, collapsible itself.
+//
+// Click semantics:
+//   Single click on host  → select (highlight + parent shows info card)
+//   Double click on host  → connect (open new tab)
+//   Right click on host   → context menu (Connect / Edit / Duplicate / Move / Delete)
+//   Right click on folder → context menu (Rename / Delete)
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Plus,
   Search,
   Server,
-  Pencil,
-  Trash2,
   ChevronDown,
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import { HostRecord, listHosts, deleteHost } from "./hosts";
+import {
+  HostRecord,
+  listHosts,
+  deleteHost,
+  renameFolder,
+  deleteFolder,
+  moveHostToFolder,
+} from "./hosts";
 import { HostDialog } from "./HostDialog";
+import { MenuItem } from "./ContextMenu";
 
 interface Props {
   onConnect: (h: HostRecord) => void;
+  onSelect?: (h: HostRecord) => void;
+  selectedId?: string | null;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Parent renders the menu — sidebar just emits coords + items. */
+  onContextMenu?: (x: number, y: number, items: MenuItem[]) => void;
 }
 
 const COLLAPSED_GROUPS_LS = "nexussh.collapsedGroups";
@@ -38,7 +54,14 @@ function writeCollapsedGroups(s: Set<string>) {
   localStorage.setItem(COLLAPSED_GROUPS_LS, JSON.stringify(Array.from(s)));
 }
 
-export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
+export function Sidebar({
+  onConnect,
+  onSelect,
+  selectedId,
+  collapsed,
+  onToggleCollapsed,
+  onContextMenu,
+}: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [filter, setFilter] = useState("");
@@ -49,11 +72,11 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
     readCollapsedGroups(),
   );
 
-  const reload = async () => setHosts(await listHosts());
+  const reload = useCallback(async () => setHosts(await listHosts()), []);
 
   useEffect(() => {
     reload();
-  }, []);
+  }, [reload]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -67,10 +90,12 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
     );
   }, [hosts, filter]);
 
+  const ungroupedLabel = t("sidebar.no_group");
+
   const groups = useMemo(() => {
     const m = new Map<string, HostRecord[]>();
     for (const h of filtered) {
-      const g = h.group ?? t("sidebar.no_group");
+      const g = h.group ?? ungroupedLabel;
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(h);
     }
@@ -85,7 +110,15 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
       });
     }
     return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered, t]);
+  }, [filtered, ungroupedLabel]);
+
+  const knownGroups = useMemo(
+    () =>
+      Array.from(
+        new Set(hosts.map((h) => h.group).filter(Boolean) as string[]),
+      ),
+    [hosts],
+  );
 
   function toggleGroup(g: string) {
     setCollapsedGroups((prev) => {
@@ -97,16 +130,116 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
     });
   }
 
-  async function remove(h: HostRecord) {
+  async function onRemoveHost(h: HostRecord) {
     if (!confirm(t("dialog.delete_confirm", { name: h.name }))) return;
     await deleteHost(h.id);
     reload();
   }
 
+  function onHostContextMenu(e: React.MouseEvent, h: HostRecord) {
+    e.preventDefault();
+    e.stopPropagation();
+    const moveItems: MenuItem[] = knownGroups
+      .filter((g) => g !== h.group)
+      .map((g) => ({
+        label: g,
+        onClick: async () => {
+          await moveHostToFolder(h.id, g);
+          reload();
+        },
+      }));
+    moveItems.push({
+      label: t("sidebar.move_ungroup"),
+      onClick: async () => {
+        await moveHostToFolder(h.id, null);
+        reload();
+      },
+      disabled: !h.group,
+    });
+    moveItems.push({
+      label: t("sidebar.move_new_folder"),
+      onClick: async () => {
+        const name = window.prompt(t("sidebar.new_folder_prompt"));
+        if (name && name.trim()) {
+          await moveHostToFolder(h.id, name.trim());
+          reload();
+        }
+      },
+    });
+
+    onContextMenu?.(e.clientX, e.clientY, [
+      { label: t("sidebar.menu_connect"), onClick: () => onConnect(h) },
+      { label: t("sidebar.menu_edit"), onClick: () => setDialog({ kind: "edit", rec: h }) },
+      {
+        label: t("sidebar.menu_duplicate"),
+        onClick: async () => {
+          const copy: HostRecord = {
+            ...h,
+            id: "h-" + crypto.randomUUID(),
+            name: h.name + " (копия)",
+            lastUsedAt: undefined,
+          };
+          const { saveHost } = await import("./hosts");
+          await saveHost(copy);
+          reload();
+        },
+      },
+      { separator: true, label: "" },
+      ...moveItems,
+      { separator: true, label: "" },
+      {
+        label: t("sidebar.menu_delete"),
+        onClick: () => onRemoveHost(h),
+        destructive: true,
+      },
+    ]);
+  }
+
+  function onFolderContextMenu(e: React.MouseEvent, group: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Don't allow rename/delete on the synthetic "ungrouped" bucket.
+    if (group === ungroupedLabel) {
+      onContextMenu?.(e.clientX, e.clientY, [
+        {
+          label: t("sidebar.menu_collapse_group"),
+          onClick: () => toggleGroup(group),
+        },
+      ]);
+      return;
+    }
+    onContextMenu?.(e.clientX, e.clientY, [
+      {
+        label: t("sidebar.menu_rename_folder"),
+        onClick: async () => {
+          const name = window.prompt(t("sidebar.rename_folder_prompt"), group);
+          if (name && name.trim() && name.trim() !== group) {
+            await renameFolder(group, name.trim());
+            reload();
+          }
+        },
+      },
+      {
+        label: t("sidebar.menu_collapse_group"),
+        onClick: () => toggleGroup(group),
+      },
+      { separator: true, label: "" },
+      {
+        label: t("sidebar.menu_delete_folder"),
+        onClick: async () => {
+          if (!confirm(t("sidebar.delete_folder_confirm", { name: group })))
+            return;
+          await deleteFolder(group);
+          reload();
+        },
+        destructive: true,
+      },
+    ]);
+  }
+
   if (collapsed) {
-    // Rail mode: just a re-open button + add button
     return (
-      <aside className="w-10 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col items-center py-2 gap-2">
+      <aside className="w-10 shrink-0 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col items-center py-2 gap-2">
         <button
           onClick={onToggleCollapsed}
           title={t("sidebar.expand")}
@@ -123,6 +256,7 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
         </button>
         {dialog?.kind === "add" && (
           <HostDialog
+            knownGroups={knownGroups}
             onClose={() => setDialog(null)}
             onSaved={() => {
               setDialog(null);
@@ -135,7 +269,7 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
   }
 
   return (
-    <aside className="w-64 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col">
+    <aside className="w-64 shrink-0 h-full bg-[#080b0b] border-r border-[#1f3a3a] flex flex-col">
       <div className="p-3 border-b border-[#1f3a3a] flex gap-2 items-center">
         <Search size={14} className="text-[#4a5560]" />
         <input
@@ -180,6 +314,7 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
             <div key={g} className="mb-1">
               <button
                 onClick={() => toggleGroup(g)}
+                onContextMenu={(e) => onFolderContextMenu(e, g)}
                 className="w-full px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[#4a5560] font-mono hover:bg-[#0e1414] hover:text-[#7fd7ff]"
               >
                 {isCollapsed ? (
@@ -191,45 +326,41 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
                 <span className="ml-auto text-[#4a5560]">{list.length}</span>
               </button>
               {!isCollapsed &&
-                list.map((h) => (
-                  <div
-                    key={h.id}
-                    className="group px-3 py-1.5 flex items-center gap-2 hover:bg-[#0e1414] cursor-pointer"
-                    onClick={() => onConnect(h)}
-                  >
-                    <Server size={12} className="text-[#5cc8ff] shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-[#c9d1d9] font-mono text-sm truncate">
-                        {h.name}
-                      </div>
-                      <div className="text-[#4a5560] font-mono text-xs truncate">
-                        {h.user}@{h.host}:{h.port}
+                list.map((h) => {
+                  const isSelected = selectedId === h.id;
+                  return (
+                    <div
+                      key={h.id}
+                      onClick={() => onSelect?.(h)}
+                      onDoubleClick={() => onConnect(h)}
+                      onContextMenu={(e) => onHostContextMenu(e, h)}
+                      title={t("sidebar.host_hint")}
+                      className={
+                        "group px-3 py-1.5 flex items-center gap-2 cursor-pointer " +
+                        (isSelected
+                          ? "bg-[#0e1414] border-l-2 border-[#00ff95]"
+                          : "hover:bg-[#0e1414] border-l-2 border-transparent")
+                      }
+                    >
+                      <Server
+                        size={12}
+                        className={
+                          isSelected
+                            ? "text-[#00ff95] shrink-0"
+                            : "text-[#5cc8ff] shrink-0"
+                        }
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[#c9d1d9] font-mono text-sm truncate">
+                          {h.name}
+                        </div>
+                        <div className="text-[#4a5560] font-mono text-xs truncate">
+                          {h.user}@{h.host}:{h.port}
+                        </div>
                       </div>
                     </div>
-                    <div className="opacity-0 group-hover:opacity-100 flex gap-1 transition-opacity">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDialog({ kind: "edit", rec: h });
-                        }}
-                        className="text-[#7fd7ff] hover:text-[#00ff95]"
-                        title={t("sidebar.edit")}
-                      >
-                        <Pencil size={12} />
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          remove(h);
-                        }}
-                        className="text-[#ff6b6b]/70 hover:text-[#ff6b6b]"
-                        title={t("sidebar.delete")}
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           );
         })}
@@ -237,7 +368,7 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
 
       {dialog?.kind === "add" && (
         <HostDialog
-          knownGroups={Array.from(new Set(hosts.map((h) => h.group).filter(Boolean) as string[]))}
+          knownGroups={knownGroups}
           onClose={() => setDialog(null)}
           onSaved={() => {
             setDialog(null);
@@ -248,7 +379,7 @@ export function Sidebar({ onConnect, collapsed, onToggleCollapsed }: Props) {
       {dialog?.kind === "edit" && (
         <HostDialog
           initial={dialog.rec}
-          knownGroups={Array.from(new Set(hosts.map((h) => h.group).filter(Boolean) as string[]))}
+          knownGroups={knownGroups}
           onClose={() => setDialog(null)}
           onSaved={() => {
             setDialog(null);

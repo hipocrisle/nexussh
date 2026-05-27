@@ -11,6 +11,9 @@ export interface HistoryEntry {
   ended_at: string | null;
   byte_count: number;
   still_active: boolean;
+  /** Terminal dimensions at session start. May be 0 for legacy sessions. */
+  cols: number;
+  rows: number;
 }
 
 export interface SearchHit {

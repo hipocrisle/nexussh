@@ -1,4 +1,5 @@
 // TabBar — horizontal list of open terminal tabs + `+` to open a new tab.
+// Right-click on a tab opens a context menu (rename / restart / close).
 
 import { X, Loader2, Wifi, WifiOff, Plus } from "lucide-react";
 
@@ -14,9 +15,18 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
+  /** Right-click handler — parent draws the context menu. */
+  onContextMenu?: (id: string, x: number, y: number) => void;
 }
 
-export function TabBar({ tabs, activeId, onSelect, onClose, onNewTab }: Props) {
+export function TabBar({
+  tabs,
+  activeId,
+  onSelect,
+  onClose,
+  onNewTab,
+  onContextMenu,
+}: Props) {
   return (
     <div className="h-9 flex items-center bg-[#080b0b] border-b border-[#1f3a3a]">
       <div className="flex-1 min-w-0 overflow-x-auto flex items-center h-full">
@@ -26,6 +36,10 @@ export function TabBar({ tabs, activeId, onSelect, onClose, onNewTab }: Props) {
             <div
               key={t.id}
               onClick={() => onSelect(t.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onContextMenu?.(t.id, e.clientX, e.clientY);
+              }}
               className={
                 "h-full px-3 flex items-center gap-2 cursor-pointer border-r border-[#1f3a3a] min-w-0 shrink-0 " +
                 (active

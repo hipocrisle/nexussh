@@ -56,6 +56,10 @@ pub struct SessionMeta {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub byte_count: u64,
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +72,8 @@ pub struct HistoryEntry {
     pub ended_at: Option<String>,
     pub byte_count: u64,
     pub still_active: bool,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +150,8 @@ impl SessionLogger {
             started_at: iso_now(),
             ended_at: None,
             byte_count: 0,
+            cols,
+            rows,
         };
         std::fs::write(&meta_path, serde_json::to_vec_pretty(&meta)?)?;
         Ok(Self {
@@ -237,6 +245,8 @@ pub async fn history_list(app: AppHandle) -> Result<Vec<HistoryEntry>, HistoryEr
             ended_at: meta.ended_at,
             byte_count: meta.byte_count,
             still_active,
+            cols: meta.cols,
+            rows: meta.rows,
         });
     }
     // Latest first

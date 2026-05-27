@@ -10,6 +10,9 @@ import { SyncPanel } from "./SyncPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { TabPicker } from "./TabPicker";
 import { UpdatePanel } from "./UpdatePanel";
+import { ContextMenu, MenuItem } from "./ContextMenu";
+import { HostInfoCard } from "./HostInfoCard";
+import { HostDialog } from "./HostDialog";
 import {
   UpdateInfo,
   maybeAutoCheck,
@@ -64,6 +67,13 @@ function App() {
   const [updatePanel, setUpdatePanel] = useState<
     null | { initial?: UpdateInfo | null }
   >(null);
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    items: MenuItem[];
+  } | null>(null);
+  const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
+  const [editHost, setEditHost] = useState<HostRecord | null>(null);
   const [autoUpdate, setAutoUpdate] = useState<boolean>(isAutoCheckEnabled());
 
   function toggleSidebar() {
@@ -97,6 +107,23 @@ function App() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Suppress the default WebView2/WebKit context menu (Reload, Save As HTML,
+  // Print, "Share" tools…) — our app provides its own context menus where
+  // they belong. Without this, right-click anywhere outside the terminal
+  // pops up a browser dev menu.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      // Allow native menu inside <input>/<textarea> so users keep copy/paste
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+        return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener("contextmenu", handler);
+    return () => window.removeEventListener("contextmenu", handler);
   }, []);
 
   function toggleAdvanced() {
@@ -139,6 +166,77 @@ function App() {
       setTabs((tabs) => tabs.filter((x) => x.id !== pending.id));
       setError(String(e));
     }
+  }
+
+  async function restartSession(tabId: string) {
+    const tab = tabs.find((x) => x.id === tabId);
+    if (!tab) return;
+    // Disconnect existing session if alive (ignore errors on already-closed).
+    if (tab.status === "connected") {
+      sshDisconnect(tabId).catch(() => {});
+    }
+    // Mark as connecting in-place while we redial.
+    setTabs((all) =>
+      all.map((x) =>
+        x.id === tabId ? { ...x, status: "connecting" as const } : x,
+      ),
+    );
+    try {
+      const sid = await sshConnect({
+        host: tab.host.host,
+        port: tab.host.port,
+        user: tab.host.user,
+        auth: tab.host.auth,
+      });
+      bumpLastUsed(tab.host.id).catch(() => {});
+      setTabs((all) =>
+        all.map((x) =>
+          x.id === tabId ? { ...x, id: sid, status: "connected" as const } : x,
+        ),
+      );
+      setActiveId(sid);
+    } catch (e) {
+      setError(String(e));
+      setTabs((all) =>
+        all.map((x) =>
+          x.id === tabId ? { ...x, status: "closed" as const } : x,
+        ),
+      );
+    }
+  }
+
+  function onTabContextMenu(tabId: string, x: number, y: number) {
+    const tab = tabs.find((x) => x.id === tabId);
+    if (!tab) return;
+    setMenu({
+      x,
+      y,
+      items: [
+        {
+          label: t("tabmenu.restart"),
+          onClick: () => restartSession(tabId),
+          disabled: tab.status === "connecting",
+        },
+        {
+          label: t("tabmenu.duplicate"),
+          onClick: () => openHost(tab.host),
+        },
+        { separator: true, label: "" },
+        {
+          label: t("tabmenu.close"),
+          onClick: () => closeTab(tabId),
+          destructive: true,
+        },
+        {
+          label: t("tabmenu.close_others"),
+          onClick: () => {
+            tabs.filter((x) => x.id !== tabId).forEach((x) => closeTab(x.id));
+          },
+          disabled: tabs.length <= 1,
+          destructive: true,
+        },
+      ],
+    });
   }
 
   async function closeTab(id: string) {
@@ -300,8 +398,11 @@ function App() {
       <div className="flex-1 min-h-0 flex">
         <Sidebar
           onConnect={openHost}
+          onSelect={setSelectedHost}
+          selectedId={selectedHost?.id ?? null}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={toggleSidebar}
+          onContextMenu={(x, y, items) => setMenu({ x, y, items })}
         />
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
@@ -310,9 +411,10 @@ function App() {
             onSelect={setActiveId}
             onClose={closeTab}
             onNewTab={() => setPickerOpen(true)}
+            onContextMenu={onTabContextMenu}
           />
           <div className="flex-1 min-h-0 relative">
-            {tabs.length === 0 && (
+            {tabs.length === 0 && !selectedHost && (
               <div className="absolute inset-0 flex items-center justify-center text-[#4a5560] font-mono text-sm pointer-events-none">
                 {error ? (
                   <div className="text-[#ff6b6b] max-w-md text-center">
@@ -322,6 +424,13 @@ function App() {
                   <span>&gt; {t("terminal.select_host")}</span>
                 )}
               </div>
+            )}
+            {tabs.length === 0 && selectedHost && (
+              <HostInfoCard
+                host={selectedHost}
+                onConnect={() => openHost(selectedHost)}
+                onEdit={() => setEditHost(selectedHost)}
+              />
             )}
             {tabs.map((t_) =>
               t_.status === "connecting" ? (
@@ -375,6 +484,24 @@ function App() {
         <UpdatePanel
           initial={updatePanel.initial}
           onClose={() => setUpdatePanel(null)}
+        />
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menu.items}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {editHost && (
+        <HostDialog
+          initial={editHost}
+          onClose={() => setEditHost(null)}
+          onSaved={(saved) => {
+            setSelectedHost(saved);
+            setEditHost(null);
+          }}
         />
       )}
     </main>

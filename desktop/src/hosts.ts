@@ -89,3 +89,44 @@ export function newHostId(): string {
   // Simple UUIDv4 without external dep
   return "h-" + crypto.randomUUID();
 }
+
+/** Rename a folder — updates `group` field of every host that was in it. */
+export async function renameFolder(
+  oldName: string,
+  newName: string,
+): Promise<void> {
+  const all = await listHosts();
+  const touched: HostRecord[] = [];
+  for (const h of all) {
+    if (h.group === oldName) {
+      h.group = newName;
+      touched.push(h);
+    }
+  }
+  for (const h of touched) await saveHost(h);
+}
+
+/** Delete a folder — moves its hosts to "ungrouped". Does not delete hosts. */
+export async function deleteFolder(name: string): Promise<void> {
+  const all = await listHosts();
+  const touched: HostRecord[] = [];
+  for (const h of all) {
+    if (h.group === name) {
+      h.group = undefined;
+      touched.push(h);
+    }
+  }
+  for (const h of touched) await saveHost(h);
+}
+
+/** Move a single host into a folder. Pass null to ungroup. */
+export async function moveHostToFolder(
+  hostId: string,
+  folder: string | null,
+): Promise<void> {
+  const all = await listHosts();
+  const h = all.find((x) => x.id === hostId);
+  if (!h) return;
+  h.group = folder ?? undefined;
+  await saveHost(h);
+}

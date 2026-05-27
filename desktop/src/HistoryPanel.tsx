@@ -124,6 +124,7 @@ export function HistoryPanel({ onClose }: Props) {
       scrollback: 1_000_000,
       disableStdin: true,
       allowProposedApi: true,
+      convertEol: false,
     });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -156,12 +157,47 @@ export function HistoryPanel({ onClose }: Props) {
     if (!term) return;
     term.reset();
     if (!events) return;
-    for (const ev of events) {
-      term.write(filterAltBuffer(ev.d));
+
+    // Match the original session's terminal width so wrapped lines render
+    // where they were wrapped originally. Without this, the viewer's default
+    // 80-col grid cuts long lines that the recorded shell rendered at 120+.
+    const meta = entries.find((e) => e.session_id === selectedId);
+    const cols = meta?.cols && meta.cols > 0 ? meta.cols : 120;
+    const rows = meta?.rows && meta.rows > 0 ? meta.rows : 30;
+    try {
+      term.resize(cols, rows);
+    } catch {
+      /* xterm may throw if dims invalid — fallback to default */
     }
+
+    // Replay with a simple consecutive-line dedup: Claude Code's streaming
+    // responses often emit the same paragraph multiple times as the model
+    // re-flows text. We accumulate output into a buffer and skip lines that
+    // are byte-identical to the immediately preceding one.
+    let prevLine = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        // Dedup: if non-empty line equals previous and is followed by newline,
+        // collapse it. Keep cursor-positioning lines as-is (they don't end
+        // with \n so won't match the dedup branch).
+        if (line && sep && line === prevLine) {
+          // skip the duplicate line + its newline
+          continue;
+        }
+        term.write(line + sep);
+        if (sep) prevLine = line;
+      }
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
+    }
+
     term.scrollToTop();
-    requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events]);
+    // Do NOT call fit() here — we want to preserve the session's cols/rows.
+  }, [events, entries, selectedId]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {

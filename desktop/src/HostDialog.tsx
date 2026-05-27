@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { HostRecord, saveHost, newHostId } from "./hosts";
 import { vaultKeys } from "./vault";
+import { useSettings } from "./settings/settings-store";
 
 type AuthKind = "password" | "key" | "vault";
 
@@ -20,10 +21,11 @@ interface Props {
 
 export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Props) {
   const { t } = useTranslation();
+  const [settings] = useSettings();
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
-  const [port, setPort] = useState(22);
-  const [user, setUser] = useState("");
+  const [port, setPort] = useState(settings.defaultPort);
+  const [user, setUser] = useState(settings.defaultUser);
   const [group, setGroup] = useState("");
   const [note, setNote] = useState("");
   const [authKind, setAuthKind] = useState<AuthKind>("password");
@@ -39,8 +41,8 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
     if (!initial) return;
     setName(initial.name);
     setHost(initial.host);
-    setPort(initial.port);
-    setUser(initial.user);
+    setPort(initial.port || settings.defaultPort);
+    setUser(initial.user || settings.defaultUser);
     setGroup(initial.group ?? "");
     setNote(initial.note ?? "");
     setAuthKind(initial.auth.kind);
@@ -144,7 +146,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
               <input
                 type="number"
                 value={port}
-                onChange={(e) => setPort(parseInt(e.target.value) || 22)}
+                onChange={(e) => setPort(parseInt(e.target.value) || settings.defaultPort)}
                 className={inputBase}
               />
             </div>

@@ -15,6 +15,9 @@ import {
   onSshData,
   onSshClosed,
 } from "./ssh";
+import { useSettings } from "./settings/settings-store";
+import { THEMES, xtermThemeOf } from "./settings/themes";
+import { fontStackOf } from "./settings/fonts";
 
 interface Props {
   sessionId: string;
@@ -23,36 +26,13 @@ interface Props {
   onSessionClosed?: (reason: string) => void;
 }
 
-const MATRIX_THEME = {
-  background: "#0a0e0e",
-  foreground: "#c9d1d9",
-  cursor: "#00ff95",
-  cursorAccent: "#0a0e0e",
-  selectionBackground: "#1f3a3a",
-  black: "#0a0e0e",
-  red: "#ff6b6b",
-  green: "#00ff95",
-  yellow: "#f5d76e",
-  blue: "#5cc8ff",
-  magenta: "#d391ff",
-  cyan: "#00d4ff",
-  white: "#c9d1d9",
-  brightBlack: "#4a5560",
-  brightRed: "#ff8e8e",
-  brightGreen: "#5fffb4",
-  brightYellow: "#ffe28a",
-  brightBlue: "#7fd7ff",
-  brightMagenta: "#e1b3ff",
-  brightCyan: "#5feaff",
-  brightWhite: "#ffffff",
-};
-
 export function TerminalView({
   sessionId,
   visible,
   onSessionClosed,
 }: Props) {
   const { t } = useTranslation();
+  const [settings] = useSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -60,14 +40,16 @@ export function TerminalView({
   const tRef = useRef(t);
   tRef.current = t;
 
-  // Initialize terminal once per session
+  // Initialize terminal once per session — uses INITIAL settings; later
+  // changes are pushed via the effects below.
   useEffect(() => {
     if (!containerRef.current) return;
+    const initialTheme = THEMES[settings.theme];
 
     const term = new Terminal({
-      theme: MATRIX_THEME,
-      fontFamily: '"JetBrains Mono", "Fira Code", monospace',
-      fontSize: 14,
+      theme: xtermThemeOf(initialTheme),
+      fontFamily: fontStackOf(settings.font),
+      fontSize: settings.fontSize,
       cursorBlink: true,
       scrollback: 100_000,
       allowProposedApi: true,
@@ -79,38 +61,6 @@ export function TerminalView({
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
-
-    // Hijack mouse wheel — always scroll the terminal buffer instead of
-    // sending arrow-key escape sequences to the remote app. Default xterm.js
-    // behavior translates wheel events into `\x1bOA`/`\x1bOB` when the remote
-    // is in alt-screen mode (Claude Code, vim, htop, less, tmux), which is
-    // disorienting for users expecting browser-like scroll.
-    //
-    // We attach BOTH the xterm custom handler AND a native capture-phase
-    // listener on the container. The xterm handler covers the case where
-    // wheel events go through xterm's own machinery; the native handler
-    // catches events that xterm's canvas absorbs before its handler runs.
-    // Belt-and-suspenders because the v0.0.2 version only used the xterm
-    // hook and it silently no-op'd in alt-screen mode.
-    const scrollByWheel = (deltaY: number) => {
-      if (deltaY === 0) return;
-      const lines = Math.max(1, Math.round(Math.abs(deltaY) / 24));
-      term.scrollLines(deltaY > 0 ? lines : -lines);
-    };
-    term.attachCustomWheelEventHandler((ev: WheelEvent) => {
-      scrollByWheel(ev.deltaY);
-      ev.preventDefault();
-      return false;
-    });
-    const nativeWheel = (ev: WheelEvent) => {
-      scrollByWheel(ev.deltaY);
-      ev.preventDefault();
-      ev.stopPropagation();
-    };
-    containerRef.current.addEventListener("wheel", nativeWheel, {
-      passive: false,
-      capture: true,
-    });
 
     const onDataDisposable = term.onData((data) => {
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
@@ -138,7 +88,6 @@ export function TerminalView({
 
     return () => {
       window.removeEventListener("resize", onWinResize);
-      containerRef.current?.removeEventListener("wheel", nativeWheel, true as any);
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();
@@ -171,11 +120,29 @@ export function TerminalView({
     return () => ro.disconnect();
   }, []);
 
+  // Apply theme changes live to the running xterm instance.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const palette = THEMES[settings.theme];
+    term.options.theme = xtermThemeOf(palette);
+  }, [settings.theme]);
+
+  // Apply font family/size changes live.
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.fontFamily = fontStackOf(settings.font);
+    term.options.fontSize = settings.fontSize;
+    requestAnimationFrame(() => fitRef.current?.fit());
+  }, [settings.font, settings.fontSize]);
+
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-[#0a0e0e]"
+      className="w-full h-full"
       style={{
+        background: THEMES[settings.theme].bgBase,
         display: visible ? "block" : "none",
         minHeight: 0,
       }}

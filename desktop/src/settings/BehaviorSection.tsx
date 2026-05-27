@@ -1,0 +1,273 @@
+// Behavior section — defaults, sessions, advanced toggle, about.
+
+import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { ExternalLink } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { ThemePalette } from "./themes";
+import {
+  Section,
+  Row,
+  Toggle,
+  Slider,
+  NumField,
+  TextField,
+} from "./primitives";
+import type { NexuSettings } from "./settings-store";
+import { getVersion } from "@tauri-apps/api/app";
+
+interface Props {
+  s: NexuSettings;
+  set: (patch: Partial<NexuSettings>) => void;
+  t: ThemePalette;
+}
+
+const REPO_URL = "https://github.com/hipocrisle/nexussh";
+const RELEASES_URL = "https://github.com/hipocrisle/nexussh/releases";
+const ISSUES_URL = "https://github.com/hipocrisle/nexussh/issues/new";
+
+export function BehaviorSection({ s, set, t }: Props) {
+  const { t: tr } = useTranslation();
+  const [version, setVersion] = useState<string>("");
+
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
+  }, []);
+
+  function externalLink(href: string, label: string) {
+    return (
+      <a
+        href={href}
+        onClick={(e) => {
+          e.preventDefault();
+          openUrl(href).catch(() => {});
+        }}
+        className="inline-flex items-center gap-1 hover:underline cursor-pointer"
+        style={{ color: t.textSoft }}
+      >
+        {label} <ExternalLink size={11} />
+      </a>
+    );
+  }
+
+  return (
+    <Section
+      id="behavior"
+      kicker={tr("settings.behavior.kicker")}
+      label={tr("settings.behavior.section")}
+      t={t}
+    >
+      <Row
+        label={tr("settings.behavior.port")}
+        hint={tr("settings.behavior.port_hint")}
+        t={t}
+      >
+        <NumField
+          value={s.defaultPort}
+          onChange={(v) => set({ defaultPort: v })}
+          suffix="tcp"
+          min={1}
+          max={65535}
+          t={t}
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.user")}
+        hint={tr("settings.behavior.user_hint")}
+        t={t}
+      >
+        <div className="max-w-xs">
+          <TextField
+            value={s.defaultUser}
+            onChange={(v) => set({ defaultUser: v })}
+            placeholder="root"
+            t={t}
+          />
+        </div>
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.timeout")}
+        hint={tr("settings.behavior.timeout_hint")}
+        t={t}
+      >
+        <Slider
+          value={s.timeout}
+          onChange={(v) => set({ timeout: v })}
+          min={5}
+          max={60}
+          t={t}
+          format={(v) => `${v}s`}
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.keepalive")}
+        hint={tr("settings.behavior.keepalive_hint")}
+        t={t}
+      >
+        <Slider
+          value={s.keepalive}
+          onChange={(v) => set({ keepalive: v })}
+          min={0}
+          max={120}
+          step={5}
+          t={t}
+          format={(v) =>
+            v === 0 ? tr("settings.behavior.keepalive_off") : `${v}s`
+          }
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.click")}
+        hint={tr("settings.behavior.click_hint")}
+        t={t}
+      >
+        <div className="space-y-2">
+          {(
+            [
+              {
+                id: "connect" as const,
+                label: tr("settings.behavior.click_connect"),
+                sub: tr("settings.behavior.click_connect_sub"),
+              },
+              {
+                id: "select" as const,
+                label: tr("settings.behavior.click_select"),
+                sub: tr("settings.behavior.click_select_sub"),
+              },
+            ]
+          ).map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => set({ clickMode: opt.id })}
+              className="w-full text-left rounded p-3 transition-colors flex items-start gap-3 cursor-pointer"
+              style={{
+                background: s.clickMode === opt.id ? t.bgPanel : "transparent",
+                border: `1px solid ${s.clickMode === opt.id ? t.accent : t.border}`,
+              }}
+            >
+              <span
+                className="mt-0.5 w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center"
+                style={{
+                  borderColor:
+                    s.clickMode === opt.id ? t.accent : t.textMuted,
+                }}
+              >
+                {s.clickMode === opt.id && (
+                  <span
+                    className="w-1.5 h-1.5 rounded-full"
+                    style={{ background: t.accent }}
+                  />
+                )}
+              </span>
+              <div className="font-mono text-xs">
+                <div style={{ color: t.textPrimary }}>{opt.label}</div>
+                <div className="text-[11px] mt-0.5" style={{ color: t.textMuted }}>
+                  {opt.sub}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.restore")}
+        hint={tr("settings.behavior.restore_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.restoreSession}
+          onChange={(v) => set({ restoreSession: v })}
+          t={t}
+          label={tr("settings.behavior.restore_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.reconnect")}
+        hint={tr("settings.behavior.reconnect_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.autoReconnect}
+          onChange={(v) => set({ autoReconnect: v })}
+          t={t}
+          label={tr("settings.behavior.reconnect_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.confirm")}
+        hint={tr("settings.behavior.confirm_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.confirmClose}
+          onChange={(v) => set({ confirmClose: v })}
+          t={t}
+          label={tr("settings.behavior.confirm_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.advanced")}
+        hint={tr("settings.behavior.advanced_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.advanced}
+          onChange={(v) => set({ advanced: v })}
+          t={t}
+          label={tr("settings.behavior.advanced_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      <div className="pt-4 mt-2 grid grid-cols-[200px_1fr] gap-6">
+        <div
+          className="font-mono text-xs uppercase tracking-wider"
+          style={{ color: t.textSoft }}
+        >
+          {tr("settings.behavior.about")}
+        </div>
+        <div
+          className="font-mono text-xs space-y-2"
+          style={{ color: t.textMuted }}
+        >
+          <div>
+            <span style={{ color: t.textPrimary }}>NexuSSH</span> v{version} —{" "}
+            {tr("settings.behavior.about_built", {
+              date: new Date().toISOString().slice(0, 10),
+            })}
+          </div>
+          <div>{tr("settings.behavior.about_license")}</div>
+          <div className="flex gap-4 pt-1 flex-wrap">
+            {externalLink(REPO_URL, tr("settings.behavior.about_github"))}
+            {externalLink(RELEASES_URL, tr("settings.behavior.about_release"))}
+            {externalLink(ISSUES_URL, tr("settings.behavior.about_bug"))}
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+}

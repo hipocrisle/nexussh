@@ -1,6 +1,13 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Lock, Unlock, KeyRound, RefreshCw, History, Settings } from "lucide-react";
+import {
+  Lock,
+  Unlock,
+  KeyRound,
+  RefreshCw,
+  History,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar, TabInfo } from "./TabBar";
 import { TerminalView } from "./Terminal";
@@ -13,33 +20,24 @@ import { UpdatePanel } from "./UpdatePanel";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
-import {
-  UpdateInfo,
-  maybeAutoCheck,
-  isAutoCheckEnabled,
-  setAutoCheckEnabled,
-} from "./updater";
+import { SettingsScreen } from "./SettingsScreen";
+import { useSettings } from "./settings/settings-store";
+import { THEMES } from "./settings/themes";
+import { fontStackOf } from "./settings/fonts";
+import { MatrixRain } from "./settings/MatrixRain";
+import { UpdateInfo, maybeAutoCheck } from "./updater";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
+import { getVersion } from "@tauri-apps/api/app";
 import "./App.css";
 
-const ADVANCED_LS_KEY = "nexussh.advanced";
 const SIDEBAR_COLLAPSED_LS_KEY = "nexussh.sidebarCollapsed";
-
-function readAdvanced(): boolean {
-  return localStorage.getItem(ADVANCED_LS_KEY) === "1";
-}
-
-function writeAdvanced(v: boolean) {
-  localStorage.setItem(ADVANCED_LS_KEY, v ? "1" : "0");
-}
 
 function readSidebarCollapsed(): boolean {
   return localStorage.getItem(SIDEBAR_COLLAPSED_LS_KEY) === "1";
 }
-
 function writeSidebarCollapsed(v: boolean) {
   localStorage.setItem(SIDEBAR_COLLAPSED_LS_KEY, v ? "1" : "0");
 }
@@ -50,6 +48,11 @@ interface Tab extends TabInfo {
 
 function App() {
   const { t } = useTranslation();
+  const [settings] = useSettings();
+  const theme = THEMES[settings.theme];
+  const fontStack = fontStackOf(settings.font);
+
+  const [version, setVersion] = useState<string>("");
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +62,6 @@ function App() {
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [advanced, setAdvanced] = useState<boolean>(readAdvanced());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
@@ -74,7 +76,6 @@ function App() {
   } | null>(null);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
-  const [autoUpdate, setAutoUpdate] = useState<boolean>(isAutoCheckEnabled());
 
   function toggleSidebar() {
     const next = !sidebarCollapsed;
@@ -82,11 +83,10 @@ function App() {
     writeSidebarCollapsed(next);
   }
 
-  function toggleAutoUpdate() {
-    const next = !autoUpdate;
-    setAutoUpdate(next);
-    setAutoCheckEnabled(next);
-  }
+  // Read app version once
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
+  }, []);
 
   // Auto-update check on mount (once per 24h, silent on failure).
   useEffect(() => {
@@ -97,40 +97,41 @@ function App() {
       .catch(() => {});
   }, []);
 
-  // Ctrl/Cmd+T to open the new-tab picker.
+  // Global hotkeys: Ctrl/Cmd+T (picker), Ctrl/Cmd+, (settings).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "t") {
+      const meta = e.ctrlKey || e.metaKey;
+      if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
         setPickerOpen(true);
+      } else if (meta && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen((v) => !v);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Suppress the default WebView2/WebKit context menu (Reload, Save As HTML,
-  // Print, "Share" tools…) — our app provides its own context menus where
-  // they belong. Without this, right-click anywhere outside the terminal
-  // pops up a browser dev menu.
+  // Suppress default WebView context menu everywhere except input/textarea/
+  // contenteditable. Use closest() so we still allow native menu when the
+  // click target is a wrapping span inside the input (some browser engines
+  // bubble the contextmenu to the visible element).
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      // Allow native menu inside <input>/<textarea> so users keep copy/paste
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+      if (
+        target &&
+        target.closest("input, textarea, [contenteditable='true']")
+      ) {
         return;
       }
       e.preventDefault();
     };
-    window.addEventListener("contextmenu", handler);
-    return () => window.removeEventListener("contextmenu", handler);
+    // Capture phase so we run before any other listener might re-fire.
+    window.addEventListener("contextmenu", handler, true);
+    return () => window.removeEventListener("contextmenu", handler, true);
   }, []);
-
-  function toggleAdvanced() {
-    const next = !advanced;
-    setAdvanced(next);
-    writeAdvanced(next);
-  }
 
   // Poll vault + sync status on mount
   useEffect(() => {
@@ -171,11 +172,9 @@ function App() {
   async function restartSession(tabId: string) {
     const tab = tabs.find((x) => x.id === tabId);
     if (!tab) return;
-    // Disconnect existing session if alive (ignore errors on already-closed).
     if (tab.status === "connected") {
       sshDisconnect(tabId).catch(() => {});
     }
-    // Mark as connecting in-place while we redial.
     setTabs((all) =>
       all.map((x) =>
         x.id === tabId ? { ...x, status: "connecting" as const } : x,
@@ -257,22 +256,63 @@ function App() {
     );
   }
 
+  // Full-screen Settings replaces the main layout when open.
+  if (settingsOpen) {
+    return (
+      <SettingsScreen
+        onClose={() => setSettingsOpen(false)}
+        sessionCount={tabs.length}
+      />
+    );
+  }
+
   return (
-    <main className="h-full w-full flex flex-col bg-[#0a0e0e]">
-      <header className="h-9 border-b border-[#1f3a3a] flex items-center px-4 select-none shrink-0">
-        <span className="text-[#00ff95] font-mono text-sm tracking-wider">
+    <main
+      className="h-full w-full flex flex-col relative"
+      style={{
+        background: theme.bgBase,
+        color: theme.textPrimary,
+        fontFamily: fontStack,
+      }}
+    >
+      {/* Optional Matrix Rain background */}
+      <div className="absolute inset-0 pointer-events-none">
+        <MatrixRain
+          enabled={settings.rainOn}
+          density={settings.rainDensity}
+          opacity={settings.rainOpacity}
+          accent={theme.accent}
+          fade={theme.bgBase}
+        />
+      </div>
+
+      <header
+        className="relative z-10 h-9 border-b flex items-center px-4 select-none shrink-0"
+        style={{ background: theme.bgSecondary, borderColor: theme.border }}
+      >
+        <span
+          className="font-mono text-sm tracking-wider"
+          style={{ color: theme.accent }}
+        >
           NexuSSH
         </span>
-        <span className="ml-2 text-[#4a5560] font-mono text-xs">
-          {t("app.version_label")}0.0.1
+        <span
+          className="ml-2 font-mono text-xs"
+          style={{ color: theme.textMuted }}
+        >
+          v{version}
         </span>
-        <span className="ml-3 text-[#4a5560] font-mono text-xs italic">
+        <span
+          className="ml-3 font-mono text-xs italic"
+          style={{ color: theme.textMuted }}
+        >
           {t("app.tagline")}
         </span>
         <button
           onClick={() => setHistoryPanelOpen(true)}
           title={t("history.open_panel")}
-          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs text-[#7fd7ff]"
+          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
+          style={{ color: theme.textSoft }}
         >
           <History size={12} />
           <span>{t("history.button")}</span>
@@ -280,122 +320,55 @@ function App() {
         <button
           onClick={() => setSyncPanelOpen(true)}
           title={t("sync.open_panel")}
-          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
+          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
+          style={{
+            color: sync?.unlocked
+              ? theme.accent
+              : sync?.configured
+                ? theme.warning
+                : theme.textMuted,
+          }}
         >
-          <RefreshCw
-            size={12}
-            className={
-              sync?.unlocked
-                ? "text-[#00ff95]"
-                : sync?.configured
-                  ? "text-[#f5d76e]"
-                  : "text-[#4a5560]"
-            }
-          />
-          <span
-            className={
-              sync?.unlocked
-                ? "text-[#00ff95]"
-                : sync?.configured
-                  ? "text-[#f5d76e]"
-                  : "text-[#4a5560]"
-            }
-          >
-            sync
-          </span>
+          <RefreshCw size={12} />
+          <span>sync</span>
         </button>
-        {advanced && (
+        {settings.advanced && (
           <button
             onClick={() => setVaultPanelOpen(true)}
             title={t("vault.open_panel")}
-            className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
+            className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
+            style={{
+              color: vault?.unlocked
+                ? theme.accent
+                : vault?.configured
+                  ? theme.warning
+                  : theme.textMuted,
+            }}
           >
             {vault?.unlocked ? (
-              <Unlock size={12} className="text-[#00ff95]" />
+              <Unlock size={12} />
             ) : vault?.configured ? (
-              <Lock size={12} className="text-[#f5d76e]" />
+              <Lock size={12} />
             ) : (
-              <KeyRound size={12} className="text-[#4a5560]" />
+              <KeyRound size={12} />
             )}
-            <span
-              className={
-                vault?.unlocked
-                  ? "text-[#00ff95]"
-                  : vault?.configured
-                    ? "text-[#f5d76e]"
-                    : "text-[#4a5560]"
-              }
-            >
-              vault
-            </span>
+            <span>vault</span>
           </button>
         )}
         <button
-          onClick={() => setSettingsOpen((v) => !v)}
-          title={t("settings.open")}
-          className="relative ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs text-[#4a5560] hover:text-[#7fd7ff]"
+          onClick={() => setSettingsOpen(true)}
+          title={t("settings.open") + " (Ctrl ,)"}
+          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
+          style={{ color: theme.textMuted }}
         >
-          <Settings size={12} />
+          <SettingsIcon size={12} />
         </button>
         <div className="ml-3">
           <LanguageSwitcher />
         </div>
       </header>
 
-      {settingsOpen && (
-        <div
-          className="fixed inset-0 z-40"
-          onClick={() => setSettingsOpen(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="absolute top-9 right-32 w-72 bg-[#0a0e0e] border border-[#1f3a3a] rounded-lg shadow-2xl p-3"
-          >
-            <div className="text-xs uppercase tracking-wider text-[#7fd7ff] font-mono mb-2">
-              {t("settings.title")}
-            </div>
-            <label className="flex items-start gap-2 text-xs font-mono text-[#c9d1d9] cursor-pointer p-1 rounded hover:bg-[#0e1414]">
-              <input
-                type="checkbox"
-                checked={advanced}
-                onChange={toggleAdvanced}
-                className="mt-0.5 accent-[#00ff95]"
-              />
-              <div>
-                <div>{t("settings.show_advanced")}</div>
-                <div className="text-[10px] text-[#4a5560]">
-                  {t("settings.show_advanced_hint")}
-                </div>
-              </div>
-            </label>
-            <label className="flex items-start gap-2 text-xs font-mono text-[#c9d1d9] cursor-pointer p-1 rounded hover:bg-[#0e1414]">
-              <input
-                type="checkbox"
-                checked={autoUpdate}
-                onChange={toggleAutoUpdate}
-                className="mt-0.5 accent-[#00ff95]"
-              />
-              <div>
-                <div>{t("settings.auto_update")}</div>
-                <div className="text-[10px] text-[#4a5560]">
-                  {t("settings.auto_update_hint")}
-                </div>
-              </div>
-            </label>
-            <button
-              onClick={() => {
-                setSettingsOpen(false);
-                setUpdatePanel({});
-              }}
-              className="w-full mt-1 px-2 py-1.5 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a]"
-            >
-              {t("settings.check_for_updates")}
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="flex-1 min-h-0 flex">
+      <div className="relative z-10 flex-1 min-h-0 flex">
         <Sidebar
           onConnect={openHost}
           onSelect={setSelectedHost}
@@ -403,6 +376,7 @@ function App() {
           collapsed={sidebarCollapsed}
           onToggleCollapsed={toggleSidebar}
           onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+          clickMode={settings.clickMode}
         />
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
@@ -415,9 +389,15 @@ function App() {
           />
           <div className="flex-1 min-h-0 relative">
             {tabs.length === 0 && !selectedHost && (
-              <div className="absolute inset-0 flex items-center justify-center text-[#4a5560] font-mono text-sm pointer-events-none">
+              <div
+                className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
+                style={{ color: theme.textMuted }}
+              >
                 {error ? (
-                  <div className="text-[#ff6b6b] max-w-md text-center">
+                  <div
+                    className="max-w-md text-center"
+                    style={{ color: theme.error }}
+                  >
                     ✗ {error}
                   </div>
                 ) : (
@@ -437,7 +417,8 @@ function App() {
                 t_.id === activeId ? (
                   <div
                     key={t_.id}
-                    className="absolute inset-0 flex items-center justify-center text-[#f5d76e] font-mono text-sm"
+                    className="absolute inset-0 flex items-center justify-center font-mono text-sm"
+                    style={{ color: theme.warning }}
                   >
                     {t("terminal.connecting_to", {
                       user: t_.host.user,

@@ -36,6 +36,9 @@ interface Props {
   onToggleCollapsed: () => void;
   /** Parent renders the menu — sidebar just emits coords + items. */
   onContextMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  /** From settings: 'connect' = single click connects, 'select' = single
+   *  click selects and shows info, double-click connects. */
+  clickMode?: "connect" | "select";
 }
 
 const COLLAPSED_GROUPS_LS = "nexussh.collapsedGroups";
@@ -61,6 +64,7 @@ export function Sidebar({
   collapsed,
   onToggleCollapsed,
   onContextMenu,
+  clickMode = "select",
 }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
@@ -294,7 +298,21 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-1">
+      <div
+        className="flex-1 overflow-y-auto py-1"
+        onContextMenu={(e) => {
+          // Only react if the click was on the empty scroll area, not on a
+          // child element with its own ContextMenu (host item or folder header).
+          if (e.target !== e.currentTarget) return;
+          e.preventDefault();
+          onContextMenu?.(e.clientX, e.clientY, [
+            {
+              label: t("sidebar.menu_add_host"),
+              onClick: () => setDialog({ kind: "add" }),
+            },
+          ]);
+        }}
+      >
         {groups.length === 0 && (
           <div className="text-center text-[#4a5560] font-mono text-xs p-6">
             {t("sidebar.empty_state")}
@@ -331,7 +349,9 @@ export function Sidebar({
                   return (
                     <div
                       key={h.id}
-                      onClick={() => onSelect?.(h)}
+                      onClick={() =>
+                        clickMode === "connect" ? onConnect(h) : onSelect?.(h)
+                      }
                       onDoubleClick={() => onConnect(h)}
                       onContextMenu={(e) => onHostContextMenu(e, h)}
                       title={t("sidebar.host_hint")}

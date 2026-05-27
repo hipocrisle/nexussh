@@ -158,17 +158,8 @@ export function HistoryPanel({ onClose }: Props) {
     term.reset();
     if (!events) return;
 
-    // Match the original session's terminal width so wrapped lines render
-    // where they were wrapped originally. Without this, the viewer's default
-    // 80-col grid cuts long lines that the recorded shell rendered at 120+.
-    const meta = entries.find((e) => e.session_id === selectedId);
-    const cols = meta?.cols && meta.cols > 0 ? meta.cols : 120;
-    const rows = meta?.rows && meta.rows > 0 ? meta.rows : 30;
-    try {
-      term.resize(cols, rows);
-    } catch {
-      /* xterm may throw if dims invalid — fallback to default */
-    }
+    // Fit terminal to container BEFORE writing so wrap math is correct.
+    fitRef.current?.fit();
 
     // Replay with a simple consecutive-line dedup: Claude Code's streaming
     // responses often emit the same paragraph multiple times as the model
@@ -180,9 +171,6 @@ export function HistoryPanel({ onClose }: Props) {
       for (let i = 0; i < parts.length; i += 2) {
         const line = parts[i];
         const sep = parts[i + 1] ?? "";
-        // Dedup: if non-empty line equals previous and is followed by newline,
-        // collapse it. Keep cursor-positioning lines as-is (they don't end
-        // with \n so won't match the dedup branch).
         if (line && sep && line === prevLine) {
           // skip the duplicate line + its newline
           continue;
@@ -196,8 +184,8 @@ export function HistoryPanel({ onClose }: Props) {
     }
 
     term.scrollToTop();
-    // Do NOT call fit() here — we want to preserve the session's cols/rows.
-  }, [events, entries, selectedId]);
+    requestAnimationFrame(() => fitRef.current?.fit());
+  }, [events]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {

@@ -28,14 +28,32 @@ import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 
+interface MenuItem {
+  label: string;
+  onClick: () => void;
+  destructive?: boolean;
+  disabled?: boolean;
+  separator?: boolean;
+}
+
 interface Props {
   sessionId: string;
   hostLabel: string;
   onClose: () => void;
+  onContextMenu?: (x: number, y: number, items: MenuItem[]) => void;
 }
 
-export function TranscriptOverlay({ sessionId, hostLabel, onClose }: Props) {
+export function TranscriptOverlay({
+  sessionId,
+  hostLabel,
+  onClose,
+  onContextMenu,
+}: Props) {
   const { t } = useTranslation();
+  const onContextMenuRef = useRef(onContextMenu);
+  onContextMenuRef.current = onContextMenu;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const [settings] = useSettings();
   const palette = THEMES[settings.theme];
   const containerRef = useRef<HTMLDivElement>(null);
@@ -70,17 +88,61 @@ export function TranscriptOverlay({ sessionId, hostLabel, onClose }: Props) {
     termRef.current = term;
     fitRef.current = fit;
 
-    // Direct viewport scroll
+    // Direct viewport scroll — capture phase to win over xterm.
     const vp = containerRef.current.querySelector(
       ".xterm-viewport",
     ) as HTMLElement | null;
     const wheelHandler = (ev: WheelEvent) => {
-      if (!vp) return;
-      vp.scrollTop += ev.deltaY;
       ev.preventDefault();
+      ev.stopPropagation();
+      if (vp) vp.scrollTop += ev.deltaY;
     };
     containerRef.current.addEventListener("wheel", wheelHandler, {
       passive: false,
+      capture: true,
+    });
+
+    // Right-click → Copy / Select All (no Paste — read-only)
+    const ctxHandler = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const selection = term.getSelection();
+      const items: MenuItem[] = [
+        {
+          label: t("term_menu.copy"),
+          disabled: !selection,
+          onClick: () => {
+            if (!selection) return;
+            navigator.clipboard.writeText(selection).catch(console.error);
+          },
+        },
+        {
+          label: t("term_menu.select_all"),
+          onClick: () => term.selectAll(),
+        },
+      ];
+      onContextMenuRef.current?.(ev.clientX, ev.clientY, items);
+    };
+    containerRef.current.addEventListener("contextmenu", ctxHandler);
+
+    // Keyboard shortcuts at the xterm level so they never leak to anything
+    // beneath: Ctrl+Shift+C (copy), Esc + Ctrl+Shift+Down (close overlay).
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+      if (ev.key === "Escape") {
+        onCloseRef.current();
+        return false;
+      }
+      const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
+      if (ctrlShift && (ev.key === "ArrowDown" || ev.key === "Down")) {
+        onCloseRef.current();
+        return false;
+      }
+      if (ctrlShift && ev.key.toLowerCase() === "c") {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        return false;
+      }
+      return true;
     });
 
     const onWin = () => fit.fit();
@@ -88,7 +150,8 @@ export function TranscriptOverlay({ sessionId, hostLabel, onClose }: Props) {
 
     return () => {
       window.removeEventListener("resize", onWin);
-      containerRef.current?.removeEventListener("wheel", wheelHandler);
+      containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
+      containerRef.current?.removeEventListener("contextmenu", ctxHandler);
       term.dispose();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,24 +196,27 @@ export function TranscriptOverlay({ sessionId, hostLabel, onClose }: Props) {
     term.refresh(0, term.rows - 1);
   }, [settings.theme, settings.font, settings.fontSize, palette]);
 
-  // Esc to close, Ctrl-Shift-Down also closes
+  // Capture-phase keydown as a fallback in case xterm doesn't have focus —
+  // e.g. user clicked outside the embedded terminal canvas onto the header.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        e.stopPropagation();
+        onCloseRef.current();
       } else if (
         e.ctrlKey &&
         e.shiftKey &&
         (e.key === "ArrowDown" || e.key === "Down")
       ) {
         e.preventDefault();
-        onClose();
+        e.stopPropagation();
+        onCloseRef.current();
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-[var(--nx-bg-base)]">

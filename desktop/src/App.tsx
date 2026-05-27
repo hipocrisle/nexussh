@@ -141,6 +141,20 @@ function App() {
           e.stopPropagation();
           toggleTranscript(activeId);
         }
+      } else if (
+        e.ctrlKey &&
+        e.shiftKey &&
+        !e.altKey &&
+        !e.metaKey &&
+        (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "i" || e.key === "J")
+      ) {
+        // Block WebView's "Inspect Element" / DevTools shortcuts so they
+        // don't shadow our Ctrl+Shift+C copy. preventDefault only — we DON'T
+        // stopPropagation, so the event still bubbles to xterm whose own
+        // attachCustomKeyEventHandler does the actual term.getSelection() →
+        // clipboard write. (DOM window.getSelection() returns empty for
+        // xterm canvases; only xterm knows the selection.)
+        e.preventDefault();
       }
     };
     window.addEventListener("keydown", handler, true);

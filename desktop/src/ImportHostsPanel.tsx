@@ -15,6 +15,7 @@ import {
 } from "./hosts";
 import { useSettings } from "./settings/settings-store";
 import { THEMES } from "./settings/themes";
+import { useBackdropClose } from "./useBackdropClose";
 
 interface ImportableHost {
   source: string; // "ssh-config" | "known-hosts" | "putty" | "wt"
@@ -68,6 +69,7 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState<number | null>(null);
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   useEffect(() => {
     invoke<ImportableHost[]>("read_import_sources")
@@ -210,10 +212,10 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-lg border border-[var(--nx-border)] shadow-2xl overflow-hidden"
         style={{ background: palette.bgBase }}
       >

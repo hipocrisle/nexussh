@@ -4,6 +4,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { HostRecord, listHosts } from "./hosts";
+import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
   onPick: (h: HostRecord) => void;
@@ -16,6 +17,7 @@ export function TabPicker({ onPick, onClose }: Props) {
   const [q, setQ] = useState("");
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   useEffect(() => {
     listHosts().then((list) => {
@@ -69,10 +71,10 @@ export function TabPicker({ onPick, onClose }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm pt-24"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl overflow-hidden"
       >
         <input

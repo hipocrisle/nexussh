@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { HostRecord, saveHost, newHostId } from "./hosts";
 import { vaultKeys } from "./vault";
 import { useSettings } from "./settings/settings-store";
+import { useBackdropClose } from "./useBackdropClose";
 
 type AuthKind = "password" | "key" | "vault";
 
@@ -37,6 +38,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   useEffect(() => {
     if (!initial) return;
@@ -112,11 +114,11 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <form
         onSubmit={submit}
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto"
       >
         <h2 className="text-xl font-mono text-[var(--nx-accent)] mb-5">

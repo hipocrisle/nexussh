@@ -13,6 +13,7 @@ import {
   installUpdate,
   markChecked,
 } from "./updater";
+import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
   /** Pre-populated update info (e.g. from auto-check on startup). */
@@ -27,6 +28,9 @@ export function UpdatePanel({ initial, onClose }: Props) {
   );
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { backdropProps, contentProps } = useBackdropClose(
+    installing ? () => {} : onClose,
+  );
 
   async function runCheck() {
     setError(null);
@@ -61,10 +65,10 @@ export function UpdatePanel({ initial, onClose }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl"
       >
         <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)]">

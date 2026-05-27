@@ -43,6 +43,7 @@ import {
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
+import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
   onClose: () => void;
@@ -85,6 +86,7 @@ export function HistoryPanel({ onClose }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [inSessionQuery, setInSessionQuery] = useState("");
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   const termContainerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -289,10 +291,10 @@ export function HistoryPanel({ onClose }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className={
           fullscreen
             ? "w-screen h-screen bg-[var(--nx-bg-base)] flex flex-col overflow-hidden"

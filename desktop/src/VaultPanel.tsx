@@ -10,6 +10,7 @@ import {
   vaultUnlock,
   vaultLock,
 } from "./vault";
+import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
   onClose: () => void;
@@ -23,6 +24,7 @@ export function VaultPanel({ onClose, onChange }: Props) {
   const [keyPath, setKeyPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   const refresh = async () => {
     const s = await vaultStatus();
@@ -78,10 +80,10 @@ export function VaultPanel({ onClose, onChange }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      {...backdropProps}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        {...contentProps}
         className="w-full max-w-lg bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6"
       >
         <h2 className="text-xl font-mono text-[var(--nx-accent)] mb-1">&gt; vault</h2>

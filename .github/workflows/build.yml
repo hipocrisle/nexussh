@@ -64,6 +64,11 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Clean prior bundle artifacts (avoid stale cached versions)
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: rm -rf target/${{ matrix.target }}/release/bundle
+
       - name: Build Tauri app
         working-directory: desktop
         env:
@@ -133,9 +138,11 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           BASE="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          # Discover the actual exe/AppImage file names by listing the release
-          WIN_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[] | select(.name | endswith(".exe")) | .name' | head -1)
-          LINUX_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq '.assets[] | select(.name | endswith(".AppImage")) | .name' | head -1)
+          # Discover the actual exe/AppImage file names by listing the release.
+          # Filter by version embedded in the filename so stale cached artifacts
+          # from a previous build don't sneak in.
+          WIN_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq ".assets[] | select(.name | contains(\"$VERSION\") and endswith(\".exe\")) | .name" | head -1)
+          LINUX_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq ".assets[] | select(.name | contains(\"$VERSION\") and endswith(\".AppImage\")) | .name" | head -1)
 
           cat > latest.json <<EOF
           {

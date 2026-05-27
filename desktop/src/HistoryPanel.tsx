@@ -175,6 +175,16 @@ export function HistoryPanel({ onClose }: Props) {
     term.refresh(0, term.rows - 1);
   }, [settings.theme, settings.font, palette]);
 
+  // Re-fit when fullscreen toggle changes the container size, otherwise the
+  // xterm canvas stays at its prior cols/rows in the giant new modal.
+  useEffect(() => {
+    if (!fitRef.current) return;
+    // Two frames: one for the layout to settle, one for fit to take effect.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => fitRef.current?.fit());
+    });
+  }, [fullscreen]);
+
   // Replay events into xterm
   useEffect(() => {
     const term = termRef.current;

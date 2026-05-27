@@ -140,35 +140,25 @@ function App() {
   }, [activeId]);
 
   // Suppress default WebView context menu everywhere except real form fields.
-  // Bind on mousedown (button 2) AND contextmenu — some WebView2 builds need
-  // the early intercept to avoid the brief native flash. Exclude xterm's
-  // hidden helper textarea so the terminal area gets no native menu.
+  // IMPORTANT: only handle `contextmenu`. The previous v0.0.5 mousedown trick
+  // (preventDefault on button===2) silently SUPPRESSED the subsequent
+  // contextmenu event in WebKit/Chromium, which killed our own React
+  // onContextMenu handlers on tabs/sidebar/host items. Don't ever do that.
   useEffect(() => {
     const isFormField = (target: HTMLElement | null) => {
       if (!target) return false;
-      const inXterm = target.closest(".xterm, .xterm-helper-textarea");
-      if (inXterm) return false;
-      return !!target.closest(
-        "input, textarea, [contenteditable='true']",
-      );
+      // xterm's hidden textarea hosts keyboard input over the terminal canvas;
+      // we want OUR no-menu policy there, not the browser's native.
+      if (target.closest(".xterm, .xterm-helper-textarea")) return false;
+      return !!target.closest("input, textarea, [contenteditable='true']");
     };
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (isFormField(target)) return;
       e.preventDefault();
     };
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 2) return;
-      const target = e.target as HTMLElement | null;
-      if (isFormField(target)) return;
-      e.preventDefault();
-    };
-    window.addEventListener("contextmenu", onContextMenu, true);
-    window.addEventListener("mousedown", onMouseDown, true);
-    return () => {
-      window.removeEventListener("contextmenu", onContextMenu, true);
-      window.removeEventListener("mousedown", onMouseDown, true);
-    };
+    window.addEventListener("contextmenu", onContextMenu);
+    return () => window.removeEventListener("contextmenu", onContextMenu);
   }, []);
 
   // Poll vault + sync status on mount
@@ -342,20 +332,8 @@ function App() {
 
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
-      {/* Matrix Rain overlay — placed ABOVE all content with
-       *  pointer-events-none + mix-blend-mode: screen (set inside MatrixRain
-       *  canvas style). screen blend mode means the rain only ADDS light,
-       *  never darkens — UI stays readable, but the green cascade is visible
-       *  through the whole window when enabled. */}
-      <div className="pointer-events-none absolute inset-0 z-50">
-        <MatrixRain
-          enabled={settings.rainOn}
-          density={settings.rainDensity}
-          opacity={settings.rainOpacity}
-          accent={theme.accent}
-          fade={theme.bgBase}
-        />
-      </div>
+      {/* Matrix Rain — rendered inside the terminal-area container below so
+       *  the cascade only appears there. Header, sidebar, modals stay clean. */}
 
       <header
         className="relative z-10 h-9 border-b flex items-center px-4 select-none shrink-0"
@@ -459,6 +437,18 @@ function App() {
             onContextMenu={onTabContextMenu}
           />
           <div className="flex-1 min-h-0 relative">
+            {/* Matrix Rain ONLY in the terminal area, never over header/
+             *  sidebar/inputs. mix-blend-mode: screen + pointer-events-none
+             *  means clicks/wheel pass through and content stays readable. */}
+            <div className="pointer-events-none absolute inset-0 z-30">
+              <MatrixRain
+                enabled={settings.rainOn}
+                density={settings.rainDensity}
+                opacity={settings.rainOpacity}
+                accent={theme.accent}
+                fade={theme.bgBase}
+              />
+            </div>
             {tabs.length === 0 && !selectedHost && (
               <div
                 className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"

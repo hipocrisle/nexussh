@@ -6,7 +6,7 @@
 //   Right click on host   → context menu (Connect / Edit / Duplicate / Move / Delete)
 //   Right click on folder → context menu (Rename / Delete)
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Plus,
@@ -14,6 +14,8 @@ import {
   Server,
   ChevronDown,
   ChevronRight,
+  Folder,
+  FolderOpen,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
@@ -262,37 +264,72 @@ export function Sidebar({
   }
 
   // ---------------------------------------------------------------------
-  // Drag-and-drop hosts between folders
+  // Drag-and-drop hosts between folders — custom mouse-based impl.
+  // WebView2 / WKWebView don't always honor HTML5 native DnD (no drag start
+  // fires), so we track mousedown/mousemove/mouseup ourselves and emit our
+  // own visual feedback + drop detection.
   // ---------------------------------------------------------------------
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+  const [draggingHost, setDraggingHost] = useState<HostRecord | null>(null);
+  const dragRef = useRef<{
+    host: HostRecord;
+    startX: number;
+    startY: number;
+    started: boolean;
+  } | null>(null);
 
-  function onHostDragStart(e: React.DragEvent, host: HostRecord) {
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("application/x-nexussh-host-id", host.id);
-    // Some Linux WebKit2 builds also need text/plain to consider it a real drag.
-    e.dataTransfer.setData("text/plain", host.id);
+  function onHostMouseDown(e: React.MouseEvent, host: HostRecord) {
+    if (e.button !== 0) return;
+    dragRef.current = {
+      host,
+      startX: e.clientX,
+      startY: e.clientY,
+      started: false,
+    };
   }
 
-  function onFolderDragOver(e: React.DragEvent, group: string) {
-    if (!e.dataTransfer.types.includes("application/x-nexussh-host-id")) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (dragOverGroup !== group) setDragOverGroup(group);
-  }
-
-  function onFolderDragLeave(group: string) {
-    if (dragOverGroup === group) setDragOverGroup(null);
-  }
-
-  async function onFolderDrop(e: React.DragEvent, group: string) {
-    e.preventDefault();
-    setDragOverGroup(null);
-    const id = e.dataTransfer.getData("application/x-nexussh-host-id");
-    if (!id) return;
-    const target = group === ungroupedLabel ? null : group;
-    await moveHostToFolder(id, target);
-    reload();
-  }
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const dx = e.clientX - d.startX;
+      const dy = e.clientY - d.startY;
+      if (!d.started && Math.hypot(dx, dy) > 5) {
+        d.started = true;
+        setDraggingHost(d.host);
+        document.body.style.cursor = "grabbing";
+      }
+      if (!d.started) return;
+      // Find which folder header is under the cursor right now.
+      const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      const folderEl = el?.closest("[data-folder-header]") as HTMLElement | null;
+      const g = folderEl?.dataset.folderHeader ?? null;
+      setDragOverGroup(g);
+    };
+    const onUp = async () => {
+      const d = dragRef.current;
+      dragRef.current = null;
+      document.body.style.cursor = "";
+      if (d && d.started) {
+        const target = dragOverGroup;
+        if (target !== null) {
+          const folder = target === ungroupedLabel ? null : target;
+          if (folder !== (d.host.group ?? null)) {
+            await moveHostToFolder(d.host.id, folder);
+            reload();
+          }
+        }
+      }
+      setDraggingHost(null);
+      setDragOverGroup(null);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [dragOverGroup, ungroupedLabel, reload]);
 
   function makeEmptyAreaMenu(): MenuItem[] {
     return [
@@ -398,25 +435,45 @@ export function Sidebar({
           return (
             <div key={g} className="mb-1">
               <button
+                data-folder-header={g}
                 onClick={() => toggleGroup(g)}
                 onContextMenu={(e) => onFolderContextMenu(e, g)}
-                onDragOver={(e) => onFolderDragOver(e, g)}
-                onDragLeave={() => onFolderDragLeave(g)}
-                onDrop={(e) => onFolderDrop(e, g)}
                 className={
-                  "w-full px-2 py-1 flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--nx-text-muted)] font-mono hover:bg-[var(--nx-bg-panel)] hover:text-[var(--nx-text-soft)] " +
+                  "w-full px-2 py-1.5 flex items-center gap-1.5 text-xs font-mono " +
+                  "hover:bg-[var(--nx-bg-panel)] " +
                   (dragOverGroup === g
-                    ? "bg-[var(--nx-bg-panel)] text-[var(--nx-accent)]"
+                    ? "bg-[var(--nx-bg-elevated)] ring-1 ring-[var(--nx-accent)]"
                     : "")
                 }
               >
                 {isCollapsed ? (
-                  <ChevronRight size={10} />
+                  <ChevronRight
+                    size={12}
+                    className="text-[var(--nx-text-muted)] shrink-0"
+                  />
                 ) : (
-                  <ChevronDown size={10} />
+                  <ChevronDown
+                    size={12}
+                    className="text-[var(--nx-text-muted)] shrink-0"
+                  />
                 )}
-                <span className="truncate">{g}</span>
-                <span className="ml-auto text-[var(--nx-text-muted)]">{list.length}</span>
+                {isCollapsed ? (
+                  <Folder
+                    size={13}
+                    className="text-[var(--nx-warning)] shrink-0"
+                  />
+                ) : (
+                  <FolderOpen
+                    size={13}
+                    className="text-[var(--nx-warning)] shrink-0"
+                  />
+                )}
+                <span className="truncate text-[var(--nx-text-primary)]">
+                  {g}
+                </span>
+                <span className="ml-auto text-[10px] text-[var(--nx-text-muted)] bg-[var(--nx-bg-panel)] px-1.5 rounded">
+                  {list.length}
+                </span>
               </button>
               {!isCollapsed &&
                 list.map((h) => {
@@ -424,19 +481,21 @@ export function Sidebar({
                   return (
                     <div
                       key={h.id}
-                      draggable
-                      onDragStart={(e) => onHostDragStart(e, h)}
-                      onClick={() =>
-                        clickMode === "connect" ? onConnect(h) : onSelect?.(h)
-                      }
+                      onMouseDown={(e) => onHostMouseDown(e, h)}
+                      onClick={() => {
+                        // Suppress click if a drag just completed.
+                        if (draggingHost) return;
+                        clickMode === "connect" ? onConnect(h) : onSelect?.(h);
+                      }}
                       onDoubleClick={() => onConnect(h)}
                       onContextMenu={(e) => onHostContextMenu(e, h)}
                       title={t("sidebar.host_hint")}
                       className={
-                        "group px-3 py-1.5 flex items-center gap-2 cursor-pointer " +
+                        "group pl-7 pr-3 py-1.5 flex items-center gap-2 cursor-pointer " +
                         (isSelected
                           ? "bg-[var(--nx-bg-panel)] border-l-2 border-[var(--nx-accent)]"
-                          : "hover:bg-[var(--nx-bg-panel)] border-l-2 border-transparent")
+                          : "hover:bg-[var(--nx-bg-panel)] border-l-2 border-transparent") +
+                        (draggingHost?.id === h.id ? " opacity-50" : "")
                       }
                     >
                       <Server

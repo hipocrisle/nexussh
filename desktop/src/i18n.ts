@@ -294,6 +294,14 @@ const ru = {
     duplicate: "Дублировать вкладку",
     close: "Закрыть",
     close_others: "Закрыть остальные",
+    open_transcript: "Прокрутить историю (Ctrl+Shift+↑)",
+    exit_transcript: "Вернуться в live (Esc)",
+  },
+  transcript: {
+    title: "transcript · {{host}}",
+    hint: "read-only · колесо мыши для скрола · Esc для возврата",
+    return: "Вернуться в живой терминал",
+    return_short: "live",
   },
   errors: {
     auth_failed: "Ошибка аутентификации",
@@ -591,6 +599,14 @@ const en = {
     duplicate: "Duplicate tab",
     close: "Close",
     close_others: "Close others",
+    open_transcript: "Scroll history (Ctrl+Shift+↑)",
+    exit_transcript: "Back to live (Esc)",
+  },
+  transcript: {
+    title: "transcript · {{host}}",
+    hint: "read-only · wheel to scroll · Esc to return",
+    return: "Return to live terminal",
+    return_short: "live",
   },
   errors: {
     auth_failed: "Authentication failed",

@@ -138,15 +138,19 @@ export function TerminalView({
   }, []);
 
   // Apply theme changes live to the running xterm instance.
-  // CRITICAL: setting `options.theme` alone leaves the canvas blank and the
-  // container background reads through as a solid block, hiding the active
-  // session. We must explicitly `refresh()` the visible rows to repaint.
+  // term.options.theme alone doesn't repaint — xterm caches glyph textures in
+  // an atlas with the OLD palette. We must clearTextureAtlas() (when
+  // available) AND refresh() the visible rows to get correct colors back.
+  // Without this, the canvas stays empty/wrong and the container bg shows
+  // through as a solid block, hiding the active session.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     const palette = THEMES[settings.theme];
     term.options.theme = xtermThemeOf(palette);
-    // refresh ALL rows including scrollback so older lines repaint too.
+    // clearTextureAtlas is optional API (WebGL renderer); guard via cast.
+    type WithClear = { clearTextureAtlas?: () => void };
+    (term as unknown as WithClear).clearTextureAtlas?.();
     term.refresh(0, term.rows - 1);
   }, [settings.theme]);
 
@@ -156,6 +160,8 @@ export function TerminalView({
     if (!term) return;
     term.options.fontFamily = fontStackOf(settings.font);
     term.options.fontSize = settings.fontSize;
+    type WithClear = { clearTextureAtlas?: () => void };
+    (term as unknown as WithClear).clearTextureAtlas?.();
     requestAnimationFrame(() => {
       fitRef.current?.fit();
       term.refresh(0, term.rows - 1);

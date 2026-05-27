@@ -21,6 +21,7 @@ import { ContextMenu, MenuItem } from "./ContextMenu";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { SettingsScreen } from "./SettingsScreen";
+import { TranscriptOverlay } from "./TranscriptOverlay";
 import { useSettings } from "./settings/settings-store";
 import { THEMES } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
@@ -76,6 +77,21 @@ function App() {
   } | null>(null);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
+  // Per-tab scrollback overlay state. When a tab id is in this set, the
+  // active TerminalView is hidden behind a TranscriptOverlay that lets the
+  // user wheel-scroll through everything written so far (works even in
+  // alt-screen mode like Claude Code).
+  const [transcriptTabs, setTranscriptTabs] = useState<Set<string>>(
+    () => new Set<string>(),
+  );
+  function toggleTranscript(tabId: string) {
+    setTranscriptTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(tabId)) next.delete(tabId);
+      else next.add(tabId);
+      return next;
+    });
+  }
 
   function toggleSidebar() {
     const next = !sidebarCollapsed;
@@ -97,7 +113,8 @@ function App() {
       .catch(() => {});
   }, []);
 
-  // Global hotkeys: Ctrl/Cmd+T (picker), Ctrl/Cmd+, (settings).
+  // Global hotkeys: Ctrl/Cmd+T (picker), Ctrl/Cmd+, (settings),
+  // Ctrl+Shift+Up (open transcript overlay for active tab).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
@@ -107,11 +124,20 @@ function App() {
       } else if (meta && e.key === ",") {
         e.preventDefault();
         setSettingsOpen((v) => !v);
+      } else if (
+        e.ctrlKey &&
+        e.shiftKey &&
+        (e.key === "ArrowUp" || e.key === "Up")
+      ) {
+        if (activeId) {
+          e.preventDefault();
+          toggleTranscript(activeId);
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [activeId]);
 
   // Suppress default WebView context menu everywhere except real form fields.
   // Bind on mousedown (button 2) AND contextmenu — some WebView2 builds need
@@ -233,6 +259,12 @@ function App() {
       y,
       items: [
         {
+          label: transcriptTabs.has(tabId)
+            ? t("tabmenu.exit_transcript")
+            : t("tabmenu.open_transcript"),
+          onClick: () => toggleTranscript(tabId),
+        },
+        {
           label: t("tabmenu.restart"),
           onClick: () => restartSession(tabId),
           disabled: tab.status === "connecting",
@@ -310,8 +342,12 @@ function App() {
 
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
-      {/* Optional Matrix Rain background */}
-      <div className="absolute inset-0 pointer-events-none">
+      {/* Matrix Rain overlay — placed ABOVE all content with
+       *  pointer-events-none + mix-blend-mode: screen (set inside MatrixRain
+       *  canvas style). screen blend mode means the rain only ADDS light,
+       *  never darkens — UI stays readable, but the green cascade is visible
+       *  through the whole window when enabled. */}
+      <div className="pointer-events-none absolute inset-0 z-50">
         <MatrixRain
           enabled={settings.rainOn}
           density={settings.rainDensity}
@@ -323,15 +359,7 @@ function App() {
 
       <header
         className="relative z-10 h-9 border-b flex items-center px-4 select-none shrink-0"
-        style={{
-          // If Matrix Rain is on, let it bleed through the chrome strips so
-          // the effect is visible app-wide rather than just in Settings.
-          background: settings.rainOn
-            ? `color-mix(in srgb, ${theme.bgSecondary} 75%, transparent)`
-            : theme.bgSecondary,
-          borderColor: theme.border,
-          backdropFilter: settings.rainOn ? "blur(2px)" : undefined,
-        }}
+        style={{ background: theme.bgSecondary, borderColor: theme.border }}
       >
         <span
           className="font-mono text-sm tracking-wider"
@@ -479,6 +507,20 @@ function App() {
                 />
               ),
             )}
+            {/* Transcript overlay for the active tab when toggled */}
+            {activeId &&
+              transcriptTabs.has(activeId) &&
+              (() => {
+                const t_ = tabs.find((x) => x.id === activeId);
+                if (!t_) return null;
+                return (
+                  <TranscriptOverlay
+                    sessionId={activeId}
+                    hostLabel={`${t_.host.user}@${t_.host.host}`}
+                    onClose={() => toggleTranscript(activeId)}
+                  />
+                );
+              })()}
           </div>
         </div>
       </div>

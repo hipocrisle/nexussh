@@ -170,6 +170,8 @@ export function HistoryPanel({ onClose }: Props) {
     if (!term) return;
     term.options.theme = xtermThemeOf(palette);
     term.options.fontFamily = fontStackOf(settings.font);
+    type WithClear = { clearTextureAtlas?: () => void };
+    (term as unknown as WithClear).clearTextureAtlas?.();
     term.refresh(0, term.rows - 1);
   }, [settings.theme, settings.font, palette]);
 

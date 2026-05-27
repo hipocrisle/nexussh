@@ -1,14 +1,16 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { Lock, Unlock, KeyRound } from "lucide-react";
+import { Lock, Unlock, KeyRound, RefreshCw } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar, TabInfo } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { VaultPanel } from "./VaultPanel";
+import { SyncPanel } from "./SyncPanel";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
+import { SyncStatus, syncStatus } from "./sync";
 import "./App.css";
 
 interface Tab extends TabInfo {
@@ -22,10 +24,13 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [vault, setVault] = useState<VaultStatus | null>(null);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+  const [sync, setSync] = useState<SyncStatus | null>(null);
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
 
-  // Poll vault status on mount; refresh after VaultPanel changes
+  // Poll vault + sync status on mount
   useEffect(() => {
     vaultStatus().then(setVault).catch(() => {});
+    syncStatus().then(setSync).catch(() => {});
   }, []);
 
   async function openHost(h: HostRecord) {
@@ -89,9 +94,36 @@ function App() {
           {t("app.tagline")}
         </span>
         <button
+          onClick={() => setSyncPanelOpen(true)}
+          title={t("sync.open_panel")}
+          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
+        >
+          <RefreshCw
+            size={12}
+            className={
+              sync?.unlocked
+                ? "text-[#00ff95]"
+                : sync?.configured
+                  ? "text-[#f5d76e]"
+                  : "text-[#4a5560]"
+            }
+          />
+          <span
+            className={
+              sync?.unlocked
+                ? "text-[#00ff95]"
+                : sync?.configured
+                  ? "text-[#f5d76e]"
+                  : "text-[#4a5560]"
+            }
+          >
+            sync
+          </span>
+        </button>
+        <button
           onClick={() => setVaultPanelOpen(true)}
           title={t("vault.open_panel")}
-          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
+          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-[#0e1414] font-mono text-xs"
         >
           {vault?.unlocked ? (
             <Unlock size={12} className="text-[#00ff95]" />
@@ -169,6 +201,12 @@ function App() {
         <VaultPanel
           onClose={() => setVaultPanelOpen(false)}
           onChange={setVault}
+        />
+      )}
+      {syncPanelOpen && (
+        <SyncPanel
+          onClose={() => setSyncPanelOpen(false)}
+          onChange={setSync}
         />
       )}
     </main>

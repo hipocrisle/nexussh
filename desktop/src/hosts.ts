@@ -6,6 +6,7 @@
 // AES-256-GCM encryption before writing to the user-chosen sync folder.
 
 import { load, Store } from "@tauri-apps/plugin-store";
+import { syncStatus, syncPush } from "./sync";
 
 export interface HostRecord {
   id: string;
@@ -43,6 +44,17 @@ export async function listHosts(): Promise<HostRecord[]> {
   return v ?? [];
 }
 
+async function maybePushSync() {
+  try {
+    const s = await syncStatus();
+    if (s.configured && s.unlocked) {
+      await syncPush();
+    }
+  } catch {
+    /* silent — sync errors should not block local CRUD */
+  }
+}
+
 export async function saveHost(rec: HostRecord): Promise<void> {
   const s = await getStore();
   const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
@@ -51,6 +63,7 @@ export async function saveHost(rec: HostRecord): Promise<void> {
   else all.push(rec);
   await s.set(HOSTS_KEY, all);
   await s.save();
+  maybePushSync();
 }
 
 export async function deleteHost(id: string): Promise<void> {
@@ -59,6 +72,7 @@ export async function deleteHost(id: string): Promise<void> {
   const next = all.filter((h) => h.id !== id);
   await s.set(HOSTS_KEY, next);
   await s.save();
+  maybePushSync();
 }
 
 export async function bumpLastUsed(id: string): Promise<void> {

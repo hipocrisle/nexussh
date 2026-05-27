@@ -16,6 +16,7 @@ import { SyncStatus, syncStatus } from "./sync";
 import "./App.css";
 
 const ADVANCED_LS_KEY = "nexussh.advanced";
+const SIDEBAR_COLLAPSED_LS_KEY = "nexussh.sidebarCollapsed";
 
 function readAdvanced(): boolean {
   return localStorage.getItem(ADVANCED_LS_KEY) === "1";
@@ -23,6 +24,14 @@ function readAdvanced(): boolean {
 
 function writeAdvanced(v: boolean) {
   localStorage.setItem(ADVANCED_LS_KEY, v ? "1" : "0");
+}
+
+function readSidebarCollapsed(): boolean {
+  return localStorage.getItem(SIDEBAR_COLLAPSED_LS_KEY) === "1";
+}
+
+function writeSidebarCollapsed(v: boolean) {
+  localStorage.setItem(SIDEBAR_COLLAPSED_LS_KEY, v ? "1" : "0");
 }
 
 interface Tab extends TabInfo {
@@ -42,6 +51,15 @@ function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [advanced, setAdvanced] = useState<boolean>(readAdvanced());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
+    readSidebarCollapsed(),
+  );
+
+  function toggleSidebar() {
+    const next = !sidebarCollapsed;
+    setSidebarCollapsed(next);
+    writeSidebarCollapsed(next);
+  }
 
   // Ctrl/Cmd+T to open the new-tab picker.
   useEffect(() => {
@@ -231,7 +249,11 @@ function App() {
       )}
 
       <div className="flex-1 min-h-0 flex">
-        <Sidebar onConnect={openHost} />
+        <Sidebar
+          onConnect={openHost}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={toggleSidebar}
+        />
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
             tabs={tabs}

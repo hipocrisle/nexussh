@@ -12,11 +12,13 @@ const advancedEnabled = () =>
 
 interface Props {
   initial?: HostRecord;
+  /** Existing group names from other hosts, surfaced as datalist suggestions. */
+  knownGroups?: string[];
   onClose: () => void;
   onSaved: (h: HostRecord) => void;
 }
 
-export function HostDialog({ initial, onClose, onSaved }: Props) {
+export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Props) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
@@ -163,8 +165,14 @@ export function HostDialog({ initial, onClose, onSaved }: Props) {
               value={group}
               onChange={(e) => setGroup(e.target.value)}
               placeholder={t("dialog.group_ph")}
+              list="nexussh-known-groups"
               className={inputBase}
             />
+            <datalist id="nexussh-known-groups">
+              {knownGroups.map((g) => (
+                <option key={g} value={g} />
+              ))}
+            </datalist>
           </div>
 
           <div className="flex gap-2 pt-2">

@@ -17,6 +17,8 @@ const ru = {
     edit: "Изменить",
     delete: "Удалить",
     no_group: "—",
+    collapse: "свернуть боковую",
+    expand: "развернуть боковую",
   },
   dialog: {
     new_host: "новый хост",
@@ -143,6 +145,8 @@ const en = {
     edit: "Edit",
     delete: "Delete",
     no_group: "—",
+    collapse: "collapse sidebar",
+    expand: "expand sidebar",
   },
   dialog: {
     new_host: "new_host",

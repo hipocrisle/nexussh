@@ -15,7 +15,7 @@ import {
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
 import { getVersion } from "@tauri-apps/api/app";
-import { SshConfigImportPanel } from "../SshConfigImportPanel";
+import { ImportHostsPanel } from "../ImportHostsPanel";
 
 interface Props {
   s: NexuSettings;
@@ -247,7 +247,7 @@ export function BehaviorSection({ s, set, t }: Props) {
           {tr("settings.behavior.ssh_config_import_btn")}
         </button>
         {importOpen && (
-          <SshConfigImportPanel
+          <ImportHostsPanel
             onClose={() => setImportOpen(false)}
             onImported={() => setImportOpen(false)}
           />

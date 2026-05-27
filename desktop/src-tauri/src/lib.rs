@@ -1,4 +1,5 @@
 mod history;
+mod import_sources;
 mod ssh;
 mod ssh_config;
 mod sync;
@@ -45,6 +46,7 @@ pub fn run() {
             updater::install_update,
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
+            import_sources::read_import_sources,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

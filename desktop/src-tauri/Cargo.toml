@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "0.0.15"
+version = "0.0.16"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"
@@ -37,4 +37,8 @@ tauri-plugin-process = "2"
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"
+
+# Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
 

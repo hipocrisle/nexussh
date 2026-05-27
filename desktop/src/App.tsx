@@ -9,6 +9,13 @@ import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { TabPicker } from "./TabPicker";
+import { UpdatePanel } from "./UpdatePanel";
+import {
+  UpdateInfo,
+  maybeAutoCheck,
+  isAutoCheckEnabled,
+  setAutoCheckEnabled,
+} from "./updater";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
@@ -54,12 +61,31 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
   );
+  const [updatePanel, setUpdatePanel] = useState<
+    null | { initial?: UpdateInfo | null }
+  >(null);
+  const [autoUpdate, setAutoUpdate] = useState<boolean>(isAutoCheckEnabled());
 
   function toggleSidebar() {
     const next = !sidebarCollapsed;
     setSidebarCollapsed(next);
     writeSidebarCollapsed(next);
   }
+
+  function toggleAutoUpdate() {
+    const next = !autoUpdate;
+    setAutoUpdate(next);
+    setAutoCheckEnabled(next);
+  }
+
+  // Auto-update check on mount (once per 24h, silent on failure).
+  useEffect(() => {
+    maybeAutoCheck()
+      .then((info) => {
+        if (info) setUpdatePanel({ initial: info });
+      })
+      .catch(() => {});
+  }, []);
 
   // Ctrl/Cmd+T to open the new-tab picker.
   useEffect(() => {
@@ -244,6 +270,29 @@ function App() {
                 </div>
               </div>
             </label>
+            <label className="flex items-start gap-2 text-xs font-mono text-[#c9d1d9] cursor-pointer p-1 rounded hover:bg-[#0e1414]">
+              <input
+                type="checkbox"
+                checked={autoUpdate}
+                onChange={toggleAutoUpdate}
+                className="mt-0.5 accent-[#00ff95]"
+              />
+              <div>
+                <div>{t("settings.auto_update")}</div>
+                <div className="text-[10px] text-[#4a5560]">
+                  {t("settings.auto_update_hint")}
+                </div>
+              </div>
+            </label>
+            <button
+              onClick={() => {
+                setSettingsOpen(false);
+                setUpdatePanel({});
+              }}
+              className="w-full mt-1 px-2 py-1.5 bg-[#0e1414] hover:bg-[#1f3a3a] text-[#7fd7ff] font-mono text-xs rounded border border-[#1f3a3a]"
+            >
+              {t("settings.check_for_updates")}
+            </button>
           </div>
         </div>
       )}
@@ -320,6 +369,12 @@ function App() {
         <TabPicker
           onPick={openHost}
           onClose={() => setPickerOpen(false)}
+        />
+      )}
+      {updatePanel !== null && (
+        <UpdatePanel
+          initial={updatePanel.initial}
+          onClose={() => setUpdatePanel(null)}
         />
       )}
     </main>

@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "0.1.0"
+version = "0.0.2"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"
@@ -32,6 +32,8 @@ uuid = { version = "1.23.1", features = ["v4", "serde"] }
 tauri-plugin-store = "2.4.3"
 age = { version = "0.11.3", features = ["armor"] }
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"

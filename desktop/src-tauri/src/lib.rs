@@ -1,6 +1,7 @@
 mod history;
 mod ssh;
 mod sync;
+mod updater;
 mod vault;
 
 use std::sync::Arc;
@@ -11,6 +12,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(Arc::new(ssh::SessionManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
@@ -37,6 +40,8 @@ pub fn run() {
             history::history_delete,
             history::history_search,
             history::history_export,
+            updater::check_for_update,
+            updater::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

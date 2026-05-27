@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, FileText } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ThemePalette } from "./themes";
 import {
@@ -15,6 +15,7 @@ import {
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
 import { getVersion } from "@tauri-apps/api/app";
+import { SshConfigImportPanel } from "../SshConfigImportPanel";
 
 interface Props {
   s: NexuSettings;
@@ -29,6 +30,7 @@ const ISSUES_URL = "https://github.com/hipocrisle/nexussh/issues/new";
 export function BehaviorSection({ s, set, t }: Props) {
   const { t: tr } = useTranslation();
   const [version, setVersion] = useState<string>("");
+  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
@@ -224,6 +226,32 @@ export function BehaviorSection({ s, set, t }: Props) {
           enabledLabel={tr("settings.toggle.enabled")}
           disabledLabel={tr("settings.toggle.disabled")}
         />
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.ssh_config_import")}
+        hint={tr("settings.behavior.ssh_config_import_hint")}
+        t={t}
+      >
+        <button
+          type="button"
+          onClick={() => setImportOpen(true)}
+          className="inline-flex items-center gap-2 px-3 py-2 font-mono text-xs rounded"
+          style={{
+            background: t.bgPanel,
+            border: `1px solid ${t.border}`,
+            color: t.textSoft,
+          }}
+        >
+          <FileText size={12} />
+          {tr("settings.behavior.ssh_config_import_btn")}
+        </button>
+        {importOpen && (
+          <SshConfigImportPanel
+            onClose={() => setImportOpen(false)}
+            onImported={() => setImportOpen(false)}
+          />
+        )}
       </Row>
 
       <Row

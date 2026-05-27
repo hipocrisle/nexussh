@@ -615,8 +615,8 @@ const en = {
     return_short: "live",
   },
   term_menu: {
-    copy: "Copy (Ctrl+Shift+C)",
-    paste: "Paste (Ctrl+Shift+V)",
+    copy: "Copy (Ctrl+C)",
+    paste: "Paste (Ctrl+V)",
     select_all: "Select all",
     clear: "Clear terminal",
   },

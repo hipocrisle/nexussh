@@ -142,9 +142,9 @@ export function TerminalView({
 
     // Keyboard shortcuts intercepted at the xterm level so they NEVER reach
     // the PTY: Ctrl+Shift+C (copy), Ctrl+Shift+V (paste), Ctrl+Shift+Up
-    // (transcript overlay — actual toggle is handled by the window-level
-    // capture-phase listener in App.tsx; we just suppress xterm's default
-    // here so it doesn't translate to ESC sequences and confuse the remote).
+    // (transcript overlay — actual toggle handled by App.tsx capture-phase
+    // window listener; we just suppress xterm's default here). Ctrl+C alone
+    // is reserved for SIGINT — the natural muscle memory in any terminal.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
       const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
@@ -161,7 +161,7 @@ export function TerminalView({
         return false;
       }
       if (ctrlShift && (ev.key === "ArrowUp" || ev.key === "Up")) {
-        return false; // window-level handler will toggle the overlay
+        return false;
       }
       return true;
     });

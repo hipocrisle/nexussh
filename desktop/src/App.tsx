@@ -521,6 +521,7 @@ function App() {
                     sessionId={activeId}
                     hostLabel={`${t_.host.user}@${t_.host.host}`}
                     onClose={() => toggleTranscript(activeId)}
+                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
                   />
                 );
               })()}

@@ -294,6 +294,12 @@ const ru = {
     hint_open: "открыть",
     hint_close: "закрыть",
   },
+  ctx: {
+    copy: "Копировать",
+    cut: "Вырезать",
+    paste: "Вставить",
+    select_all: "Выделить всё",
+  },
   tabmenu: {
     restart: "Перезапустить сессию",
     duplicate: "Дублировать вкладку",
@@ -609,6 +615,12 @@ const en = {
     hint_move: "move",
     hint_open: "open",
     hint_close: "close",
+  },
+  ctx: {
+    copy: "Copy",
+    cut: "Cut",
+    paste: "Paste",
+    select_all: "Select all",
   },
   tabmenu: {
     restart: "Restart session",

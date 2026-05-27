@@ -18,6 +18,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { TabPicker } from "./TabPicker";
 import { UpdatePanel } from "./UpdatePanel";
 import { ContextMenu, MenuItem } from "./ContextMenu";
+import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { SettingsScreen } from "./SettingsScreen";
@@ -202,21 +203,34 @@ function App() {
     return () => window.removeEventListener("keydown", handler, true);
   }, [activeId]);
 
-  // Block the browser's native context menu ONLY inside the terminal canvas.
-  // There we run our own custom menu / PuTTY-style paste. Everywhere else
-  // (Settings, sidebar, History, host info card, modal forms) we let the
-  // WebView's native Copy/Paste/Select menu through — right-click on a
-  // plain text label and "Copy" works like in any normal desktop app.
+  // Suppress the WebView's native context menu everywhere and replace it
+  // with our own. The native one ships "Print", "Share", "Copy link to
+  // highlight" (Tauri URL garbage), "Other tools" (empty) etc. — none of
+  // which make sense in a terminal client. Terminal area has its own custom
+  // menu already (built in Terminal.tsx); for the rest of the app we show
+  // contextual Copy / Cut / Paste / Select All based on selection + target.
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
+      // Terminal.tsx attaches a contextmenu listener on its container and
+      // calls preventDefault + opens its own menu — by the time the event
+      // bubbles up to us, defaultPrevented is true.
+      if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest(".xterm, .xterm-helper-textarea")) {
         e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      const items = buildAppContextMenu(target, t);
+      if (items.length > 0) {
+        setMenu({ x: e.clientX, y: e.clientY, items });
       }
     };
     window.addEventListener("contextmenu", onContextMenu);
     return () => window.removeEventListener("contextmenu", onContextMenu);
-  }, []);
+    // t comes from useTranslation; it is stable across renders for the
+    // same language, so re-binding on language change is desirable.
+  }, [t]);
 
   // Poll vault + sync status on mount
   useEffect(() => {

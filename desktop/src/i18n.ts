@@ -9,6 +9,8 @@ const ru = {
     version_label: "v",
     tagline: "терминал нового поколения",
     password_prompt: "Пароль для {{user}}@{{host}}:",
+    confirm_close_tab: "Закрыть подключённую сессию «{{name}}»?",
+    autoreconnect_gave_up: "Не удалось переподключиться к «{{name}}» после 5 попыток",
   },
   sidebar: {
     filter_placeholder: "поиск...",
@@ -323,6 +325,8 @@ const en = {
     version_label: "v",
     tagline: "next-gen terminal",
     password_prompt: "Password for {{user}}@{{host}}:",
+    confirm_close_tab: "Close active session \"{{name}}\"?",
+    autoreconnect_gave_up: "Could not reconnect to \"{{name}}\" after 5 attempts",
   },
   sidebar: {
     filter_placeholder: "filter...",

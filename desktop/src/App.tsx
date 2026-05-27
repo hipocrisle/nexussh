@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Lock,
@@ -104,6 +104,47 @@ function App() {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
   }, []);
 
+  // restoreSession — on first mount, if enabled, reopen the hosts that were
+  // open last time. We persist host IDs (not session IDs, since the live
+  // PTY dies with the process).
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    if (!settings.restoreSession) return;
+    try {
+      const raw = localStorage.getItem("nexussh.lastTabs");
+      if (!raw) return;
+      const ids: string[] = JSON.parse(raw);
+      if (!Array.isArray(ids) || ids.length === 0) return;
+      // Fire dialed reconnects sequentially so the order matches what the
+      // user had. Use async IIFE so we await listHosts once.
+      (async () => {
+        const { listHosts } = await import("./hosts");
+        const all = await listHosts();
+        for (const id of ids) {
+          const h = all.find((x) => x.id === id);
+          if (h) {
+            // openHost is async but we don't await — let them connect in
+            // parallel after we've kicked them all off
+            openHost(h);
+          }
+        }
+      })();
+    } catch {
+      /* ignore — restoreSession is best-effort */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep localStorage in sync with the current open-tab host ids so the
+  // next launch can restore them.
+  useEffect(() => {
+    if (!settings.restoreSession) return;
+    const ids = tabs.map((t_) => t_.host.id);
+    localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
+  }, [tabs, settings.restoreSession]);
+
   // Auto-update check on mount (once per 24h, silent on failure).
   useEffect(() => {
     maybeAutoCheck()
@@ -161,23 +202,17 @@ function App() {
     return () => window.removeEventListener("keydown", handler, true);
   }, [activeId]);
 
-  // Suppress default WebView context menu everywhere except real form fields.
-  // IMPORTANT: only handle `contextmenu`. The previous v0.0.5 mousedown trick
-  // (preventDefault on button===2) silently SUPPRESSED the subsequent
-  // contextmenu event in WebKit/Chromium, which killed our own React
-  // onContextMenu handlers on tabs/sidebar/host items. Don't ever do that.
+  // Block the browser's native context menu ONLY inside the terminal canvas.
+  // There we run our own custom menu / PuTTY-style paste. Everywhere else
+  // (Settings, sidebar, History, host info card, modal forms) we let the
+  // WebView's native Copy/Paste/Select menu through — right-click on a
+  // plain text label and "Copy" works like in any normal desktop app.
   useEffect(() => {
-    const isFormField = (target: HTMLElement | null) => {
-      if (!target) return false;
-      // xterm's hidden textarea hosts keyboard input over the terminal canvas;
-      // we want OUR no-menu policy there, not the browser's native.
-      if (target.closest(".xterm, .xterm-helper-textarea")) return false;
-      return !!target.closest("input, textarea, [contenteditable='true']");
-    };
     const onContextMenu = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (isFormField(target)) return;
-      e.preventDefault();
+      if (target?.closest(".xterm, .xterm-helper-textarea")) {
+        e.preventDefault();
+      }
     };
     window.addEventListener("contextmenu", onContextMenu);
     return () => window.removeEventListener("contextmenu", onContextMenu);
@@ -252,6 +287,11 @@ function App() {
           x.id === tabId ? { ...x, id: sid, status: "connected" as const } : x,
         ),
       );
+      // Move reconnect bookkeeping to the new session id and reset attempts.
+      const prev = reconnectRef.current.get(tabId);
+      reconnectRef.current.delete(tabId);
+      if (prev?.timer != null) window.clearTimeout(prev.timer);
+      reconnectRef.current.set(sid, { attempts: 0, timer: null });
       setActiveId(sid);
     } catch (e) {
       setError(String(e));
@@ -260,6 +300,9 @@ function App() {
           x.id === tabId ? { ...x, status: "closed" as const } : x,
         ),
       );
+      // restartSession failure also triggers another backoff if eligible.
+      const failedTab = tabs.find((x) => x.id === tabId);
+      if (failedTab && settings.autoReconnect) scheduleReconnect(failedTab);
     }
   }
 
@@ -305,9 +348,23 @@ function App() {
 
   async function closeTab(id: string) {
     const target = tabs.find((x) => x.id === id);
+    if (
+      settings.confirmClose &&
+      target &&
+      (target.status === "connected" || target.status === "connecting")
+    ) {
+      if (
+        !window.confirm(
+          t("app.confirm_close_tab", { name: target.host.name }),
+        )
+      ) {
+        return;
+      }
+    }
     if (target && target.status === "connected") {
       sshDisconnect(id).catch(() => {});
     }
+    clearReconnect(id);
     setTabs((all) => all.filter((x) => x.id !== id));
     if (activeId === id) {
       const remaining = tabs.filter((x) => x.id !== id);
@@ -315,10 +372,50 @@ function App() {
     }
   }
 
-  function markClosed(id: string) {
+  // Per-tab auto-reconnect bookkeeping. Each entry tracks how many retry
+  // attempts have been made + the pending setTimeout handle so we can cancel
+  // when the user explicitly closes the tab.
+  const reconnectRef = useRef(
+    new Map<string, { attempts: number; timer: number | null }>(),
+  );
+
+  const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000];
+
+  function clearReconnect(id: string) {
+    const r = reconnectRef.current.get(id);
+    if (r?.timer != null) window.clearTimeout(r.timer);
+    reconnectRef.current.delete(id);
+  }
+
+  function scheduleReconnect(tab: Tab) {
+    if (!settings.autoReconnect) return;
+    const prev = reconnectRef.current.get(tab.id) ?? { attempts: 0, timer: null };
+    if (prev.attempts >= RECONNECT_DELAYS.length) {
+      setError(t("app.autoreconnect_gave_up", { name: tab.host.name }));
+      clearReconnect(tab.id);
+      return;
+    }
+    const delay = RECONNECT_DELAYS[prev.attempts];
+    const timer = window.setTimeout(() => {
+      prev.attempts += 1;
+      restartSession(tab.id);
+    }, delay);
+    reconnectRef.current.set(tab.id, { attempts: prev.attempts, timer });
+  }
+
+  function markClosed(id: string, reason: string) {
     setTabs((all) =>
       all.map((x) => (x.id === id ? { ...x, status: "closed" } : x)),
     );
+    // Auto-reconnect only on UNEXPECTED close (network drop, server-side EOF
+    // etc.). Don't retry when the user themselves closed the session.
+    const userInitiated = reason === "user disconnected";
+    if (userInitiated) {
+      clearReconnect(id);
+      return;
+    }
+    const tab = tabs.find((x) => x.id === id);
+    if (tab) scheduleReconnect(tab);
   }
 
   // Propagate active theme as CSS variables on the root, so every Tailwind
@@ -505,7 +602,7 @@ function App() {
                   key={t_.id}
                   sessionId={t_.id}
                   visible={t_.id === activeId}
-                  onSessionClosed={() => markClosed(t_.id)}
+                  onSessionClosed={(reason) => markClosed(t_.id, reason)}
                   onContextMenu={(x, y, items) => setMenu({ x, y, items })}
                 />
               ),

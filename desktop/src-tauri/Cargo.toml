@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "0.0.12"
+version = "0.0.13"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"

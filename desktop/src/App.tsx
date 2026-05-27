@@ -115,14 +115,21 @@ function App() {
 
   // Global hotkeys: Ctrl/Cmd+T (picker), Ctrl/Cmd+, (settings),
   // Ctrl+Shift+Up (open transcript overlay for active tab).
+  //
+  // IMPORTANT: use CAPTURE phase. xterm.js attaches its own keydown listener
+  // on the helper textarea and forwards keys to the PTY before bubble-phase
+  // handlers run. Without capture, Ctrl+Shift+Up was being eaten by xterm
+  // and never reached our toggle.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
+        e.stopPropagation();
         setPickerOpen(true);
       } else if (meta && e.key === ",") {
         e.preventDefault();
+        e.stopPropagation();
         setSettingsOpen((v) => !v);
       } else if (
         e.ctrlKey &&
@@ -131,12 +138,13 @@ function App() {
       ) {
         if (activeId) {
           e.preventDefault();
+          e.stopPropagation();
           toggleTranscript(activeId);
         }
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, [activeId]);
 
   // Suppress default WebView context menu everywhere except real form fields.
@@ -296,16 +304,6 @@ function App() {
   function markClosed(id: string) {
     setTabs((all) =>
       all.map((x) => (x.id === id ? { ...x, status: "closed" } : x)),
-    );
-  }
-
-  // Full-screen Settings replaces the main layout when open.
-  if (settingsOpen) {
-    return (
-      <SettingsScreen
-        onClose={() => setSettingsOpen(false)}
-        sessionCount={tabs.length}
-      />
     );
   }
 
@@ -494,6 +492,7 @@ function App() {
                   sessionId={t_.id}
                   visible={t_.id === activeId}
                   onSessionClosed={() => markClosed(t_.id)}
+                  onContextMenu={(x, y, items) => setMenu({ x, y, items })}
                 />
               ),
             )}
@@ -559,6 +558,18 @@ function App() {
             setEditHost(null);
           }}
         />
+      )}
+
+      {/* Settings as an OVERLAY (not a return-replacement) so TerminalView
+       *  stays mounted underneath — opening Settings no longer disconnects
+       *  the active SSH session. */}
+      {settingsOpen && (
+        <div className="fixed inset-0 z-40">
+          <SettingsScreen
+            onClose={() => setSettingsOpen(false)}
+            sessionCount={tabs.length}
+          />
+        </div>
       )}
     </main>
   );

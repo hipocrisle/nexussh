@@ -157,7 +157,7 @@ export function AppearanceSection({ s, set, t }: Props) {
             <Slider
               value={Math.round(s.rainOpacity * 100)}
               onChange={(v) => set({ rainOpacity: v / 100 })}
-              min={10}
+              min={5}
               max={80}
               t={t}
               format={(v) => `${v}%`}

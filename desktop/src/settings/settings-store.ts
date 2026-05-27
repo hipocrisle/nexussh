@@ -35,7 +35,7 @@ export const DEFAULTS: NexuSettings = {
   fontSize: 14,
   rainOn: false, // off by default; user opts in
   rainDensity: 16,
-  rainOpacity: 0.35,
+  rainOpacity: 0.15,
   channel: "stable",
   autoUpdate: true,
   verifySigs: true,

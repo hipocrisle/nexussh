@@ -303,6 +303,12 @@ const ru = {
     return: "Вернуться в живой терминал",
     return_short: "live",
   },
+  term_menu: {
+    copy: "Копировать (Ctrl+Shift+C)",
+    paste: "Вставить (Ctrl+Shift+V)",
+    select_all: "Выделить всё",
+    clear: "Очистить терминал",
+  },
   errors: {
     auth_failed: "Ошибка аутентификации",
     connection_failed: "Не удалось подключиться",
@@ -607,6 +613,12 @@ const en = {
     hint: "read-only · wheel to scroll · Esc to return",
     return: "Return to live terminal",
     return_short: "live",
+  },
+  term_menu: {
+    copy: "Copy (Ctrl+Shift+C)",
+    paste: "Paste (Ctrl+Shift+V)",
+    select_all: "Select all",
+    clear: "Clear terminal",
   },
   errors: {
     auth_failed: "Authentication failed",

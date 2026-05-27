@@ -30,6 +30,7 @@ import {
   addKnownFolder,
   removeKnownFolder,
   renameKnownFolder,
+  onHostsChanged,
 } from "./hosts";
 import { HostDialog } from "./HostDialog";
 import { MenuItem } from "./ContextMenu";
@@ -86,6 +87,10 @@ export function Sidebar({
 
   useEffect(() => {
     reload();
+    // Re-fetch whenever saveHost/deleteHost fire the global event — e.g.
+    // after Settings → Import dumps a batch of new entries we want the
+    // sidebar to show them without the user having to relaunch the app.
+    return onHostsChanged(reload);
   }, [reload]);
 
   const filtered = useMemo(() => {

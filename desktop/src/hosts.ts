@@ -59,6 +59,19 @@ async function maybePushSync() {
   }
 }
 
+/** Fire a window event so subscribers (Sidebar, TabPicker, future SFTP
+ *  browser) can refresh after any host-list mutation. Cheap pub-sub
+ *  without pulling in a global store. */
+const HOSTS_CHANGED_EVENT = "nexussh:hosts-changed";
+function notifyHostsChanged() {
+  window.dispatchEvent(new CustomEvent(HOSTS_CHANGED_EVENT));
+}
+
+export function onHostsChanged(cb: () => void): () => void {
+  window.addEventListener(HOSTS_CHANGED_EVENT, cb);
+  return () => window.removeEventListener(HOSTS_CHANGED_EVENT, cb);
+}
+
 export async function saveHost(rec: HostRecord): Promise<void> {
   const s = await getStore();
   const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
@@ -67,6 +80,7 @@ export async function saveHost(rec: HostRecord): Promise<void> {
   else all.push(rec);
   await s.set(HOSTS_KEY, all);
   await s.save();
+  notifyHostsChanged();
   maybePushSync();
 }
 
@@ -76,6 +90,7 @@ export async function deleteHost(id: string): Promise<void> {
   const next = all.filter((h) => h.id !== id);
   await s.set(HOSTS_KEY, next);
   await s.save();
+  notifyHostsChanged();
   maybePushSync();
 }
 

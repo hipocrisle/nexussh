@@ -69,7 +69,7 @@ export function TerminalView({
       fontFamily: '"JetBrains Mono", "Fira Code", monospace',
       fontSize: 14,
       cursorBlink: true,
-      scrollback: 10_000,
+      scrollback: 100_000,
       allowProposedApi: true,
     });
     const fit = new FitAddon();
@@ -79,6 +79,18 @@ export function TerminalView({
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
+
+    // Hijack mouse wheel — always scroll the terminal buffer instead of
+    // sending arrow-key escape sequences to the remote app. Default xterm.js
+    // behavior translates wheel events into `\x1bOA`/`\x1bOB` when the remote
+    // is in alt-screen mode (Claude Code, vim, htop, less, tmux), which is
+    // disorienting for users expecting browser-like scroll.
+    term.attachCustomWheelEventHandler((ev: WheelEvent) => {
+      const lines = Math.max(1, Math.round(Math.abs(ev.deltaY) / 24));
+      term.scrollLines(ev.deltaY > 0 ? lines : -lines);
+      ev.preventDefault();
+      return false;
+    });
 
     const onDataDisposable = term.onData((data) => {
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);

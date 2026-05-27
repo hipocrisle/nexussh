@@ -8,6 +8,7 @@ import { LanguageSwitcher } from "./LanguageSwitcher";
 import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { TabPicker } from "./TabPicker";
 import { sshConnect, sshDisconnect } from "./ssh";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
@@ -38,8 +39,21 @@ function App() {
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [advanced, setAdvanced] = useState<boolean>(readAdvanced());
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // Ctrl/Cmd+T to open the new-tab picker.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        setPickerOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   function toggleAdvanced() {
     const next = !advanced;
@@ -224,6 +238,7 @@ function App() {
             activeId={activeId}
             onSelect={setActiveId}
             onClose={closeTab}
+            onNewTab={() => setPickerOpen(true)}
           />
           <div className="flex-1 min-h-0 relative">
             {tabs.length === 0 && (
@@ -278,6 +293,12 @@ function App() {
       )}
       {historyPanelOpen && (
         <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
+      )}
+      {pickerOpen && (
+        <TabPicker
+          onPick={openHost}
+          onClose={() => setPickerOpen(false)}
+        />
       )}
     </main>
   );

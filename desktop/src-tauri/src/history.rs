@@ -335,6 +335,13 @@ pub(crate) fn strip_ansi(data: &[u8]) -> Vec<u8> {
                         i += 1;
                     }
                 }
+                b'N' | b'O' => {
+                    // SS2 / SS3 — `ESC N <c>` / `ESC O <c>` — exactly one byte
+                    // after the introducer. Mouse-wheel arrow events come as
+                    // `\x1bOA`/`\x1bOB`/etc.; without this branch the trailing
+                    // letter leaked into history output as garbage `B B B`.
+                    i += 3.min(data.len() - i);
+                }
                 _ => {
                     // Two-char ESC sequence (e.g. ESC =, ESC >, ESC c)
                     i += 2;
@@ -425,6 +432,32 @@ mod tests {
     fn two_char_esc_sequences() {
         // ESC c (RIS), ESC = (DECKPAM), ESC D (IND)
         assert_eq!(s(b"\x1bcboot\x1b=mode"), "bootmode");
+    }
+
+    #[test]
+    fn ss3_arrow_keys_stripped() {
+        // Mouse wheel in xterm.js alt-screen mode sends `\x1bOA`/`\x1bOB`
+        // (cursor up/down). Without SS3 handling, the trailing `A`/`B`
+        // letters leak into the log as garbage.
+        assert_eq!(s(b"hello\x1bOA"), "hello");
+        assert_eq!(s(b"hello\x1bOBworld"), "helloworld");
+        // Mixed real input + wheel events
+        assert_eq!(
+            s(b"t\x1bOBe\x1bOBs\x1bOBt"),
+            "test"
+        );
+    }
+
+    #[test]
+    fn ss2_stripped() {
+        // SS2 — ESC N <c>
+        assert_eq!(s(b"a\x1bNXb"), "ab");
+    }
+
+    #[test]
+    fn truncated_ss3_safe() {
+        // ESC O without trailing byte — should not panic
+        assert_eq!(s(b"hello\x1bO"), "hello");
     }
 
     #[test]

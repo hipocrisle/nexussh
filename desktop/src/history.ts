@@ -103,6 +103,11 @@ export function stripAnsi(bytes: Uint8Array): string {
           }
           i += 1;
         }
+      } else if (next === 0x4e || next === 0x4f) {
+        // SS2 / SS3 — `ESC N <c>` / `ESC O <c>` — three bytes total.
+        // Without this branch, arrow-key escapes from mouse-wheel events
+        // (`\x1bOA`/`\x1bOB`) leak their trailing letter into the log.
+        i += Math.min(3, bytes.length - i);
       } else {
         i += 2;
       }

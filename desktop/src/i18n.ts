@@ -113,6 +113,14 @@ const ru = {
     show_advanced: "Показывать advanced-фичи",
     show_advanced_hint: "Vault (age-encrypted credential store). Если ты не понимаешь зачем — оставь выключенным, обычного sync достаточно.",
   },
+  picker: {
+    placeholder: "поиск хоста...",
+    no_hosts: "нет сохранённых хостов",
+    no_match: "ничего не найдено",
+    hint_move: "выбор",
+    hint_open: "открыть",
+    hint_close: "закрыть",
+  },
   errors: {
     auth_failed: "Ошибка аутентификации",
     connection_failed: "Не удалось подключиться",
@@ -227,6 +235,14 @@ const en = {
     title: "settings",
     show_advanced: "Show advanced features",
     show_advanced_hint: "Vault (age-encrypted credential store). If you don't know why you'd need it — leave off; sync alone is enough.",
+  },
+  picker: {
+    placeholder: "search hosts...",
+    no_hosts: "no saved hosts",
+    no_match: "no match",
+    hint_move: "move",
+    hint_open: "open",
+    hint_close: "close",
   },
   errors: {
     auth_failed: "Authentication failed",

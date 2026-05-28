@@ -37,6 +37,7 @@ import { MenuItem } from "./ContextMenu";
 
 interface Props {
   onConnect: (h: HostRecord) => void;
+  onSftp?: (h: HostRecord) => void;
   onSelect?: (h: HostRecord) => void;
   selectedId?: string | null;
   collapsed: boolean;
@@ -66,6 +67,7 @@ function writeCollapsedGroups(s: Set<string>) {
 
 export function Sidebar({
   onConnect,
+  onSftp,
   onSelect,
   selectedId,
   collapsed,
@@ -196,6 +198,7 @@ export function Sidebar({
 
     onContextMenu?.(e.clientX, e.clientY, [
       { label: t("sidebar.menu_connect"), onClick: () => onConnect(h) },
+      { label: t("sidebar.menu_sftp"), onClick: () => onSftp?.(h) },
       { label: t("sidebar.menu_edit"), onClick: () => setDialog({ kind: "edit", rec: h }) },
       {
         label: t("sidebar.menu_duplicate"),

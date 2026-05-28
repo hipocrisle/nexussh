@@ -1,5 +1,6 @@
 mod history;
 mod import_sources;
+mod sftp;
 mod ssh;
 mod ssh_config;
 mod sync;
@@ -17,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(Arc::new(ssh::SessionManager::new()))
+        .manage(Arc::new(sftp::SftpManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
         .invoke_handler(tauri::generate_handler![
@@ -25,6 +27,15 @@ pub fn run() {
             ssh::ssh_resize,
             ssh::ssh_disconnect,
             ssh::ssh_ready,
+            sftp::sftp_connect,
+            sftp::sftp_realpath,
+            sftp::sftp_list,
+            sftp::sftp_download,
+            sftp::sftp_upload,
+            sftp::sftp_mkdir,
+            sftp::sftp_rename,
+            sftp::sftp_remove,
+            sftp::sftp_disconnect,
             vault::vault_set_paths,
             vault::vault_status,
             vault::vault_unlock,

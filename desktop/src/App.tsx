@@ -15,6 +15,8 @@ import { LanguageSwitcher } from "./LanguageSwitcher";
 import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { SFTPPanel } from "./SFTPPanel";
+import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { UpdatePanel } from "./UpdatePanel";
 import { ContextMenu, MenuItem } from "./ContextMenu";
@@ -63,6 +65,10 @@ function App() {
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  const [sftpTarget, setSftpTarget] = useState<{
+    args: ConnectArgs;
+    title: string;
+  } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
@@ -275,6 +281,22 @@ function App() {
       setTabs((tabs) => tabs.filter((x) => x.id !== pending.id));
       setError(String(e));
     }
+  }
+
+  function openSftp(h: HostRecord) {
+    setError(null);
+    let auth = h.auth;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const entered = window.prompt(
+        t("app.password_prompt", { user: h.user, host: h.host }),
+      );
+      if (entered === null) return;
+      auth = { kind: "password", password: entered };
+    }
+    setSftpTarget({
+      args: { host: h.host, port: h.port, user: h.user, auth },
+      title: `${h.user}@${h.host}`,
+    });
   }
 
   async function restartSession(tabId: string) {
@@ -543,6 +565,7 @@ function App() {
       <div className="relative z-10 flex-1 min-h-0 flex">
         <Sidebar
           onConnect={openHost}
+          onSftp={openSftp}
           onSelect={setSelectedHost}
           selectedId={selectedHost?.id ?? null}
           collapsed={sidebarCollapsed}
@@ -654,6 +677,13 @@ function App() {
       )}
       {historyPanelOpen && (
         <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
+      )}
+      {sftpTarget && (
+        <SFTPPanel
+          connectArgs={sftpTarget.args}
+          title={sftpTarget.title}
+          onClose={() => setSftpTarget(null)}
+        />
       )}
       {pickerOpen && (
         <TabPicker

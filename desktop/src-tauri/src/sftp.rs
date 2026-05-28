@@ -92,6 +92,10 @@ pub struct SftpEntry {
     pub mtime: u64,
     /// POSIX mode bits (0 if unknown).
     pub permissions: u32,
+    /// Owner user name if the server reports it (else empty).
+    pub owner: String,
+    /// Numeric uid (0 if unknown).
+    pub uid: u32,
 }
 
 async fn get_session(
@@ -192,6 +196,8 @@ pub async fn sftp_list(
             size: meta.size.unwrap_or(0),
             mtime: meta.mtime.unwrap_or(0) as u64,
             permissions: meta.permissions.unwrap_or(0),
+            owner: meta.user.clone().unwrap_or_default(),
+            uid: meta.uid.unwrap_or(0),
         });
     }
     // Dirs first, then alphabetical (case-insensitive).

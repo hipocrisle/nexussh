@@ -12,6 +12,10 @@ export interface SftpEntry {
   mtime: number;
   /** POSIX mode bits (0 if unknown). */
   permissions: number;
+  /** Owner user name if the server reports it (else ""). */
+  owner: string;
+  /** Numeric uid (0 if unknown). */
+  uid: number;
 }
 
 export async function sftpConnect(args: ConnectArgs): Promise<string> {

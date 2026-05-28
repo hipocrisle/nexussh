@@ -16,6 +16,7 @@ import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
 import { HistoryPanel } from "./HistoryPanel";
 import { SFTPPanel } from "./SFTPPanel";
+import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { UpdatePanel } from "./UpdatePanel";
@@ -673,6 +674,12 @@ function App() {
           </div>
         </div>
       </div>
+
+      <StatusLine
+        sessionCount={tabs.length}
+        connectingCount={tabs.filter((x) => x.status === "connecting").length}
+        syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
+      />
 
       {vaultPanelOpen && (
         <VaultPanel

@@ -117,6 +117,11 @@ const ru = {
     pull_done: "Прочитано {{count}} хостов",
     open_panel: "sync",
   },
+  status: {
+    mode_normal: "обычный",
+    sessions: "сессий: {{n}}",
+    connecting: "подключается",
+  },
   sftp: {
     up: "вверх",
     upload: "загрузить файл",
@@ -481,6 +486,11 @@ const en = {
     push_done: "File updated ✓",
     pull_done: "Pulled {{count}} hosts",
     open_panel: "sync",
+  },
+  status: {
+    mode_normal: "normal",
+    sessions: "{{n}} sessions",
+    connecting: "connecting",
   },
   sftp: {
     up: "up",

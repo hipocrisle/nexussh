@@ -43,7 +43,7 @@ export function TabBar({
 }: Props) {
   return (
     <div className="h-9 flex items-center bg-nx-bg-2 border-b border-nx-border shrink-0">
-      <div className="flex-1 min-w-0 overflow-x-auto flex items-center h-full">
+      <div className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden flex items-center h-full">
         {tabs.map((t) => {
           const active = t.id === activeId;
           return (
@@ -86,7 +86,7 @@ export function TabBar({
       <button
         onClick={onNewTab}
         title="New tab — Ctrl+T"
-        className="h-full shrink-0 px-3 flex items-center text-nx-accent hover:bg-nx-elevated border-l border-nx-border transition-colors duration-[80ms]"
+        className="h-full shrink-0 px-3 flex items-center text-nx-accent hover:bg-nx-elevated transition-colors duration-[80ms]"
       >
         <Plus size={14} />
       </button>

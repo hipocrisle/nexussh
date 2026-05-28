@@ -28,6 +28,18 @@ export interface TerminalAction {
   separator?: boolean;
 }
 
+// Fit ONLY when the container is genuinely visible with a real-sized box.
+// A hidden tab (display:none) reports offsetParent=null / offsetWidth=0, and
+// during layout transitions the box can briefly measure tiny. Fitting then
+// resizes xterm to a handful of columns; the PTY reflows its output narrow,
+// and those hard-wrapped lines stay broken even after the width is restored
+// (the "text in a column" bug when switching tabs repeatedly).
+function fitIfVisible(el: HTMLElement | null, fit: FitAddon | null) {
+  if (!el || !fit) return;
+  if (!el.offsetParent || el.offsetWidth < 80 || el.offsetHeight < 40) return;
+  fit.fit();
+}
+
 interface Props {
   sessionId: string;
   visible: boolean;
@@ -78,7 +90,7 @@ export function TerminalView({
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
     term.open(containerRef.current);
-    fit.fit();
+    fitIfVisible(containerRef.current, fit);
     termRef.current = term;
     fitRef.current = fit;
 
@@ -232,7 +244,7 @@ export function TerminalView({
       }
     })();
 
-    const onWinResize = () => fit.fit();
+    const onWinResize = () => fitIfVisible(containerRef.current, fit);
     window.addEventListener("resize", onWinResize);
     sshResize(sessionId, term.cols, term.rows).catch(console.error);
 
@@ -253,12 +265,16 @@ export function TerminalView({
   }, []);
 
   // Re-fit when tab becomes visible (window dimensions might have changed
-  // while we were hidden)
+  // while we were hidden). Double rAF so the display:none→block flip and the
+  // flex layout settle before we measure — a single frame can still read a
+  // transitional (too-narrow) box.
   useEffect(() => {
     if (!visible || !fitRef.current) return;
     requestAnimationFrame(() => {
-      fitRef.current?.fit();
-      termRef.current?.focus();
+      requestAnimationFrame(() => {
+        fitIfVisible(containerRef.current, fitRef.current);
+        termRef.current?.focus();
+      });
     });
   }, [visible]);
 
@@ -267,7 +283,7 @@ export function TerminalView({
   useEffect(() => {
     if (!containerRef.current || !fitRef.current) return;
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => fitRef.current?.fit());
+      requestAnimationFrame(() => fitIfVisible(containerRef.current, fitRef.current));
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();

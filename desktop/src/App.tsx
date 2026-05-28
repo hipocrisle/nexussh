@@ -36,6 +36,8 @@ import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Minus, Square, Copy as RestoreIcon, X as CloseIcon } from "lucide-react";
 import "./App.css";
 
 const SIDEBAR_COLLAPSED_LS_KEY = "nexussh.sidebarCollapsed";
@@ -78,6 +80,41 @@ function HeaderButton({
       {icon}
       {children}
     </button>
+  );
+}
+
+// Custom window controls (native decorations are off — see tauri.conf.json).
+// Lives flush in the top-right of the header titlebar.
+function WindowControls() {
+  const win = getCurrentWindow();
+  const [maxed, setMaxed] = useState(false);
+  useEffect(() => {
+    win.isMaximized().then(setMaxed).catch(() => {});
+    const unlisten = win.onResized(() => {
+      win.isMaximized().then(setMaxed).catch(() => {});
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+  }, [win]);
+  const btn =
+    "inline-flex items-center justify-center w-11 h-9 text-nx-muted hover:bg-nx-elevated hover:text-nx-text transition-colors duration-[80ms]";
+  return (
+    <div className="flex items-stretch h-9 -mr-3 ml-1">
+      <button className={btn} onClick={() => win.minimize()} title="Minimize">
+        <Minus size={14} />
+      </button>
+      <button className={btn} onClick={() => win.toggleMaximize()} title="Maximize">
+        {maxed ? <RestoreIcon size={12} /> : <Square size={12} />}
+      </button>
+      <button
+        className="inline-flex items-center justify-center w-11 h-9 text-nx-muted hover:bg-nx-error hover:text-white transition-colors duration-[80ms]"
+        onClick={() => win.close()}
+        title="Close"
+      >
+        <CloseIcon size={15} />
+      </button>
+    </div>
   );
 }
 
@@ -539,9 +576,12 @@ function App() {
       {/* Brief full-app matrix burst on connect (keyed so it replays). */}
       {rainBurst > 0 && <div key={rainBurst} className="nx-rain-burst" />}
 
-      <header className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0">
+      <header
+        data-tauri-drag-region
+        className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0"
+      >
         {/* Brand mark — framed > glyph nodding to the app icon */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-tauri-drag-region>
           <span className="inline-flex w-[18px] h-[18px] items-center justify-center border border-nx-accent rounded-nx-sm shadow-glow-sm">
             <span className="text-nx-accent text-[11px] font-bold leading-none">
               &gt;
@@ -553,7 +593,10 @@ function App() {
           <span className="text-micro text-nx-muted font-mono">v{version}</span>
         </div>
 
-        <span className="text-meta italic text-nx-muted font-mono hidden md:inline">
+        <span
+          data-tauri-drag-region
+          className="text-meta italic text-nx-muted font-mono hidden md:inline"
+        >
           — {t("app.tagline")}
         </span>
 
@@ -615,6 +658,7 @@ function App() {
           <div className="ml-1">
             <LanguageSwitcher />
           </div>
+          <WindowControls />
         </div>
       </header>
 

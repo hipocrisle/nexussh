@@ -119,6 +119,7 @@ function App() {
     x: number;
     y: number;
     items: MenuItem[];
+    title?: { kicker?: string; main?: string };
   } | null>(null);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
@@ -612,7 +613,7 @@ function App() {
           selectedId={selectedHost?.id ?? null}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={toggleSidebar}
-          onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+          onContextMenu={(x, y, items, title) => setMenu({ x, y, items, title })}
           clickMode={settings.clickMode}
         />
         <div className="flex-1 min-w-0 flex flex-col">
@@ -749,6 +750,7 @@ function App() {
         <ContextMenu
           x={menu.x}
           y={menu.y}
+          title={menu.title}
           items={menu.items}
           onClose={() => setMenu(null)}
         />

@@ -1,14 +1,32 @@
 // TabPicker — compact host quick-picker shown when user clicks `+` in TabBar
 // or hits Ctrl+T. Keyboard-driven: type to filter, Up/Down to move, Enter to open.
+// Shares its visual surface with ContextMenu via Popover.tsx.
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Server } from "lucide-react";
 import { HostRecord, listHosts } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
+import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
 
 interface Props {
   onPick: (h: HostRecord) => void;
   onClose: () => void;
+}
+
+function Highlighted({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  const idx = text.toLowerCase().indexOf(query.toLowerCase());
+  if (idx < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, idx)}
+      <mark className="bg-[rgba(0,255,149,0.18)] text-nx-accent px-0.5">
+        {text.slice(idx, idx + query.length)}
+      </mark>
+      {text.slice(idx + query.length)}
+    </>
+  );
 }
 
 export function TabPicker({ onPick, onClose }: Props) {
@@ -21,7 +39,6 @@ export function TabPicker({ onPick, onClose }: Props) {
 
   useEffect(() => {
     listHosts().then((list) => {
-      // Sort by lastUsedAt desc, then name
       list.sort((a, b) => {
         const la = a.lastUsedAt ?? "";
         const lb = b.lastUsedAt ?? "";
@@ -70,64 +87,89 @@ export function TabPicker({ onPick, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm pt-24"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm pt-[15vh]"
       {...backdropProps}
     >
       <div
         {...contentProps}
-        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl overflow-hidden"
+        className={"nx-modal-enter w-full max-w-xl overflow-hidden " + POPOVER_SURFACE}
       >
-        <input
-          ref={inputRef}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          onKeyDown={onKey}
-          placeholder={t("picker.placeholder")}
-          className="w-full bg-[var(--nx-bg-panel)] border-b border-[var(--nx-border)] px-4 py-3 text-[var(--nx-text-primary)] focus:outline-none placeholder-[var(--nx-text-muted)] font-mono text-sm"
-        />
-        <div className="max-h-80 overflow-y-auto">
+        {/* Search header */}
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider">
+          <span className="text-nx-accent">&gt;</span>
+          <input
+            ref={inputRef}
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setIdx(0);
+            }}
+            onKeyDown={onKey}
+            placeholder={t("picker.placeholder")}
+            className="flex-1 bg-transparent border-none text-nx-text font-mono text-lead outline-none placeholder-nx-muted"
+          />
+          <span className="text-micro uppercase tracking-wider px-1.5 rounded-nx-sm border border-nx-border text-nx-muted whitespace-nowrap">
+            {filtered.length} {t("picker.results")}
+          </span>
+        </div>
+
+        {/* Results */}
+        <div className="max-h-[50vh] overflow-y-auto py-1">
           {filtered.length === 0 ? (
-            <div className="px-4 py-6 text-center font-mono text-xs text-[var(--nx-text-muted)]">
-              {hosts.length === 0
-                ? t("picker.no_hosts")
-                : t("picker.no_match")}
+            <div className="px-4 py-6 text-center font-mono text-meta text-nx-muted">
+              {hosts.length === 0 ? t("picker.no_hosts") : t("picker.no_match")}
             </div>
           ) : (
-            filtered.map((h, i) => (
-              <button
-                key={h.id}
-                onClick={() => {
-                  onPick(h);
-                  onClose();
-                }}
-                onMouseEnter={() => setIdx(i)}
-                className={
-                  "w-full text-left px-4 py-2 font-mono text-sm border-b border-[var(--nx-border)]/60 " +
-                  (i === idx
-                    ? "bg-[var(--nx-border)] text-[var(--nx-accent)]"
-                    : "text-[var(--nx-text-primary)] hover:bg-[var(--nx-bg-panel)]")
-                }
-              >
-                <div className="flex items-center gap-2">
-                  <span className="truncate">{h.name}</span>
+            filtered.map((h, i) => {
+              const active = i === idx;
+              return (
+                <div
+                  key={h.id}
+                  data-active={active || undefined}
+                  onMouseEnter={() => setIdx(i)}
+                  onClick={() => {
+                    onPick(h);
+                    onClose();
+                  }}
+                  className="nx-row grid grid-cols-[16px_1fr_auto] gap-2.5 items-center px-3.5 py-2 cursor-pointer"
+                >
+                  <Server size={12} className="text-nx-muted shrink-0" />
+                  <div className="min-w-0">
+                    <div
+                      className={
+                        "truncate text-lead " + (active ? "text-nx-accent" : "text-nx-text")
+                      }
+                    >
+                      <Highlighted text={h.name} query={q} />
+                    </div>
+                    <div className="text-meta text-nx-muted truncate">
+                      {h.user}@{h.host}
+                      {h.port !== 22 && `:${h.port}`}
+                    </div>
+                  </div>
                   {h.group && (
-                    <span className="text-[10px] text-[var(--nx-text-soft)] bg-[var(--nx-bg-panel)] px-1 rounded">
-                      {h.group}
+                    <span className="text-micro uppercase tracking-wider px-1.5 rounded-nx-sm border border-nx-border text-nx-muted whitespace-nowrap">
+                      <Highlighted text={h.group} query={q} />
                     </span>
                   )}
-                  <span className="ml-auto text-[10px] text-[var(--nx-text-muted)] truncate">
-                    {h.user}@{h.host}
-                    {h.port !== 22 && `:${h.port}`}
-                  </span>
                 </div>
-              </button>
-            ))
+              );
+            })
           )}
         </div>
-        <div className="px-4 py-2 border-t border-[var(--nx-border)] font-mono text-[10px] text-[var(--nx-text-muted)] flex gap-3">
-          <span>↑↓ {t("picker.hint_move")}</span>
-          <span>↵ {t("picker.hint_open")}</span>
-          <span>Esc {t("picker.hint_close")}</span>
+
+        <PopoverDivider />
+        {/* Footer hints */}
+        <div className="px-3.5 py-2 flex gap-4 text-micro uppercase tracking-[0.12em] text-nx-muted">
+          <span>
+            <kbd className="text-nx-accent">↑ ↓</kbd> {t("picker.hint_move")}
+          </span>
+          <span>
+            <kbd className="text-nx-accent">↵</kbd> {t("picker.hint_open")}
+          </span>
+          <span className="ml-auto">
+            <kbd className="text-nx-accent">esc</kbd> {t("picker.hint_close")}
+          </span>
         </div>
       </div>
     </div>

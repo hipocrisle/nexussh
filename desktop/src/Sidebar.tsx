@@ -16,6 +16,12 @@ import {
   ChevronRight,
   PanelLeftClose,
   PanelLeftOpen,
+  Play,
+  Folder,
+  FolderPlus,
+  Edit2,
+  Copy,
+  Trash2,
 } from "lucide-react";
 import {
   HostRecord,
@@ -43,7 +49,12 @@ interface Props {
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Parent renders the menu — sidebar just emits coords + items. */
-  onContextMenu?: (x: number, y: number, items: MenuItem[]) => void;
+  onContextMenu?: (
+    x: number,
+    y: number,
+    items: MenuItem[],
+    title?: { kicker?: string; main?: string },
+  ) => void;
   /** From settings: 'connect' = single click connects, 'select' = single
    *  click selects and shows info, double-click connects. */
   clickMode?: "connect" | "select";
@@ -173,11 +184,20 @@ export function Sidebar({
       .filter((g) => g !== h.group)
       .map((g) => ({
         label: g,
+        icon: <Folder size={13} />,
         onClick: async () => {
           await moveHostToFolder(h.id, g);
           reload();
         },
       }));
+    if (h.group) {
+      // Current folder — shown checked, non-actionable.
+      moveItems.unshift({
+        label: h.group,
+        icon: <Folder size={13} />,
+        checked: true,
+      });
+    }
     moveItems.push({
       label: t("sidebar.move_ungroup"),
       onClick: async () => {
@@ -188,6 +208,7 @@ export function Sidebar({
     });
     moveItems.push({
       label: t("sidebar.move_new_folder"),
+      icon: <FolderPlus size={13} />,
       onClick: async () => {
         const name = window.prompt(t("sidebar.new_folder_prompt"));
         if (name && name.trim()) {
@@ -197,33 +218,53 @@ export function Sidebar({
       },
     });
 
-    onContextMenu?.(e.clientX, e.clientY, [
-      { label: t("sidebar.menu_connect"), onClick: () => onConnect(h) },
-      { label: t("sidebar.menu_sftp"), onClick: () => onSftp?.(h) },
-      { label: t("sidebar.menu_edit"), onClick: () => setDialog({ kind: "edit", rec: h }) },
-      {
-        label: t("sidebar.menu_duplicate"),
-        onClick: async () => {
-          const copy: HostRecord = {
-            ...h,
-            id: "h-" + crypto.randomUUID(),
-            name: h.name + " (копия)",
-            lastUsedAt: undefined,
-          };
-          const { saveHost } = await import("./hosts");
-          await saveHost(copy);
-          reload();
+    onContextMenu?.(
+      e.clientX,
+      e.clientY,
+      [
+        {
+          label: t("sidebar.menu_connect"),
+          icon: <Play size={13} />,
+          shortcut: "↵",
+          onClick: () => onConnect(h),
         },
-      },
-      { separator: true, label: "" },
-      ...moveItems,
-      { separator: true, label: "" },
-      {
-        label: t("sidebar.menu_delete"),
-        onClick: () => onRemoveHost(h),
-        destructive: true,
-      },
-    ]);
+        {
+          label: t("sidebar.menu_sftp"),
+          icon: <Folder size={13} />,
+          onClick: () => onSftp?.(h),
+        },
+        {
+          label: t("sidebar.menu_edit"),
+          icon: <Edit2 size={13} />,
+          onClick: () => setDialog({ kind: "edit", rec: h }),
+        },
+        {
+          label: t("sidebar.menu_duplicate"),
+          icon: <Copy size={13} />,
+          onClick: async () => {
+            const copy: HostRecord = {
+              ...h,
+              id: "h-" + crypto.randomUUID(),
+              name: h.name + " (копия)",
+              lastUsedAt: undefined,
+            };
+            const { saveHost } = await import("./hosts");
+            await saveHost(copy);
+            reload();
+          },
+        },
+        { sectionLabel: t("sidebar.menu_move_section"), label: "" },
+        ...moveItems,
+        { separator: true, label: "" },
+        {
+          label: t("sidebar.menu_delete"),
+          icon: <Trash2 size={13} />,
+          onClick: () => onRemoveHost(h),
+          destructive: true,
+        },
+      ],
+      { kicker: h.group || undefined, main: `${h.user}@${h.host}` },
+    );
   }
 
   function onFolderContextMenu(e: React.MouseEvent, group: string) {

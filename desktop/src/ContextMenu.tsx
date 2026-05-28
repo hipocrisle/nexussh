@@ -1,8 +1,15 @@
 // ContextMenu — small reusable right-click menu primitive.
 // Renders a fixed-position panel at (x, y) with a list of items.
-// Closes on outside click or Escape.
+// Closes on outside click or Escape. Shares its visual surface with
+// TabPicker via Popover.tsx.
 
 import { useEffect, useRef } from "react";
+import {
+  POPOVER_SURFACE,
+  PopoverItem,
+  PopoverDivider,
+  PopoverSectionLabel,
+} from "./Popover";
 
 export interface MenuItem {
   /** Display label */
@@ -11,22 +18,30 @@ export interface MenuItem {
   onClick?: () => void;
   /** Optional icon (lucide-react component, sized in container) */
   icon?: React.ReactNode;
+  /** Optional right-aligned shortcut hint (e.g. "⌘D", "↵"). */
+  shortcut?: string;
   /** Marks the item as destructive (red text). */
   destructive?: boolean;
   /** Disabled state. */
   disabled?: boolean;
   /** Renders a separator line instead of an item when `separator` is true. */
   separator?: boolean;
+  /** Renders a "// section" label instead of an item. */
+  sectionLabel?: string;
+  /** Renders with the active accent treatment (e.g. current folder). */
+  checked?: boolean;
 }
 
 interface Props {
   x: number;
   y: number;
+  /** Optional header — kicker + main line shown above the items. */
+  title?: { kicker?: string; main?: string };
   items: MenuItem[];
   onClose: () => void;
 }
 
-export function ContextMenu({ x, y, items, onClose }: Props) {
+export function ContextMenu({ x, y, title, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,47 +63,54 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
   }, [onClose]);
 
   // Clamp to viewport
-  const W = 220;
-  const H = items.length * 32 + 12;
+  const W = 240;
+  const H = items.length * 32 + (title ? 48 : 0) + 16;
   const safeX = Math.min(x, window.innerWidth - W - 8);
   const safeY = Math.min(y, window.innerHeight - H - 8);
 
   return (
     <div
       ref={ref}
-      className="fixed z-[9999] bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded shadow-xl py-1 font-mono text-xs select-none"
+      className={"fixed z-[9999] " + POPOVER_SURFACE}
       style={{ left: safeX, top: safeY, minWidth: W }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {items.map((it, i) =>
-        it.separator ? (
-          <div
-            key={`sep-${i}`}
-            className="my-1 h-px bg-[var(--nx-border)] mx-2"
-          />
-        ) : (
-          <button
+      {title && (
+        <>
+          <div className="px-3 pt-1.5 pb-1.5">
+            {title.kicker && (
+              <div className="text-micro uppercase tracking-[0.16em] text-nx-muted">
+                // {title.kicker}
+              </div>
+            )}
+            {title.main && (
+              <div className="text-body text-nx-text mt-0.5 truncate">{title.main}</div>
+            )}
+          </div>
+          <PopoverDivider />
+        </>
+      )}
+      {items.map((it, i) => {
+        if (it.separator) return <PopoverDivider key={`sep-${i}`} />;
+        if (it.sectionLabel)
+          return <PopoverSectionLabel key={`sec-${i}`}>{it.sectionLabel}</PopoverSectionLabel>;
+        return (
+          <PopoverItem
             key={`${i}-${it.label}`}
+            icon={it.icon}
+            shortcut={it.shortcut}
+            destructive={it.destructive}
+            active={it.checked}
+            disabled={it.disabled}
             onClick={() => {
-              if (it.disabled) return;
               it.onClick?.();
               onClose();
             }}
-            disabled={it.disabled}
-            className={
-              "w-full text-left px-3 py-1.5 flex items-center gap-2 " +
-              (it.disabled
-                ? "text-[var(--nx-text-muted)] cursor-not-allowed"
-                : it.destructive
-                  ? "text-[var(--nx-error)] hover:bg-[var(--nx-border)]"
-                  : "text-[var(--nx-text-primary)] hover:bg-[var(--nx-border)] hover:text-[var(--nx-accent)]")
-            }
           >
-            {it.icon && <span className="shrink-0">{it.icon}</span>}
-            <span className="truncate">{it.label}</span>
-          </button>
-        ),
-      )}
+            {it.label}
+          </PopoverItem>
+        );
+      })}
     </div>
   );
 }

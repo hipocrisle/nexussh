@@ -14,8 +14,6 @@ import {
   Server,
   ChevronDown,
   ChevronRight,
-  Folder,
-  FolderOpen,
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
@@ -40,6 +38,8 @@ interface Props {
   onSftp?: (h: HostRecord) => void;
   onSelect?: (h: HostRecord) => void;
   selectedId?: string | null;
+  /** host.id of the currently focused live session (caret + live badge). */
+  activeHostId?: string | null;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Parent renders the menu — sidebar just emits coords + items. */
@@ -70,6 +70,7 @@ export function Sidebar({
   onSftp,
   onSelect,
   selectedId,
+  activeHostId,
   collapsed,
   onToggleCollapsed,
   onContextMenu,
@@ -447,48 +448,29 @@ export function Sidebar({
                 onClick={() => toggleGroup(g)}
                 onContextMenu={(e) => onFolderContextMenu(e, g)}
                 className={
-                  "w-full px-2 py-1.5 flex items-center gap-1.5 text-xs font-mono " +
-                  "hover:bg-[var(--nx-bg-panel)] " +
-                  (dragOverGroup === g
-                    ? "bg-[var(--nx-bg-elevated)] ring-1 ring-[var(--nx-accent)]"
-                    : "")
+                  "w-full px-3 py-1.5 flex items-center gap-2 text-meta uppercase tracking-[0.16em] font-mono " +
+                  "text-nx-soft hover:text-nx-text transition-colors duration-[80ms] " +
+                  (dragOverGroup === g ? "bg-nx-elevated shadow-glow-sm" : "")
                 }
               >
                 {isCollapsed ? (
-                  <ChevronRight
-                    size={12}
-                    className="text-[var(--nx-text-muted)] shrink-0"
-                  />
+                  <ChevronRight size={12} className="text-nx-muted shrink-0" />
                 ) : (
-                  <ChevronDown
-                    size={12}
-                    className="text-[var(--nx-text-muted)] shrink-0"
-                  />
+                  <ChevronDown size={12} className="text-nx-accent shrink-0" />
                 )}
-                {isCollapsed ? (
-                  <Folder
-                    size={13}
-                    className="text-[var(--nx-warning)] shrink-0"
-                  />
-                ) : (
-                  <FolderOpen
-                    size={13}
-                    className="text-[var(--nx-warning)] shrink-0"
-                  />
-                )}
-                <span className="truncate text-[var(--nx-text-primary)]">
-                  {g}
-                </span>
-                <span className="ml-auto text-[10px] text-[var(--nx-text-muted)] bg-[var(--nx-bg-panel)] px-1.5 rounded">
+                <span className="truncate">// {g}</span>
+                <span className="ml-auto text-micro tabular-nums px-1.5 min-w-[18px] text-center rounded-full border border-nx-border bg-nx-elevated text-nx-muted">
                   {list.length}
                 </span>
               </button>
               {!isCollapsed &&
                 list.map((h) => {
                   const isSelected = selectedId === h.id;
+                  const isLive = h.id === activeHostId;
                   return (
                     <div
                       key={h.id}
+                      data-active={isSelected || undefined}
                       onMouseDown={(e) => onHostMouseDown(e, h)}
                       onClick={() => {
                         // Suppress click if a drag just completed.
@@ -499,29 +481,39 @@ export function Sidebar({
                       onContextMenu={(e) => onHostContextMenu(e, h)}
                       title={t("sidebar.host_hint")}
                       className={
-                        "group pl-7 pr-3 py-1.5 flex items-center gap-2 cursor-pointer " +
-                        (isSelected
-                          ? "bg-[var(--nx-bg-panel)] border-l-2 border-[var(--nx-accent)]"
-                          : "hover:bg-[var(--nx-bg-panel)] border-l-2 border-transparent") +
-                        (draggingHost?.id === h.id ? " opacity-50" : "")
+                        "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pl-3 pr-3 py-1.5 cursor-pointer " +
+                        (draggingHost?.id === h.id ? "opacity-50" : "")
                       }
                     >
                       <Server
                         size={12}
                         className={
                           isSelected
-                            ? "text-[var(--nx-accent)] shrink-0"
-                            : "text-[var(--nx-accent2)] shrink-0"
+                            ? "text-nx-accent shrink-0"
+                            : "text-nx-muted shrink-0"
                         }
                       />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[var(--nx-text-primary)] font-mono text-sm truncate">
+                      <div className="min-w-0">
+                        <div
+                          className={
+                            "font-mono text-lead truncate " +
+                            (isSelected ? "text-nx-accent" : "text-nx-text")
+                          }
+                        >
                           {h.name}
+                          {isLive && <span className="nx-caret ml-1" />}
                         </div>
-                        <div className="text-[var(--nx-text-muted)] font-mono text-xs truncate">
-                          {h.user}@{h.host}:{h.port}
+                        <div className="font-mono text-meta text-nx-muted truncate">
+                          {h.user}
+                          <span className="text-nx-soft">@</span>
+                          {h.host}:{h.port}
                         </div>
                       </div>
+                      {isLive && (
+                        <span className="text-micro uppercase tracking-wider text-nx-accent border border-nx-accent/40 rounded-nx-sm px-1.5">
+                          live
+                        </span>
+                      )}
                     </div>
                   );
                 })}

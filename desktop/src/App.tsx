@@ -51,6 +51,36 @@ interface Tab extends TabInfo {
   host: HostRecord;
 }
 
+function HeaderButton({
+  icon,
+  children,
+  onClick,
+  title,
+  active,
+  warn,
+}: {
+  icon: React.ReactNode;
+  children?: React.ReactNode;
+  onClick: () => void;
+  title?: string;
+  active?: boolean;
+  warn?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={
+        "flex items-center gap-1.5 px-2 py-0.5 rounded-nx-sm font-mono transition-colors duration-[80ms] hover:bg-nx-elevated hover:text-nx-text " +
+        (active ? "text-nx-accent" : warn ? "text-nx-warning" : "text-nx-muted")
+      }
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
 function App() {
   const { t } = useTranslation();
   const [settings] = useSettings();
@@ -487,90 +517,89 @@ function App() {
     fontFamily: fontStack,
   } as React.CSSProperties;
 
+  const activeSession = tabs.find((x) => x.id === activeId)?.host;
+
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
       {/* Matrix Rain — rendered inside the terminal-area container below so
        *  the cascade only appears there. Header, sidebar, modals stay clean. */}
 
-      <header
-        className="relative z-10 h-9 border-b flex items-center px-4 select-none shrink-0"
-        style={{ background: theme.bgSecondary, borderColor: theme.border }}
-      >
-        <span
-          className="font-mono text-sm tracking-wider"
-          style={{ color: theme.accent }}
-        >
-          NexuSSH
+      <header className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0">
+        {/* Brand mark — framed > glyph nodding to the app icon */}
+        <div className="flex items-center gap-2">
+          <span className="inline-flex w-[18px] h-[18px] items-center justify-center border border-nx-accent rounded-nx-sm shadow-glow-sm">
+            <span className="text-nx-accent text-[11px] font-bold leading-none">
+              &gt;
+            </span>
+          </span>
+          <span className="text-nx-accent text-lead tracking-wide font-mono">
+            NexuSSH
+          </span>
+          <span className="text-micro text-nx-muted font-mono">v{version}</span>
+        </div>
+
+        <span className="text-meta italic text-nx-muted font-mono hidden md:inline">
+          — {t("app.tagline")}
         </span>
-        <span
-          className="ml-2 font-mono text-xs"
-          style={{ color: theme.textMuted }}
-        >
-          v{version}
-        </span>
-        <span
-          className="ml-3 font-mono text-xs italic"
-          style={{ color: theme.textMuted }}
-        >
-          {t("app.tagline")}
-        </span>
-        <button
-          onClick={() => setHistoryPanelOpen(true)}
-          title={t("history.open_panel")}
-          className="ml-auto flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
-          style={{ color: theme.textSoft }}
-        >
-          <History size={12} />
-          <span>{t("history.button")}</span>
-        </button>
-        <button
-          onClick={() => setSyncPanelOpen(true)}
-          title={t("sync.open_panel")}
-          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
-          style={{
-            color: sync?.unlocked
-              ? theme.accent
-              : sync?.configured
-                ? theme.warning
-                : theme.textMuted,
-          }}
-        >
-          <RefreshCw size={12} />
-          <span>sync</span>
-        </button>
-        {settings.advanced && (
-          <button
-            onClick={() => setVaultPanelOpen(true)}
-            title={t("vault.open_panel")}
-            className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
-            style={{
-              color: vault?.unlocked
-                ? theme.accent
-                : vault?.configured
-                  ? theme.warning
-                  : theme.textMuted,
-            }}
-          >
-            {vault?.unlocked ? (
-              <Unlock size={12} />
-            ) : vault?.configured ? (
-              <Lock size={12} />
-            ) : (
-              <KeyRound size={12} />
-            )}
-            <span>vault</span>
-          </button>
+
+        {/* Prompt-style breadcrumb of the active session */}
+        {activeSession && (
+          <div className="ml-1 flex items-center gap-1.5 px-2.5 py-0.5 border border-nx-border rounded-nx bg-nx-panel text-meta font-mono min-w-0">
+            <span className="text-nx-accent mr-0.5 shrink-0">&gt;</span>
+            <span className="text-nx-soft truncate">
+              {activeSession.group ?? t("sidebar.no_group")}
+            </span>
+            <span className="text-nx-muted shrink-0">/</span>
+            <span className="text-nx-text truncate">{activeSession.name}</span>
+            <span className="text-nx-muted shrink-0">@</span>
+            <span className="text-nx-muted truncate">{activeSession.host}</span>
+          </div>
         )}
-        <button
-          onClick={() => setSettingsOpen(true)}
-          title={t("settings.open") + " (Ctrl ,)"}
-          className="ml-3 flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-opacity-50 font-mono text-xs"
-          style={{ color: theme.textMuted }}
-        >
-          <SettingsIcon size={12} />
-        </button>
-        <div className="ml-3">
-          <LanguageSwitcher />
+
+        <div className="ml-auto flex items-center gap-1 text-meta">
+          <HeaderButton
+            icon={<History size={12} />}
+            onClick={() => setHistoryPanelOpen(true)}
+            title={t("history.open_panel")}
+          >
+            {t("history.button")}
+          </HeaderButton>
+          <HeaderButton
+            icon={<RefreshCw size={12} />}
+            onClick={() => setSyncPanelOpen(true)}
+            title={t("sync.open_panel")}
+            active={sync?.unlocked}
+            warn={sync?.configured && !sync?.unlocked}
+          >
+            sync
+          </HeaderButton>
+          {settings.advanced && (
+            <HeaderButton
+              icon={
+                vault?.unlocked ? (
+                  <Unlock size={12} />
+                ) : vault?.configured ? (
+                  <Lock size={12} />
+                ) : (
+                  <KeyRound size={12} />
+                )
+              }
+              onClick={() => setVaultPanelOpen(true)}
+              title={t("vault.open_panel")}
+              active={vault?.unlocked}
+              warn={vault?.configured && !vault?.unlocked}
+            >
+              vault
+            </HeaderButton>
+          )}
+          <HeaderButton
+            icon={<SettingsIcon size={12} />}
+            onClick={() => setSettingsOpen(true)}
+            title={t("settings.open") + " (Ctrl ,)"}
+          />
+          <div className="ml-1">
+            <LanguageSwitcher />
+          </div>
         </div>
       </header>
 
@@ -579,6 +608,7 @@ function App() {
           onConnect={openHost}
           onSftp={openSftp}
           onSelect={setSelectedHost}
+          activeHostId={activeSession?.id ?? null}
           selectedId={selectedHost?.id ?? null}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={toggleSidebar}

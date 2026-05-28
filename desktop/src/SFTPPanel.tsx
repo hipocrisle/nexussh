@@ -10,6 +10,7 @@ import {
   Folder,
   File as FileIcon,
   Upload,
+  Download,
   FolderPlus,
   RefreshCw,
   ArrowUp,
@@ -86,6 +87,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [ctx, setCtx] = useState<{ x: number; y: number; entry: SftpEntry } | null>(
     null,
   );
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const idRef = useRef<string | null>(null);
 
@@ -97,6 +99,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         const list = await sftpList(id, path);
         setEntries(list);
         setCwd(path);
+        setSelected(new Set());
       } catch (e) {
         setError(String(e));
       } finally {
@@ -192,6 +195,45 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     }
   }
 
+  function toggleSelect(name: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  // Toolbar download: 1 file → Save-As dialog; many → pick a folder, fan out.
+  async function onDownloadSelected() {
+    if (!sftpId || selected.size === 0) return;
+    const names = entries
+      .filter((e) => !e.is_dir && selected.has(e.name))
+      .map((e) => e.name);
+    if (names.length === 0) return;
+
+    if (names.length === 1) {
+      const e = entries.find((x) => x.name === names[0])!;
+      await onDownload(e);
+      return;
+    }
+    const dir = await openDialog({ directory: true, title: t("sftp.download") });
+    if (typeof dir !== "string") return;
+    setError(null);
+    let done = 0;
+    for (const name of names) {
+      setBusy(t("sftp.downloading_n", { done: done + 1, total: names.length }));
+      try {
+        await sftpDownload(sftpId, joinPath(cwd, name), `${dir}/${name}`);
+        done++;
+      } catch (e) {
+        setError(`${name}: ${String(e)}`);
+        break;
+      }
+    }
+    setBusy(null);
+  }
+
   async function onRename(entry: SftpEntry) {
     if (!sftpId) return;
     const next = window.prompt(t("sftp.rename_prompt"), entry.name);
@@ -261,6 +303,19 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
             <button className={btn} title={t("sftp.up")} onClick={() => navigate(parentPath(cwd))} disabled={!sftpId || cwd === "/"}>
               <ArrowUp size={15} />
             </button>
+            <button
+              className={btn + " relative"}
+              title={t("sftp.download_selected")}
+              onClick={onDownloadSelected}
+              disabled={!sftpId || selected.size === 0}
+            >
+              <Download size={15} />
+              {selected.size > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 bg-[var(--nx-accent)] text-[var(--nx-bg-base)] rounded-full text-[9px] leading-none px-1 py-0.5 font-bold">
+                  {selected.size}
+                </span>
+              )}
+            </button>
             <button className={btn} title={t("sftp.upload")} onClick={onUpload} disabled={!sftpId}>
               <Upload size={15} />
             </button>
@@ -314,9 +369,25 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                       ev.preventDefault();
                       setCtx({ x: ev.clientX, y: ev.clientY, entry: e });
                     }}
-                    className="border-b border-[var(--nx-border)]/40 hover:bg-[var(--nx-bg-panel)] cursor-default select-none"
+                    className={
+                      "border-b border-[var(--nx-border)]/40 cursor-default select-none " +
+                      (selected.has(e.name)
+                        ? "bg-[var(--nx-border)]"
+                        : "hover:bg-[var(--nx-bg-panel)]")
+                    }
                   >
-                    <td className="px-4 py-1.5 w-6">
+                    <td className="pl-4 pr-1 py-1.5 w-4">
+                      {!e.is_dir && (
+                        <input
+                          type="checkbox"
+                          checked={selected.has(e.name)}
+                          onChange={() => toggleSelect(e.name)}
+                          onClick={(ev) => ev.stopPropagation()}
+                          className="accent-[var(--nx-accent)] align-middle"
+                        />
+                      )}
+                    </td>
+                    <td className="px-1 py-1.5 w-6">
                       {e.is_symlink ? (
                         <Link2 size={14} className="text-[var(--nx-accent2)]" />
                       ) : e.is_dir ? (
@@ -327,7 +398,9 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                     </td>
                     <td
                       className="py-1.5 text-[var(--nx-text-primary)] truncate max-w-0 w-full"
-                      onClick={() => e.is_dir && navigate(joinPath(cwd, e.name))}
+                      onClick={() =>
+                        e.is_dir ? navigate(joinPath(cwd, e.name)) : toggleSelect(e.name)
+                      }
                     >
                       {e.name}
                     </td>

@@ -36,10 +36,13 @@ export function ContextMenu({ x, y, items, onClose }: Props) {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
-    document.addEventListener("mousedown", onClick);
+    // Capture phase: modals using useBackdropClose stopPropagation on
+    // mousedown to protect their backdrop-close logic, which would otherwise
+    // swallow this bubble-phase listener and leave the menu stuck open.
+    document.addEventListener("mousedown", onClick, true);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("mousedown", onClick, true);
       document.removeEventListener("keydown", onKey);
     };
   }, [onClose]);

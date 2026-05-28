@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::State;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -224,7 +225,11 @@ pub async fn sftp_upload(
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
     let data = tokio::fs::read(&local_path).await?;
-    h.sftp.write(remote_path, &data).await?;
+    // NB: SftpSession::write() opens with WRITE only (no CREATE) → fails with
+    // "No such file" for new files. create() uses CREATE|TRUNCATE|WRITE.
+    let mut file = h.sftp.create(remote_path).await?;
+    file.write_all(&data).await?;
+    file.flush().await?;
     Ok(())
 }
 

@@ -364,6 +364,10 @@ function App() {
           label: t("tabmenu.duplicate"),
           onClick: () => openHost(tab.host),
         },
+        {
+          label: t("sidebar.menu_sftp"),
+          onClick: () => openSftp(tab.host),
+        },
         { separator: true, label: "" },
         {
           label: t("tabmenu.close"),

@@ -53,6 +53,17 @@ export async function sshDisconnect(sessionId: string): Promise<void> {
   await invoke("ssh_disconnect", { sessionId });
 }
 
+/**
+ * Tell the backend that our `ssh-data` event listener is attached. The
+ * backend buffers output from connect-time until this fires, then flushes
+ * everything through the same channel — otherwise fast servers (Keenetic,
+ * mikrotik, …) drop their prelogin banner into the void before the JS
+ * listener has finished attaching.
+ */
+export async function sshReady(sessionId: string): Promise<void> {
+  await invoke("ssh_ready", { sessionId });
+}
+
 export function onSshData(handler: (ev: DataEvent) => void): Promise<UnlistenFn> {
   return listen<DataEvent>("ssh-data", (e) => handler(e.payload));
 }

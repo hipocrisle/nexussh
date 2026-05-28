@@ -77,10 +77,24 @@ pub struct ConnectResult {
     pub session_id: String,
 }
 
+/// Per-session output gate. Frontend's `listen('ssh-data', ...)` is async
+/// — if the server sends a banner before the JS listener finishes
+/// attaching, those bytes are lost (terminal stays blank even though the
+/// connection succeeded; the .cast file still has them since the logger
+/// runs in-process). Backend therefore buffers `ssh-data` payloads until
+/// the frontend calls `ssh_ready`, then flushes and switches to direct
+/// emit.
+enum OutputGate {
+    Buffering(Vec<Vec<u8>>),
+    Ready,
+}
+
 /// One active SSH session.
 struct ActiveSession {
     /// Channel handle for sending data/resize to server.
     sender: mpsc::UnboundedSender<SessionCommand>,
+    /// Output gate (see `OutputGate`). Shared with the session loop task.
+    gate: Arc<Mutex<OutputGate>>,
 }
 
 use crate::history::SessionLogger;
@@ -166,10 +180,12 @@ pub async fn ssh_connect(
     channel.request_shell(false).await?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<SessionCommand>();
+    let gate = Arc::new(Mutex::new(OutputGate::Buffering(Vec::new())));
     state.sessions.lock().await.insert(
         session_id.clone(),
         ActiveSession {
             sender: tx.clone(),
+            gate: gate.clone(),
         },
     );
 
@@ -199,6 +215,7 @@ pub async fn ssh_connect(
             &mut rx,
             session,
             logger.as_deref(),
+            gate,
         )
         .await;
         if let Some(l) = logger.as_ref() {
@@ -236,7 +253,33 @@ async fn run_session_loop(
     rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
     session: client::Handle<AcceptAllHandler>,
     logger: Option<&SessionLogger>,
+    gate: Arc<Mutex<OutputGate>>,
 ) -> String {
+    // Emit-or-buffer for ssh-data. Atomic under the gate Mutex so that
+    // `ssh_ready` either sees this push (and flushes it) or runs first
+    // and we hit the Ready branch — no event is lost between them.
+    async fn ship(
+        app: &AppHandle,
+        sid: &str,
+        gate: &Mutex<OutputGate>,
+        bytes: Vec<u8>,
+    ) {
+        let mut g = gate.lock().await;
+        match &mut *g {
+            OutputGate::Buffering(buf) => buf.push(bytes),
+            OutputGate::Ready => {
+                drop(g);
+                let _ = app.emit(
+                    "ssh-data",
+                    DataEvent {
+                        session_id: sid.to_string(),
+                        data: bytes,
+                    },
+                );
+            }
+        }
+    }
+
     loop {
         tokio::select! {
             cmd = rx.recv() => {
@@ -264,18 +307,12 @@ async fn run_session_loop(
                 match msg {
                     ChannelMsg::Data { data } => {
                         if let Some(l) = logger { l.append(&data); }
-                        let _ = app.emit("ssh-data", DataEvent {
-                            session_id: sid.to_string(),
-                            data: data.to_vec(),
-                        });
+                        ship(app, sid, &gate, data.to_vec()).await;
                     }
                     ChannelMsg::ExtendedData { data, .. } => {
                         // stderr arrives here in some shells; merge into the same stream
                         if let Some(l) = logger { l.append(&data); }
-                        let _ = app.emit("ssh-data", DataEvent {
-                            session_id: sid.to_string(),
-                            data: data.to_vec(),
-                        });
+                        ship(app, sid, &gate, data.to_vec()).await;
                     }
                     ChannelMsg::ExitStatus { exit_status } => {
                         return format!("exit status {exit_status}");
@@ -320,6 +357,40 @@ pub async fn ssh_resize(
     s.sender
         .send(SessionCommand::Resize { cols, rows })
         .map_err(|e| SshError::Other(e.to_string()))?;
+    Ok(())
+}
+
+/// Signal that the frontend's `listen('ssh-data')` handler is attached and
+/// ready to receive events. Backend flushes any buffered output through
+/// the same `ssh-data` channel, then switches to direct emit. Idempotent.
+#[tauri::command]
+pub async fn ssh_ready(
+    app: AppHandle,
+    state: State<'_, Arc<SessionManager>>,
+    session_id: String,
+) -> Result<(), SshError> {
+    let gate = {
+        let sessions = state.sessions.lock().await;
+        let s = sessions
+            .get(&session_id)
+            .ok_or_else(|| SshError::SessionNotFound(session_id.clone()))?;
+        s.gate.clone()
+    };
+    let mut g = gate.lock().await;
+    let buffered = match std::mem::replace(&mut *g, OutputGate::Ready) {
+        OutputGate::Buffering(v) => v,
+        OutputGate::Ready => return Ok(()),
+    };
+    drop(g);
+    for bytes in buffered {
+        let _ = app.emit(
+            "ssh-data",
+            DataEvent {
+                session_id: session_id.clone(),
+                data: bytes,
+            },
+        );
+    }
     Ok(())
 }
 

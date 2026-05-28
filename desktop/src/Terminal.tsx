@@ -12,6 +12,7 @@ import {
   sshSend,
   sshResize,
   sshDisconnect,
+  sshReady,
   onSshData,
   onSshClosed,
 } from "./ssh";
@@ -200,22 +201,43 @@ export function TerminalView({
 
     let unlistenData: (() => void) | undefined;
     let unlistenClosed: (() => void) | undefined;
-    onSshData((ev) => {
-      if (ev.session_id !== sessionId) return;
-      term.write(new Uint8Array(ev.data));
-    }).then((u) => (unlistenData = u));
-    onSshClosed((ev) => {
-      if (ev.session_id !== sessionId) return;
-      const msg = tRef.current("terminal.session_closed", { reason: ev.reason });
-      term.writeln(`\r\n\x1b[33m[${msg}]\x1b[0m`);
-      onSessionClosed?.(ev.reason);
-    }).then((u) => (unlistenClosed = u));
+    // Attach BOTH event listeners before telling the backend it's safe to
+    // emit (otherwise fast servers like Keenetic drop their prelogin banner
+    // — backend buffers between ssh_connect and ssh_ready).
+    let cancelled = false;
+    (async () => {
+      const [ud, uc] = await Promise.all([
+        onSshData((ev) => {
+          if (ev.session_id !== sessionId) return;
+          term.write(new Uint8Array(ev.data));
+        }),
+        onSshClosed((ev) => {
+          if (ev.session_id !== sessionId) return;
+          const msg = tRef.current("terminal.session_closed", { reason: ev.reason });
+          term.writeln(`\r\n\x1b[33m[${msg}]\x1b[0m`);
+          onSessionClosed?.(ev.reason);
+        }),
+      ]);
+      if (cancelled) {
+        ud();
+        uc();
+        return;
+      }
+      unlistenData = ud;
+      unlistenClosed = uc;
+      try {
+        await sshReady(sessionId);
+      } catch (e) {
+        console.error("ssh_ready failed:", e);
+      }
+    })();
 
     const onWinResize = () => fit.fit();
     window.addEventListener("resize", onWinResize);
     sshResize(sessionId, term.cols, term.rows).catch(console.error);
 
     return () => {
+      cancelled = true;
       window.removeEventListener("resize", onWinResize);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mouseup", mouseupHandler);

@@ -44,6 +44,7 @@ import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { useBackdropClose } from "./useBackdropClose";
+import { ContextMenu, MenuItem } from "./ContextMenu";
 
 interface Props {
   onClose: () => void;
@@ -86,6 +87,7 @@ export function HistoryPanel({ onClose }: Props) {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<SearchHit[] | null>(null);
   const [inSessionQuery, setInSessionQuery] = useState("");
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   const termContainerRef = useRef<HTMLDivElement>(null);
@@ -509,8 +511,42 @@ export function HistoryPanel({ onClose }: Props) {
             {/* xterm container always mounted so termRef stays valid */}
             <div
               ref={termContainerRef}
+              onContextMenu={(e) => {
+                // xterm's helper-textarea swallows right-clicks, so the
+                // app-wide native context menu never fires here. Wire a
+                // dedicated one with Copy-selection (history is read-only,
+                // so paste/cut don't apply).
+                e.preventDefault();
+                e.stopPropagation();
+                setCtxMenu({ x: e.clientX, y: e.clientY });
+              }}
               className="flex-1 min-h-0 bg-[var(--nx-bg-base)] p-1"
             />
+            {ctxMenu && (() => {
+              const term = termRef.current;
+              const sel = term?.getSelection() ?? "";
+              const items: MenuItem[] = [
+                {
+                  label: t("ctx.copy"),
+                  disabled: !sel,
+                  onClick: () => {
+                    if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+                  },
+                },
+                {
+                  label: t("ctx.select_all"),
+                  onClick: () => term?.selectAll(),
+                },
+              ];
+              return (
+                <ContextMenu
+                  x={ctxMenu.x}
+                  y={ctxMenu.y}
+                  items={items}
+                  onClose={() => setCtxMenu(null)}
+                />
+              );
+            })()}
           </div>
         </div>
       </div>

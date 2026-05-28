@@ -24,6 +24,7 @@ pub fn run() {
             ssh::ssh_send,
             ssh::ssh_resize,
             ssh::ssh_disconnect,
+            ssh::ssh_ready,
             vault::vault_set_paths,
             vault::vault_status,
             vault::vault_unlock,

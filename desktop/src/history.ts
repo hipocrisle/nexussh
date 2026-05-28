@@ -45,13 +45,22 @@ export async function historyReadEvents(
   return await invoke<CastEvent[]>("history_read_events", { sessionId });
 }
 
-/** Strip alternate-screen-buffer toggles from a chunk so all output flows
- *  into the terminal's main buffer (= huge scrollable history). Without
- *  this, Claude Code / vim / htop redraws disappear when they exit. */
+/** Sanitize a recorded chunk for REPLAY (History viewer / Transcript overlay)
+ *  so the whole session stays as scrollable history. Runs only on replay —
+ *  the live terminal writes raw bytes and is unaffected. */
 export function filterAltBuffer(s: string): string {
-  // ESC[?1049h, ESC[?1049l, ESC[?1047h, ESC[?1047l, ESC[?47h, ESC[?47l
-  // Also save-cursor variants that pair with alt-buffer.
-  return s.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+  return (
+    s
+      // 1. Alt-screen toggles (ESC[?1049/1048/1047/47 h|l) — flatten TUI
+      //    redraws (Claude Code / vim / htop) into the main buffer instead of
+      //    vanishing when the app exits alt-screen.
+      .replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "")
+      // 2. ESC[3J — erase scrollback. `clear` / `tput clear` emit it (usually
+      //    as ESC[H ESC[2J ESC[3J). Honoring it during replay wipes the entire
+      //    recorded history, leaving only post-clear output — the user sees
+      //    "only the tail". Strip it so the full session remains scrollable.
+      .replace(/\x1b\[3J/g, "")
+  );
 }
 
 export async function historyDelete(sessionId: string): Promise<void> {

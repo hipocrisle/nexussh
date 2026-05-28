@@ -26,7 +26,7 @@ import { HostDialog } from "./HostDialog";
 import { SettingsScreen } from "./SettingsScreen";
 import { TranscriptOverlay } from "./TranscriptOverlay";
 import { useSettings } from "./settings/settings-store";
-import { THEMES } from "./settings/themes";
+import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, maybeAutoCheck } from "./updater";
@@ -55,6 +55,13 @@ function App() {
   const [settings] = useSettings();
   const theme = THEMES[settings.theme];
   const fontStack = fontStackOf(settings.font);
+
+  // Pump the full palette (incl. new depth/glow tokens) to :root + toggle the
+  // theme-<id> class, so tokens.css @theme utilities and .theme-light overrides
+  // resolve globally. Runs at mount and on every theme change.
+  useEffect(() => {
+    applyTheme(settings.theme);
+  }, [settings.theme]);
 
   const [version, setVersion] = useState<string>("");
   const [tabs, setTabs] = useState<Tab[]>([]);

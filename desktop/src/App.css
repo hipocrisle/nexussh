@@ -132,3 +132,200 @@ textarea {
     visibility: hidden;
   }
 }
+
+
+/* ============================================================
+   NexuSSH — UI redesign token extension
+   Append this to desktop/src/App.css below the existing block.
+   Don't replace anything — additive only.
+   ============================================================ */
+
+/* ---- defaults so the new --nx-* vars resolve before the theme
+        pump runs (avoids a flash of unstyled state on first paint) ---- */
+:root {
+  --nx-text-dim:      #97a8a0;
+  --nx-divider:       rgba(31, 58, 58, 0.45);
+  --nx-edge-top:      rgba(0, 255, 149, 0.06);
+  --nx-edge-bot:      rgba(0, 0, 0, 0.4);
+  --nx-accent-glow:   rgba(0, 255, 149, 0.18);
+  --nx-rain-overlay:  rgba(0, 255, 149, 0.035);
+
+  /* Typed scale — theme-independent constants */
+  --nx-fs-micro: 10px;
+  --nx-fs-meta:  11px;
+  --nx-fs-body:  12px;
+  --nx-fs-lead:  13px;
+  --nx-fs-h3:    16px;
+  --nx-fs-h2:    20px;
+  --nx-fs-h1:    28px;
+
+  --nx-sp-1: 4px;  --nx-sp-2: 8px;  --nx-sp-3: 12px; --nx-sp-4: 16px;
+  --nx-sp-5: 20px; --nx-sp-6: 24px; --nx-sp-8: 32px; --nx-sp-10: 40px;
+
+  --nx-r-sm: 2px; --nx-r: 4px; --nx-r-lg: 6px; --nx-r-pill: 999px;
+
+  /* Motion */
+  --nx-d-fast:   80ms;
+  --nx-d-mid:   200ms;
+  --nx-d-slow: 1200ms;
+  --nx-ease:   cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Composed shadow + glow tokens */
+  --nx-glow-sm:     0 0 0 1px var(--nx-accent), 0 0 8px var(--nx-accent-glow);
+  --nx-glow-md:     0 0 0 1px var(--nx-accent), 0 0 16px var(--nx-accent-glow);
+  --nx-glow-lg:     0 0 0 1px var(--nx-accent), 0 0 28px var(--nx-accent-glow), 0 0 60px rgba(0,255,149,0.08);
+  --nx-elev-1:      inset 0 1px 0 var(--nx-edge-top), 0 1px 0 var(--nx-edge-bot);
+  --nx-elev-2:      inset 0 1px 0 var(--nx-edge-top), 0 4px 16px rgba(0,0,0,0.5);
+  --nx-elev-modal:  inset 0 1px 0 var(--nx-edge-top), 0 20px 80px rgba(0,0,0,0.7), 0 0 0 1px var(--nx-border);
+}
+
+/* ============================================================
+   Tailwind v4 — expose tokens as utilities via @theme
+   ============================================================ */
+@theme {
+  --color-nx-bg:          var(--nx-bg-base);
+  --color-nx-bg-2:        var(--nx-bg-secondary);
+  --color-nx-panel:       var(--nx-bg-panel);
+  --color-nx-elevated:    var(--nx-bg-elevated);
+  --color-nx-border:      var(--nx-border);
+  --color-nx-text:        var(--nx-text-primary);
+  --color-nx-dim:         var(--nx-text-dim);
+  --color-nx-muted:       var(--nx-text-muted);
+  --color-nx-soft:        var(--nx-text-soft);
+  --color-nx-accent:      var(--nx-accent);
+  --color-nx-accent2:     var(--nx-accent2);
+  --color-nx-warning:     var(--nx-warning);
+  --color-nx-error:       var(--nx-error);
+
+  --font-mono:            "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --text-micro:           var(--nx-fs-micro);
+  --text-meta:            var(--nx-fs-meta);
+  --text-body:            var(--nx-fs-body);
+  --text-lead:            var(--nx-fs-lead);
+  --text-h3:              var(--nx-fs-h3);
+  --text-h2:              var(--nx-fs-h2);
+  --text-h1:              var(--nx-fs-h1);
+
+  --radius-nx-sm:         var(--nx-r-sm);
+  --radius-nx:            var(--nx-r);
+  --radius-nx-lg:         var(--nx-r-lg);
+
+  --shadow-glow-sm:       var(--nx-glow-sm);
+  --shadow-glow-md:       var(--nx-glow-md);
+  --shadow-glow-lg:       var(--nx-glow-lg);
+  --shadow-elev-1:        var(--nx-elev-1);
+  --shadow-elev-2:        var(--nx-elev-2);
+  --shadow-elev-modal:    var(--nx-elev-modal);
+}
+
+/* ============================================================
+   Component layer — reusable atoms with the new chrome.
+   ============================================================ */
+@layer components {
+
+  /* Ambient matrix-rain wash behind the whole app.
+     <div className="nx-rain-ambient absolute inset-0 pointer-events-none" /> */
+  .nx-rain-ambient::after {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: repeating-linear-gradient(180deg,
+      transparent 0,
+      transparent 2px,
+      var(--nx-rain-overlay) 2px,
+      var(--nx-rain-overlay) 3px);
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.6;
+  }
+
+  /* Corner brackets — wrap a relative-positioned container in
+     <span className="nx-brackets"><i /></span> as a first child. */
+  .nx-brackets,
+  .nx-brackets > i { position: absolute; inset: 0; pointer-events: none; }
+  .nx-brackets::before,
+  .nx-brackets::after,
+  .nx-brackets > i::before,
+  .nx-brackets > i::after {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    border-color: var(--nx-accent);
+    border-style: solid;
+    opacity: 0.55;
+  }
+  .nx-brackets::before { top: 0;    left: 0;    border-width: 1px 0 0 1px; }
+  .nx-brackets::after  { top: 0;    right: 0;   border-width: 1px 1px 0 0; }
+  .nx-brackets > i::before { bottom: 0; left: 0;  border-width: 0 0 1px 1px; }
+  .nx-brackets > i::after  { bottom: 0; right: 0; border-width: 0 1px 1px 0; }
+
+  /* Selected list row — left accent bar + soft gradient.
+     Apply with className="nx-row" data-active={isSelected}. */
+  .nx-row { position: relative; transition: background-color var(--nx-d-fast) linear; }
+  .nx-row::before {
+    content: "";
+    position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+    background: transparent;
+    transition: background-color var(--nx-d-fast) linear, box-shadow var(--nx-d-fast) linear;
+  }
+  .nx-row:hover { background-color: var(--nx-bg-elevated); }
+  .nx-row[data-active="true"] {
+    background-image: linear-gradient(90deg, color-mix(in srgb, var(--nx-accent) 8%, transparent), transparent 60%);
+  }
+  .nx-row[data-active="true"]::before {
+    background: var(--nx-accent);
+    box-shadow: 0 0 8px var(--nx-accent-glow);
+  }
+
+  /* Tab — bottom-accent underline on active */
+  .nx-tab { position: relative; transition: color var(--nx-d-fast), background-color var(--nx-d-fast); }
+  .nx-tab[data-active="true"]::after {
+    content: "";
+    position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+    background: var(--nx-accent);
+    box-shadow: 0 0 10px var(--nx-accent-glow);
+  }
+
+  /* Cursor blink */
+  .nx-caret::after {
+    content: "▊";
+    color: var(--nx-accent);
+    margin-left: 2px;
+    animation: nxBlink 1s steps(1) infinite;
+  }
+  @keyframes nxBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+  /* Connecting pulse — apply to any element; uses currentColor for halo */
+  .nx-pulse { animation: nxPulse var(--nx-d-slow) infinite; }
+  @keyframes nxPulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 currentColor; }
+    50%      { opacity: 0.55; box-shadow: 0 0 8px currentColor; }
+  }
+
+  /* Modal entry */
+  .nx-modal-enter { animation: nxModalEnter var(--nx-d-mid) var(--nx-ease) both; }
+  @keyframes nxModalEnter {
+    from { opacity: 0; transform: scale(0.985); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  /* Focus ring — use on inputs, buttons */
+  .nx-focus:focus,
+  .nx-focus:focus-visible {
+    outline: none;
+    border-color: var(--nx-accent);
+    box-shadow: inset 0 0 0 1px var(--nx-accent-glow), 0 0 0 3px var(--nx-accent-glow);
+    transition: box-shadow var(--nx-d-fast) linear, border-color var(--nx-d-fast) linear;
+  }
+
+  /* Modal scrim — covers viewport behind dialogs */
+  .nx-scrim {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.55), rgba(0,0,0,0.85) 80%);
+    backdrop-filter: blur(2px);
+    z-index: 40;
+  }
+}
+
+/* Light theme — drop ambient rain (token alpha already low, this is belt+braces) */
+.theme-light .nx-rain-ambient::after { opacity: 0; }

@@ -45,6 +45,7 @@ import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { useBackdropClose } from "./useBackdropClose";
 import { ContextMenu, MenuItem } from "./ContextMenu";
+import { Button, IconButton } from "./components/primitives";
 
 interface Props {
   onClose: () => void;
@@ -290,6 +291,14 @@ export function HistoryPanel({ onClose }: Props) {
     return `${(lastT / 3600).toFixed(1)}h`;
   }, [events]);
 
+  // Match counts per session from the cross-session search hits (real data).
+  const matchCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    if (hits) for (const h of hits) m.set(h.session_id, (m.get(h.session_id) ?? 0) + 1);
+    return m;
+  }, [hits]);
+  const matchingSessions = matchCounts.size;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
@@ -299,75 +308,69 @@ export function HistoryPanel({ onClose }: Props) {
         {...contentProps}
         className={
           fullscreen
-            ? "w-screen h-screen bg-[var(--nx-bg-base)] flex flex-col overflow-hidden"
-            : "w-full max-w-7xl h-[90vh] bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl flex flex-col overflow-hidden"
+            ? "nx-modal-enter w-screen h-screen bg-nx-bg flex flex-col overflow-hidden"
+            : "nx-modal-enter w-full max-w-7xl h-[90vh] bg-nx-bg border border-nx-border rounded-nx shadow-glow-md flex flex-col overflow-hidden"
         }
       >
         {/* Header */}
-        <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)] shrink-0">
-          <h2 className="text-lg font-mono text-[var(--nx-accent)]">
-            &gt; {t("history.title")}
-          </h2>
-          <p className="ml-3 text-xs text-[var(--nx-text-muted)] font-mono italic">
-            {t("history.subtitle")}
-          </p>
-          <button
-            onClick={refresh}
-            title={t("history.refresh")}
-            className="ml-auto p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
-          >
-            <RefreshCw size={14} />
-          </button>
-          <button
-            onClick={toggleFullscreen}
-            title={
-              fullscreen
-                ? t("history.exit_fullscreen")
-                : t("history.fullscreen")
-            }
-            className="ml-2 p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
-          >
-            {fullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-          </button>
-          <button
-            onClick={onClose}
-            className="ml-2 p-1.5 rounded hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)]"
-          >
-            <X size={14} />
-          </button>
+        <div className="flex items-center px-4 py-3 border-b border-nx-divider shrink-0">
+          <span className="text-h3 font-mono text-nx-accent">&gt;</span>
+          <span className="ml-2 text-body font-mono text-nx-text">{t("history.title")}</span>
+          <span className="ml-3 text-meta font-mono italic text-nx-muted">
+            — {t("history.subtitle")}
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <IconButton icon={<RefreshCw size={13} />} onClick={refresh} title={t("history.refresh")} />
+            <IconButton
+              icon={fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              onClick={toggleFullscreen}
+              title={fullscreen ? t("history.exit_fullscreen") : t("history.fullscreen")}
+            />
+            <IconButton icon={<X size={13} />} onClick={onClose} />
+          </div>
         </div>
 
         {/* Cross-session search */}
-        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--nx-border)] shrink-0">
-          <Search size={14} className="text-[var(--nx-text-soft)]" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && runSearch()}
-            placeholder={t("history.search_all_ph")}
-            className="flex-1 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-2 py-1 text-[var(--nx-text-primary)] focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-xs"
-          />
-          <button
-            onClick={runSearch}
-            className="px-3 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
-          >
+        <div className="flex items-center gap-3 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
+          <div className="relative flex-1 max-w-[540px]">
+            <Search
+              size={12}
+              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-nx-accent pointer-events-none"
+            />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && runSearch()}
+              placeholder={t("history.search_all_ph")}
+              className="nx-focus w-full pl-7 pr-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text placeholder-nx-muted font-mono"
+            />
+          </div>
+          <Button variant="secondary" size="sm" onClick={runSearch}>
             {t("history.search_btn")}
-          </button>
+          </Button>
           {hits !== null && (
-            <button
-              onClick={() => {
-                setHits(null);
-                setQuery("");
-              }}
-              className="px-3 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-warning)] font-mono text-xs rounded border border-[var(--nx-border)]"
-            >
-              {t("history.clear_search")} ({hits.length})
-            </button>
+            <>
+              <span className="text-meta text-nx-muted tabular-nums">
+                <span className="text-nx-accent">{hits.length}</span> {t("history.matches")}{" "}
+                {t("history.matches_in")}{" "}
+                <span className="text-nx-text">{matchingSessions}</span> {t("history.sessions")}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setHits(null);
+                  setQuery("");
+                }}
+              >
+                {t("history.clear_search")}
+              </Button>
+            </>
           )}
         </div>
 
         {error && (
-          <div className="px-4 py-2 text-[var(--nx-error)] text-xs font-mono border-b border-[var(--nx-border)] shrink-0 break-all">
+          <div className="px-4 py-2 text-nx-error text-meta font-mono border-b border-nx-divider shrink-0 break-all">
             ✗ {error}
           </div>
         )}
@@ -375,48 +378,59 @@ export function HistoryPanel({ onClose }: Props) {
         {/* Two-pane */}
         <div className="flex-1 min-h-0 flex">
           {/* Sessions list */}
-          <div className="w-72 shrink-0 border-r border-[var(--nx-border)] overflow-y-auto">
+          <div className="w-72 shrink-0 border-r border-nx-border overflow-y-auto">
             {filteredEntries.length === 0 ? (
-              <div className="p-4 text-xs text-[var(--nx-text-muted)] font-mono">
+              <div className="p-4 text-meta text-nx-muted font-mono">
                 {hits !== null ? t("history.no_hits") : t("history.empty")}
               </div>
             ) : (
-              filteredEntries.map((e) => (
-                <button
-                  key={e.session_id}
-                  onClick={() => setSelectedId(e.session_id)}
-                  className={`w-full text-left px-3 py-2 border-b border-[var(--nx-border)] hover:bg-[var(--nx-bg-panel)] group ${
-                    selectedId === e.session_id ? "bg-[var(--nx-bg-panel)]" : ""
-                  }`}
-                >
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-mono text-sm text-[var(--nx-text-primary)] truncate">
+              filteredEntries.map((e) => {
+                const isActive = selectedId === e.session_id;
+                const mc = matchCounts.get(e.session_id) ?? 0;
+                return (
+                  <div
+                    key={e.session_id}
+                    data-active={isActive || undefined}
+                    onClick={() => setSelectedId(e.session_id)}
+                    className="nx-row group grid grid-cols-[1fr_auto] gap-1 px-3.5 py-2.5 cursor-pointer"
+                  >
+                    <div className="min-w-0">
+                      <div
+                        className={
+                          "font-mono text-lead truncate " +
+                          (isActive ? "text-nx-accent" : "text-nx-text")
+                        }
+                      >
                         {e.user}@{e.host}
                         {e.port !== 22 && `:${e.port}`}
                       </div>
-                      <div className="font-mono text-[10px] text-[var(--nx-text-muted)] flex gap-2">
+                      <div className="font-mono text-meta text-nx-muted mt-0.5 flex items-center gap-2">
                         <span>{fmtTs(e.started_at)}</span>
                         <span>·</span>
-                        <span>{fmtBytes(e.byte_count)}</span>
-                        {e.still_active && (
-                          <span className="text-[var(--nx-accent)]">● live</span>
-                        )}
+                        <span className="tabular-nums">{fmtBytes(e.byte_count)}</span>
+                        {e.still_active && <span className="text-nx-accent">● live</span>}
                       </div>
                     </div>
-                    <button
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        onDelete(e.session_id);
-                      }}
-                      title={t("history.delete")}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-[var(--nx-border)] text-[var(--nx-error)]"
-                    >
-                      <Trash2 size={12} />
-                    </button>
+                    <div className="flex flex-col items-end justify-between">
+                      <button
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          onDelete(e.session_id);
+                        }}
+                        title={t("history.delete")}
+                        className="opacity-0 group-hover:opacity-100 p-1 rounded-nx-sm hover:bg-nx-elevated text-nx-error"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                      {mc > 0 && (
+                        <span className="text-micro text-nx-accent tabular-nums whitespace-nowrap">
+                          {mc} {t("history.matches")}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </button>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -424,17 +438,15 @@ export function HistoryPanel({ onClose }: Props) {
           <div className="flex-1 min-w-0 flex flex-col relative">
             {selectedId && (
               <>
-                <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--nx-border)] shrink-0 text-xs font-mono">
+                <div className="flex items-center gap-2 px-3.5 py-2 border-b border-nx-divider shrink-0 text-meta font-mono">
                   {selectedMeta && (
-                    <span className="text-[var(--nx-text-muted)]">
+                    <span className="text-nx-muted">
                       {selectedMeta.user}@{selectedMeta.host} ·{" "}
-                      <span className="text-[var(--nx-text-soft)]">
-                        {fmtTs(selectedMeta.started_at)}
-                      </span>
+                      <span className="text-nx-soft">{fmtTs(selectedMeta.started_at)}</span>
                       {durationLabel && (
                         <>
                           {" · "}
-                          <span className="text-[var(--nx-text-soft)]">{durationLabel}</span>
+                          <span className="text-nx-soft">{durationLabel}</span>
                         </>
                       )}
                       {" · "}
@@ -443,68 +455,74 @@ export function HistoryPanel({ onClose }: Props) {
                       </span>
                     </span>
                   )}
-                  <input
-                    value={inSessionQuery}
-                    onChange={(e) => setInSessionQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        searchRef.current?.findNext(inSessionQuery, {
-                          caseSensitive: false,
-                          decorations: searchDecorations(palette),
-                        });
-                      }
-                    }}
-                    placeholder={t("history.filter_in_session_ph")}
-                    className="ml-auto w-64 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-2 py-1 text-[var(--nx-text-primary)] focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-xs"
-                  />
-                  <button
+                  <div className="ml-auto relative w-64">
+                    <Search
+                      size={12}
+                      className="absolute left-2.5 top-1/2 -translate-y-1/2 text-nx-muted pointer-events-none"
+                    />
+                    <input
+                      value={inSessionQuery}
+                      onChange={(e) => setInSessionQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          searchRef.current?.findNext(inSessionQuery, {
+                            caseSensitive: false,
+                            decorations: searchDecorations(palette),
+                          });
+                        }
+                      }}
+                      placeholder={t("history.filter_in_session_ph")}
+                      className="nx-focus w-full pl-7 pr-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text placeholder-nx-muted font-mono"
+                    />
+                  </div>
+                  <IconButton
+                    icon={<span className="text-xs leading-none">↑</span>}
+                    title={t("history.find_prev")}
                     onClick={() =>
                       searchRef.current?.findPrevious(inSessionQuery, {
                         caseSensitive: false,
                         decorations: searchDecorations(palette),
                       })
                     }
-                    title={t("history.find_prev")}
-                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
-                  >
-                    ↑
-                  </button>
-                  <button
+                  />
+                  <IconButton
+                    icon={<span className="text-xs leading-none">↓</span>}
+                    title={t("history.find_next")}
                     onClick={() =>
                       searchRef.current?.findNext(inSessionQuery, {
                         caseSensitive: false,
                         decorations: searchDecorations(palette),
                       })
                     }
-                    title={t("history.find_next")}
-                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)]"
-                  >
-                    ↓
-                  </button>
-                  <button
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    leadingIcon={<Download size={12} />}
                     onClick={() => onExport(selectedId, true)}
                     title={t("history.export_stripped")}
-                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)] flex items-center gap-1"
                   >
-                    <Download size={12} /> .txt
-                  </button>
-                  <button
+                    .txt
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leadingIcon={<Download size={12} />}
                     onClick={() => onExport(selectedId, false)}
                     title={t("history.export_raw")}
-                    className="px-2 py-1 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-xs rounded border border-[var(--nx-border)] flex items-center gap-1"
                   >
-                    <Download size={12} /> .cast
-                  </button>
+                    .cast
+                  </Button>
                 </div>
                 {loading && (
-                  <div className="px-3 py-1 text-[var(--nx-text-soft)] font-mono text-xs">
+                  <div className="px-3 py-1 text-nx-soft font-mono text-meta">
                     {t("history.loading")}
                   </div>
                 )}
               </>
             )}
             {!selectedId && (
-              <div className="absolute inset-0 flex items-center justify-center text-[var(--nx-text-muted)] font-mono text-sm z-10 pointer-events-none">
+              <div className="absolute inset-0 grid place-items-center text-nx-muted font-mono text-meta z-10 pointer-events-none">
                 {t("history.select_session")}
               </div>
             )}
@@ -520,7 +538,7 @@ export function HistoryPanel({ onClose }: Props) {
                 e.stopPropagation();
                 setCtxMenu({ x: e.clientX, y: e.clientY });
               }}
-              className="flex-1 min-h-0 bg-[var(--nx-bg-base)] p-1"
+              className="flex-1 min-h-0 bg-nx-bg p-1"
             />
             {ctxMenu && (() => {
               const term = termRef.current;

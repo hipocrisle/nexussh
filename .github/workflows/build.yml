@@ -109,7 +109,11 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-          draft: false
+          # Keep DRAFT until latest.json is uploaded — otherwise the release
+          # becomes "latest" while /releases/latest/download/latest.json is
+          # still 404, and the in-app updater errors "Could not fetch a valid
+          # release JSON". generate-update-manifest publishes it at the end.
+          draft: true
           prerelease: false
 
   generate-update-manifest:
@@ -169,3 +173,10 @@ jobs:
         run: |
           gh release upload "${{ github.ref_name }}" latest.json \
             --repo "${{ github.repository }}" --clobber
+
+      - name: Publish release (draft → latest, after latest.json is in place)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" --draft=false --latest

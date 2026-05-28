@@ -325,7 +325,30 @@ textarea {
     backdrop-filter: blur(2px);
     z-index: 40;
   }
+
+  /* Rain burst — brief full-app matrix wash on connect / vault-unlock.
+     Static gradient (no canvas, ~0 CPU); mount briefly then unmount.
+     Peaks fast, eases back over --nx-d-slow. */
+  .nx-rain-burst {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 35;
+    background-image: repeating-linear-gradient(180deg,
+      transparent 0,
+      transparent 2px,
+      var(--nx-rain-overlay) 2px,
+      var(--nx-rain-overlay) 3px);
+    animation: nxRainBurst var(--nx-d-slow) var(--nx-ease) forwards;
+  }
+  @keyframes nxRainBurst {
+    0%   { opacity: 0; }
+    12%  { opacity: 0.2; }
+    100% { opacity: 0; }
+  }
 }
+
+/* Light theme — burst wash too aggressive on a bright canvas */
+.theme-light .nx-rain-burst { opacity: 0; animation: none; }
 
 /* Light theme — drop ambient rain (token alpha already low, this is belt+braces) */
 .theme-light .nx-rain-ambient::after { opacity: 0; }

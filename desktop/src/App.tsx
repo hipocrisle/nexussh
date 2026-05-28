@@ -145,6 +145,16 @@ function App() {
     writeSidebarCollapsed(next);
   }
 
+  // Rain burst — brief full-app matrix wash on connect. Remount the overlay
+  // each time (keyed) so the CSS animation replays; unmount after it ends.
+  const [rainBurst, setRainBurst] = useState(0);
+  const triggerBurst = () => setRainBurst((n) => n + 1);
+  useEffect(() => {
+    if (rainBurst === 0) return;
+    const id = setTimeout(() => setRainBurst(0), 1200);
+    return () => clearTimeout(id);
+  }, [rainBurst]);
+
   // Read app version once
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
@@ -316,6 +326,7 @@ function App() {
         ),
       );
       setActiveId(sid);
+      triggerBurst();
     } catch (e) {
       setTabs((tabs) => tabs.filter((x) => x.id !== pending.id));
       setError(String(e));
@@ -524,6 +535,9 @@ function App() {
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
       {/* Matrix Rain — rendered inside the terminal-area container below so
        *  the cascade only appears there. Header, sidebar, modals stay clean. */}
+
+      {/* Brief full-app matrix burst on connect (keyed so it replays). */}
+      {rainBurst > 0 && <div key={rainBurst} className="nx-rain-burst" />}
 
       <header className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0">
         {/* Brand mark — framed > glyph nodding to the app icon */}

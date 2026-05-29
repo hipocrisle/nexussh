@@ -64,6 +64,23 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Fetch xray-core sidecar
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: |
+          mkdir -p binaries
+          case "${{ matrix.target }}" in
+            x86_64-pc-windows-msvc)   ASSET=Xray-windows-64.zip; BIN=xray.exe; OUT="binaries/xray-${{ matrix.target }}.exe";;
+            x86_64-unknown-linux-gnu) ASSET=Xray-linux-64.zip;   BIN=xray;     OUT="binaries/xray-${{ matrix.target }}";;
+            *) echo "no xray asset mapping for ${{ matrix.target }}"; exit 1;;
+          esac
+          curl -fSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/$ASSET"
+          unzip -o xray.zip "$BIN" -d xray_tmp
+          mv "xray_tmp/$BIN" "$OUT"
+          chmod +x "$OUT" || true
+          rm -rf xray.zip xray_tmp
+          ls -la "$OUT"
+
       - name: Clean prior bundle artifacts (avoid stale cached versions)
         working-directory: desktop/src-tauri
         shell: bash

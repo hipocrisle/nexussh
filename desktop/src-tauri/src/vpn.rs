@@ -250,6 +250,38 @@ pub fn xray_config(node: &VpnNode, socks_port: u16) -> Value {
     })
 }
 
+/// Path to the bundled xray sidecar — Tauri places externalBin next to the app
+/// executable (the target-triple suffix is stripped at bundle time).
+fn xray_bin_path() -> std::path::PathBuf {
+    let mut p = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    p.push(if cfg!(windows) { "xray.exe" } else { "xray" });
+    p
+}
+
+/// Write the generated config to a temp file and spawn the bundled xray bound to
+/// a local SOCKS port. The returned Child has kill_on_drop so the proxy dies
+/// with the owning SSH session. Userspace only — no TUN, no elevation.
+pub fn spawn_xray(node: &VpnNode, socks_port: u16) -> std::io::Result<tokio::process::Child> {
+    use std::io::Write;
+    let cfg = xray_config(node, socks_port);
+    let bytes = serde_json::to_vec(&cfg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let path = std::env::temp_dir().join(format!("nexussh-xray-{socks_port}.json"));
+    std::fs::File::create(&path)?.write_all(&bytes)?;
+    tokio::process::Command::new(xray_bin_path())
+        .arg("run")
+        .arg("-c")
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+}
+
 #[tauri::command]
 pub fn vpn_parse_subscription(sub_text: String) -> Result<Vec<VpnNode>, String> {
     let nodes = parse_subscription(&sub_text);

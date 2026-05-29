@@ -39,6 +39,34 @@ import {
 import { HostDialog } from "./HostDialog";
 import { MenuItem } from "./ContextMenu";
 
+// Folders form a tree via "/"-separated group paths ("Work/Office-A/Switches").
+interface FolderNode {
+  path: string; // full path
+  name: string; // last segment
+  children: Map<string, FolderNode>;
+  hosts: HostRecord[];
+}
+
+function hostCmp(a: HostRecord, b: HostRecord): number {
+  if (a.lastUsedAt && b.lastUsedAt) return b.lastUsedAt.localeCompare(a.lastUsedAt);
+  if (a.lastUsedAt) return -1;
+  if (b.lastUsedAt) return 1;
+  return a.name.localeCompare(b.name);
+}
+
+function countHosts(n: FolderNode): number {
+  let c = n.hosts.length;
+  n.children.forEach((ch) => (c += countHosts(ch)));
+  return c;
+}
+
+function sortedChildren(n: FolderNode): FolderNode[] {
+  return Array.from(n.children.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Left padding (px) for a folder header / host row at a given tree depth.
+const folderPad = (depth: number) => 12 + depth * 14;
+
 interface Props {
   onConnect: (h: HostRecord) => void;
   onSftp?: (h: HostRecord) => void;
@@ -126,29 +154,40 @@ export function Sidebar({
   );
   const refreshFolders = useCallback(() => setKnownFolders(loadKnownFolders()), []);
 
-  const groups = useMemo(() => {
-    const m = new Map<string, HostRecord[]>();
-    for (const h of filtered) {
-      const g = h.group ?? ungroupedLabel;
-      if (!m.has(g)) m.set(g, []);
-      m.get(g)!.push(h);
-    }
-    // Include empty folders the user created via "+ Folder"
-    for (const f of knownFolders) {
-      if (!m.has(f)) m.set(f, []);
-    }
-    for (const list of m.values()) {
-      list.sort((a, b) => {
-        if (a.lastUsedAt && b.lastUsedAt) {
-          return b.lastUsedAt.localeCompare(a.lastUsedAt);
+  const { root, ungrouped } = useMemo(() => {
+    const root: FolderNode = { path: "", name: "", children: new Map(), hosts: [] };
+    const ensure = (path: string): FolderNode => {
+      let node = root;
+      let acc = "";
+      for (const seg of path.split("/")) {
+        if (!seg) continue;
+        acc = acc ? acc + "/" + seg : seg;
+        let child = node.children.get(seg);
+        if (!child) {
+          child = { path: acc, name: seg, children: new Map(), hosts: [] };
+          node.children.set(seg, child);
         }
-        if (a.lastUsedAt) return -1;
-        if (b.lastUsedAt) return 1;
-        return a.name.localeCompare(b.name);
-      });
+        node = child;
+      }
+      return node;
+    };
+    const ungrouped: HostRecord[] = [];
+    for (const h of filtered) {
+      if (h.group) ensure(h.group).hosts.push(h);
+      else ungrouped.push(h);
     }
-    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [filtered, ungroupedLabel, knownFolders]);
+    // Empty folders the user created via "+ Folder" (may be nested paths).
+    for (const f of knownFolders) if (f.trim()) ensure(f);
+    const sortRec = (n: FolderNode) => {
+      n.hosts.sort(hostCmp);
+      n.children.forEach(sortRec);
+    };
+    sortRec(root);
+    ungrouped.sort(hostCmp);
+    return { root, ungrouped };
+  }, [filtered, knownFolders]);
+
+  const isEmpty = root.children.size === 0 && ungrouped.length === 0;
 
   const knownGroups = useMemo(
     () =>
@@ -267,50 +306,78 @@ export function Sidebar({
     );
   }
 
-  function onFolderContextMenu(e: React.MouseEvent, group: string) {
+  function onFolderContextMenu(e: React.MouseEvent, path: string) {
     e.preventDefault();
     e.stopPropagation();
     // Don't allow rename/delete on the synthetic "ungrouped" bucket.
-    if (group === ungroupedLabel) {
+    if (path === ungroupedLabel) {
       onContextMenu?.(e.clientX, e.clientY, [
         {
           label: t("sidebar.menu_collapse_group"),
-          onClick: () => toggleGroup(group),
+          onClick: () => toggleGroup(path),
         },
       ]);
       return;
     }
-    onContextMenu?.(e.clientX, e.clientY, [
-      {
-        label: t("sidebar.menu_rename_folder"),
-        onClick: async () => {
-          const name = window.prompt(t("sidebar.rename_folder_prompt"), group);
-          if (name && name.trim() && name.trim() !== group) {
-            await renameFolder(group, name.trim());
-            renameKnownFolder(group, name.trim());
+    const slash = path.lastIndexOf("/");
+    const parent = slash >= 0 ? path.slice(0, slash) : "";
+    const leaf = slash >= 0 ? path.slice(slash + 1) : path;
+    onContextMenu?.(
+      e.clientX,
+      e.clientY,
+      [
+        {
+          label: t("sidebar.menu_rename_folder"),
+          icon: <Edit2 size={13} />,
+          onClick: async () => {
+            const name = window.prompt(t("sidebar.rename_folder_prompt"), leaf);
+            const next = name?.trim();
+            if (!next || next === leaf || next.includes("/")) return;
+            const newPath = parent ? `${parent}/${next}` : next;
+            await renameFolder(path, newPath);
+            renameKnownFolder(path, newPath);
             refreshFolders();
             reload();
-          }
+          },
         },
-      },
-      {
-        label: t("sidebar.menu_collapse_group"),
-        onClick: () => toggleGroup(group),
-      },
-      { separator: true, label: "" },
-      {
-        label: t("sidebar.menu_delete_folder"),
-        onClick: async () => {
-          if (!confirm(t("sidebar.delete_folder_confirm", { name: group })))
-            return;
-          await deleteFolder(group);
-          removeKnownFolder(group);
-          refreshFolders();
-          reload();
+        {
+          label: t("sidebar.menu_new_subfolder"),
+          icon: <FolderPlus size={13} />,
+          onClick: () => {
+            const name = window.prompt(t("sidebar.new_subfolder_prompt", { parent: leaf }));
+            const sub = name?.trim();
+            if (!sub) return;
+            addKnownFolder(`${path}/${sub}`);
+            // Make sure the parent is expanded so the new child is visible.
+            setCollapsedGroups((prev) => {
+              const nextSet = new Set(prev);
+              nextSet.delete(path);
+              writeCollapsedGroups(nextSet);
+              return nextSet;
+            });
+            refreshFolders();
+          },
         },
-        destructive: true,
-      },
-    ]);
+        {
+          label: t("sidebar.menu_collapse_group"),
+          onClick: () => toggleGroup(path),
+        },
+        { separator: true, label: "" },
+        {
+          label: t("sidebar.menu_delete_folder"),
+          icon: <Trash2 size={13} />,
+          onClick: async () => {
+            if (!confirm(t("sidebar.delete_folder_confirm", { name: path }))) return;
+            await deleteFolder(path);
+            removeKnownFolder(path);
+            refreshFolders();
+            reload();
+          },
+          destructive: true,
+        },
+      ],
+      { main: path },
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -400,6 +467,99 @@ export function Sidebar({
     ];
   }
 
+  const renderHost = (h: HostRecord, depth: number) => {
+    const isSelected = selectedId === h.id;
+    const isLive = h.id === activeHostId;
+    return (
+      <div
+        key={h.id}
+        data-active={isSelected || undefined}
+        onMouseDown={(e) => onHostMouseDown(e, h)}
+        onClick={() => {
+          if (draggingHost) return;
+          clickMode === "connect" ? onConnect(h) : onSelect?.(h);
+        }}
+        onDoubleClick={() => onConnect(h)}
+        onContextMenu={(e) => onHostContextMenu(e, h)}
+        title={t("sidebar.host_hint")}
+        style={{ paddingLeft: folderPad(depth) }}
+        className={
+          "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pr-3 py-1.5 cursor-pointer " +
+          (draggingHost?.id === h.id ? "opacity-50" : "")
+        }
+      >
+        <Server
+          size={12}
+          className={isSelected ? "text-nx-accent shrink-0" : "text-nx-muted shrink-0"}
+        />
+        <div className="min-w-0">
+          <div
+            className={
+              "font-mono text-lead truncate " +
+              (isSelected ? "text-nx-accent" : "text-nx-text")
+            }
+          >
+            {h.name}
+            {isLive && <span className="nx-caret ml-1" />}
+          </div>
+          <div className="font-mono text-meta text-nx-muted truncate">
+            {h.user}
+            <span className="text-nx-soft">@</span>
+            {h.host}:{h.port}
+          </div>
+        </div>
+        {isLive && (
+          <span className="text-micro uppercase tracking-wider text-nx-accent border border-nx-accent/40 rounded-nx-sm px-1.5">
+            live
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const renderFolder = (node: FolderNode, depth: number): React.ReactNode => {
+    const isCollapsed = collapsedGroups.has(node.path);
+    return (
+      <div key={"f:" + node.path} className="mb-0.5">
+        <button
+          data-folder-header={node.path}
+          onClick={() => toggleGroup(node.path)}
+          onContextMenu={(e) => onFolderContextMenu(e, node.path)}
+          style={{ paddingLeft: folderPad(depth) }}
+          className={
+            "w-full pr-3 py-1.5 flex items-center gap-2 text-meta uppercase tracking-[0.16em] font-mono " +
+            "text-nx-soft hover:text-nx-text transition-colors duration-[80ms] " +
+            (dragOverGroup === node.path ? "bg-nx-elevated shadow-glow-sm" : "")
+          }
+        >
+          {isCollapsed ? (
+            <ChevronRight size={12} className="text-nx-muted shrink-0" />
+          ) : (
+            <ChevronDown size={12} className="text-nx-accent shrink-0" />
+          )}
+          <span className="truncate">// {node.name}</span>
+          <span className="ml-auto text-micro tabular-nums px-1.5 min-w-[18px] text-center rounded-full border border-nx-border bg-nx-elevated text-nx-muted">
+            {countHosts(node)}
+          </span>
+        </button>
+        {!isCollapsed && (
+          <>
+            {sortedChildren(node).map((c) => renderFolder(c, depth + 1))}
+            {node.hosts.map((h) => renderHost(h, depth + 1))}
+          </>
+        )}
+      </div>
+    );
+  };
+
+  // Synthetic top-level bucket for hosts with no folder.
+  const ungroupedNode: FolderNode = {
+    path: ungroupedLabel,
+    name: ungroupedLabel,
+    children: new Map(),
+    hosts: ungrouped,
+  };
+
   if (collapsed) {
     return (
       <aside className="w-10 shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col items-center py-2 gap-2">
@@ -467,7 +627,7 @@ export function Sidebar({
           onContextMenu?.(e.clientX, e.clientY, makeEmptyAreaMenu());
         }}
       >
-        {groups.length === 0 && (
+        {isEmpty && (
           <div className="text-center text-[var(--nx-text-muted)] font-mono text-xs p-6">
             {t("sidebar.empty_state")}
             <br />
@@ -480,87 +640,8 @@ export function Sidebar({
           </div>
         )}
 
-        {groups.map(([g, list]) => {
-          const isCollapsed = collapsedGroups.has(g);
-          return (
-            <div key={g} className="mb-1">
-              <button
-                data-folder-header={g}
-                onClick={() => toggleGroup(g)}
-                onContextMenu={(e) => onFolderContextMenu(e, g)}
-                className={
-                  "w-full px-3 py-1.5 flex items-center gap-2 text-meta uppercase tracking-[0.16em] font-mono " +
-                  "text-nx-soft hover:text-nx-text transition-colors duration-[80ms] " +
-                  (dragOverGroup === g ? "bg-nx-elevated shadow-glow-sm" : "")
-                }
-              >
-                {isCollapsed ? (
-                  <ChevronRight size={12} className="text-nx-muted shrink-0" />
-                ) : (
-                  <ChevronDown size={12} className="text-nx-accent shrink-0" />
-                )}
-                <span className="truncate">// {g}</span>
-                <span className="ml-auto text-micro tabular-nums px-1.5 min-w-[18px] text-center rounded-full border border-nx-border bg-nx-elevated text-nx-muted">
-                  {list.length}
-                </span>
-              </button>
-              {!isCollapsed &&
-                list.map((h) => {
-                  const isSelected = selectedId === h.id;
-                  const isLive = h.id === activeHostId;
-                  return (
-                    <div
-                      key={h.id}
-                      data-active={isSelected || undefined}
-                      onMouseDown={(e) => onHostMouseDown(e, h)}
-                      onClick={() => {
-                        // Suppress click if a drag just completed.
-                        if (draggingHost) return;
-                        clickMode === "connect" ? onConnect(h) : onSelect?.(h);
-                      }}
-                      onDoubleClick={() => onConnect(h)}
-                      onContextMenu={(e) => onHostContextMenu(e, h)}
-                      title={t("sidebar.host_hint")}
-                      className={
-                        "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pl-3 pr-3 py-1.5 cursor-pointer " +
-                        (draggingHost?.id === h.id ? "opacity-50" : "")
-                      }
-                    >
-                      <Server
-                        size={12}
-                        className={
-                          isSelected
-                            ? "text-nx-accent shrink-0"
-                            : "text-nx-muted shrink-0"
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div
-                          className={
-                            "font-mono text-lead truncate " +
-                            (isSelected ? "text-nx-accent" : "text-nx-text")
-                          }
-                        >
-                          {h.name}
-                          {isLive && <span className="nx-caret ml-1" />}
-                        </div>
-                        <div className="font-mono text-meta text-nx-muted truncate">
-                          {h.user}
-                          <span className="text-nx-soft">@</span>
-                          {h.host}:{h.port}
-                        </div>
-                      </div>
-                      {isLive && (
-                        <span className="text-micro uppercase tracking-wider text-nx-accent border border-nx-accent/40 rounded-nx-sm px-1.5">
-                          live
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-            </div>
-          );
-        })}
+        {sortedChildren(root).map((node) => renderFolder(node, 0))}
+        {ungrouped.length > 0 && renderFolder(ungroupedNode, 0)}
       </div>
 
       {dialog?.kind === "add" && (

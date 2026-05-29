@@ -109,28 +109,40 @@ export function newHostId(): string {
   return "h-" + crypto.randomUUID();
 }
 
-/** Rename a folder — updates `group` field of every host that was in it. */
+/**
+ * Rename a folder — path-aware. `group` is a "/"-separated path, so renaming
+ * "Work/Office-A" must also re-prefix every descendant ("Work/Office-A/Sw" →
+ * "Work/Office-B/Sw"). Exact match and prefix match are both rewritten.
+ */
 export async function renameFolder(
   oldName: string,
   newName: string,
 ): Promise<void> {
   const all = await listHosts();
   const touched: HostRecord[] = [];
+  const prefix = oldName + "/";
   for (const h of all) {
     if (h.group === oldName) {
       h.group = newName;
+      touched.push(h);
+    } else if (h.group && h.group.startsWith(prefix)) {
+      h.group = newName + "/" + h.group.slice(prefix.length);
       touched.push(h);
     }
   }
   for (const h of touched) await saveHost(h);
 }
 
-/** Delete a folder — moves its hosts to "ungrouped". Does not delete hosts. */
+/**
+ * Delete a folder — ungroups the folder AND its whole subtree. Does not delete
+ * hosts. Path-aware: removes the folder plus every descendant path.
+ */
 export async function deleteFolder(name: string): Promise<void> {
   const all = await listHosts();
   const touched: HostRecord[] = [];
+  const prefix = name + "/";
   for (const h of all) {
-    if (h.group === name) {
+    if (h.group === name || (h.group && h.group.startsWith(prefix))) {
       h.group = undefined;
       touched.push(h);
     }
@@ -179,11 +191,21 @@ export function addKnownFolder(name: string) {
 }
 
 export function removeKnownFolder(name: string) {
-  const list = loadKnownFolders().filter((f) => f !== name);
+  const prefix = name + "/";
+  const list = loadKnownFolders().filter(
+    (f) => f !== name && !f.startsWith(prefix),
+  );
   localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
 }
 
 export function renameKnownFolder(oldName: string, newName: string) {
-  const list = loadKnownFolders().map((f) => (f === oldName ? newName : f));
+  const prefix = oldName + "/";
+  const list = loadKnownFolders().map((f) =>
+    f === oldName
+      ? newName
+      : f.startsWith(prefix)
+        ? newName + "/" + f.slice(prefix.length)
+        : f,
+  );
   localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
 }

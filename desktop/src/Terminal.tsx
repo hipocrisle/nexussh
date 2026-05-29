@@ -47,6 +47,9 @@ interface Props {
   onSessionClosed?: (reason: string) => void;
   /** Parent renders the context menu — we just emit position + items. */
   onContextMenu?: (x: number, y: number, items: TerminalAction[]) => void;
+  /** Reconnect this tab — invoked when the user presses Enter in a session
+   *  that has already closed (PuTTY-style). */
+  onReconnect?: () => void;
 }
 
 export function TerminalView({
@@ -54,12 +57,15 @@ export function TerminalView({
   visible,
   onSessionClosed,
   onContextMenu,
+  onReconnect,
 }: Props) {
   const { t } = useTranslation();
   const [settings] = useSettings();
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // True once the session has closed — gates the Enter-to-reconnect shortcut.
+  const closedRef = useRef(false);
   // Keep latest t() in a ref so the mount-once effect always gets fresh translation
   const tRef = useRef(t);
   tRef.current = t;
@@ -67,6 +73,8 @@ export function TerminalView({
   // right-clicks, but we register the listener once at mount.
   const onContextMenuRef = useRef(onContextMenu);
   onContextMenuRef.current = onContextMenu;
+  const onReconnectRef = useRef(onReconnect);
+  onReconnectRef.current = onReconnect;
   // Latest settings via ref so the mount-once effects pick up changes to
   // settings.puttyMouse without resubscribing every render.
   const settingsRef = useRef(settings);
@@ -185,6 +193,13 @@ export function TerminalView({
     // is reserved for SIGINT — the natural muscle memory in any terminal.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
+      // Session already closed → Enter reconnects (PuTTY-style), nothing is
+      // sent to the (dead) PTY.
+      if (closedRef.current && ev.key === "Enter") {
+        closedRef.current = false;
+        onReconnectRef.current?.();
+        return false;
+      }
       const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
       if (ctrlShift && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -227,6 +242,11 @@ export function TerminalView({
           if (ev.session_id !== sessionId) return;
           const msg = tRef.current("terminal.session_closed", { reason: ev.reason });
           term.writeln(`\r\n\x1b[33m[${msg}]\x1b[0m`);
+          term.writeln(`\x1b[2m[${tRef.current("terminal.enter_reconnect")}]\x1b[0m`);
+          closedRef.current = true;
+          // Grab focus so the Enter-to-reconnect keypress lands on this term
+          // even if focus had drifted when the session dropped.
+          term.focus();
           onSessionClosed?.(ev.reason);
         }),
       ]);

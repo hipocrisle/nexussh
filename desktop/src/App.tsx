@@ -39,6 +39,7 @@ import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   Minus,
   Square,
@@ -59,6 +60,14 @@ function readSidebarCollapsed(): boolean {
 }
 function writeSidebarCollapsed(v: boolean) {
   localStorage.setItem(SIDEBAR_COLLAPSED_LS_KEY, v ? "1" : "0");
+}
+
+const SIDEBAR_WIDTH_LS_KEY = "nexussh.sidebarWidth";
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 560;
+function readSidebarWidth(): number {
+  const v = parseInt(localStorage.getItem(SIDEBAR_WIDTH_LS_KEY) ?? "", 10);
+  return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 256;
 }
 
 interface Tab extends TabInfo {
@@ -170,6 +179,7 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
   );
+  const [sidebarWidth, setSidebarWidth] = useState<number>(readSidebarWidth());
   const [updatePanel, setUpdatePanel] = useState<
     null | { initial?: UpdateInfo | null }
   >(null);
@@ -203,6 +213,35 @@ function App() {
     writeSidebarCollapsed(next);
   }
 
+  // Drag the divider between sidebar and main area. Track from pointer-down so
+  // it stays accurate regardless of where the sidebar's left edge sits.
+  function startSidebarResize(e: React.PointerEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: PointerEvent) => {
+      const w = Math.min(
+        SIDEBAR_MAX,
+        Math.max(SIDEBAR_MIN, startW + (ev.clientX - startX)),
+      );
+      setSidebarWidth(w);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setSidebarWidth((w) => {
+        localStorage.setItem(SIDEBAR_WIDTH_LS_KEY, String(w));
+        return w;
+      });
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
   // Rain burst — brief full-app matrix wash on connect. Remount the overlay
   // each time (keyed) so the CSS animation replays; unmount after it ends.
   const [rainBurst, setRainBurst] = useState(0);
@@ -212,6 +251,32 @@ function App() {
     const id = setTimeout(() => setRainBurst(0), 1200);
     return () => clearTimeout(id);
   }, [rainBurst]);
+
+  // Confirm-on-quit: if any tab is live, intercept the window close and ask
+  // first (user once closed everything by accident). Listener reads a ref so it
+  // always sees the current tab list without re-registering.
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        const live = tabsRef.current.filter(
+          (x) => x.status === "connected" || x.status === "connecting",
+        );
+        if (live.length === 0) return;
+        event.preventDefault();
+        const ok = await ask(t("app.confirm_quit", { n: live.length }), {
+          title: "NexuSSH",
+          kind: "warning",
+        });
+        if (ok) getCurrentWindow().destroy();
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, [t]);
 
   // Read app version once
   useEffect(() => {
@@ -258,6 +323,21 @@ function App() {
     const ids = tabs.map((t_) => t_.host.id);
     localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
   }, [tabs, settings.restoreSession]);
+
+  // Drag-reorder of tabs. Persisted for free by the effect above.
+  function reorderTabs(fromId: string, toId: string, before: boolean) {
+    if (fromId === toId) return;
+    setTabs((prev) => {
+      const arr = [...prev];
+      const from = arr.findIndex((x) => x.id === fromId);
+      if (from < 0) return prev;
+      const [moved] = arr.splice(from, 1);
+      const to = arr.findIndex((x) => x.id === toId);
+      if (to < 0) return prev;
+      arr.splice(before ? to : to + 1, 0, moved);
+      return arr;
+    });
+  }
 
   // Auto-update check on mount (once per 24h, silent on failure).
   useEffect(() => {
@@ -626,6 +706,9 @@ function App() {
   } as React.CSSProperties;
 
   const activeSession = tabs.find((x) => x.id === activeId)?.host;
+  // Hosts that have an open tab → "live" badge in the sidebar; the active tab's
+  // host additionally gets the blinking caret.
+  const openHostIds = new Set(tabs.map((x) => x.host.id));
 
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
@@ -727,12 +810,21 @@ function App() {
           onSftp={openSftp}
           onSelect={setSelectedHost}
           activeHostId={activeSession?.id ?? null}
+          openHostIds={openHostIds}
           selectedId={selectedHost?.id ?? null}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={toggleSidebar}
+          width={sidebarWidth}
           onContextMenu={(x, y, items, title) => setMenu({ x, y, items, title })}
           clickMode={settings.clickMode}
         />
+        {!sidebarCollapsed && (
+          <div
+            onPointerDown={startSidebarResize}
+            title={t("sidebar.resize")}
+            className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
+          />
+        )}
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
             tabs={tabs}
@@ -742,6 +834,7 @@ function App() {
             onNewTab={openSshPicker}
             onNewTabDropdown={openNewTabMenu}
             onContextMenu={onTabContextMenu}
+            onReorder={reorderTabs}
           />
           <div className="flex-1 min-h-0 relative">
             {/* Matrix Rain ONLY in the terminal area, never over header/
@@ -801,6 +894,7 @@ function App() {
                   sessionId={t_.id}
                   visible={t_.id === activeId}
                   onSessionClosed={(reason) => markClosed(t_.id, reason)}
+                  onReconnect={() => restartSession(t_.id)}
                   onContextMenu={(x, y, items) => setMenu({ x, y, items })}
                 />
               ),

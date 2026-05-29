@@ -22,6 +22,9 @@ export interface HostRecord {
   group?: string;
   /** ISO timestamp of last successful connection — for sorting */
   lastUsedAt?: string;
+  /** Manual position within its folder (set by drag-reorder). Only consulted in
+   *  the "manual" sidebar sort mode; lower comes first. */
+  order?: number;
   /** Free-form note */
   note?: string;
   /** When true (password auth only), saved password is ignored; user is
@@ -167,6 +170,27 @@ export async function moveHostToFolder(
   if (!h) return;
   h.group = folder ?? undefined;
   await saveHost(h);
+}
+
+/** Assign `order` = position to each listed id (and set their group), in one
+ *  batched write. Used by sidebar drag-reorder so the manual sort sticks. */
+export async function reorderHosts(
+  orderedIds: string[],
+  folder: string | null,
+): Promise<void> {
+  const s = await getStore();
+  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  orderedIds.forEach((id, i) => {
+    const h = all.find((x) => x.id === id);
+    if (h) {
+      h.order = i;
+      h.group = folder ?? undefined;
+    }
+  });
+  await s.set(HOSTS_KEY, all);
+  await s.save();
+  notifyHostsChanged();
+  maybePushSync();
 }
 
 // --- Empty folders ---------------------------------------------------------

@@ -130,8 +130,10 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
       </div>
 
       <div className="relative z-10 flex flex-col h-full">
-        {/* Header */}
+        {/* Header — drag region so the window stays movable while Settings
+            covers the main titlebar. */}
         <header
+          data-tauri-drag-region
           className="h-9 border-b flex items-center px-4 select-none shrink-0 font-mono text-sm tracking-wider"
           style={{ background: t.bgSecondary, borderColor: t.border }}
         >

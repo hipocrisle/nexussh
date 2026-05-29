@@ -22,6 +22,9 @@ import {
   Edit2,
   Copy,
   Trash2,
+  ArrowDownAZ,
+  Clock,
+  GripVertical,
 } from "lucide-react";
 import {
   HostRecord,
@@ -30,6 +33,7 @@ import {
   renameFolder,
   deleteFolder,
   moveHostToFolder,
+  reorderHosts,
   loadKnownFolders,
   addKnownFolder,
   removeKnownFolder,
@@ -47,7 +51,19 @@ interface FolderNode {
   hosts: HostRecord[];
 }
 
-function hostCmp(a: HostRecord, b: HostRecord): number {
+type SortMode = "recent" | "alpha" | "manual";
+const SORT_MODE_LS = "nexussh.sidebarSort";
+const SORT_CYCLE: SortMode[] = ["recent", "alpha", "manual"];
+
+function hostCmp(a: HostRecord, b: HostRecord, mode: SortMode): number {
+  if (mode === "alpha") return a.name.localeCompare(b.name);
+  if (mode === "manual") {
+    const ao = a.order ?? Number.MAX_SAFE_INTEGER;
+    const bo = b.order ?? Number.MAX_SAFE_INTEGER;
+    if (ao !== bo) return ao - bo;
+    return a.name.localeCompare(b.name);
+  }
+  // recent (default): most-recently-used first, then name
   if (a.lastUsedAt && b.lastUsedAt) return b.lastUsedAt.localeCompare(a.lastUsedAt);
   if (a.lastUsedAt) return -1;
   if (b.lastUsedAt) return 1;
@@ -72,10 +88,15 @@ interface Props {
   onSftp?: (h: HostRecord) => void;
   onSelect?: (h: HostRecord) => void;
   selectedId?: string | null;
-  /** host.id of the currently focused live session (caret + live badge). */
+  /** host.id of the currently focused tab — gets the blinking caret. */
   activeHostId?: string | null;
+  /** host.ids of ALL hosts with an open tab — each gets the "live" badge. */
+  openHostIds?: Set<string>;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  /** Expanded-state width in px (parent owns it so the drag-divider lives in
+   *  the layout). Ignored when collapsed. */
+  width?: number;
   /** Parent renders the menu — sidebar just emits coords + items. */
   onContextMenu?: (
     x: number,
@@ -110,8 +131,10 @@ export function Sidebar({
   onSelect,
   selectedId,
   activeHostId,
+  openHostIds,
   collapsed,
   onToggleCollapsed,
+  width = 256,
   onContextMenu,
   clickMode = "select",
 }: Props) {
@@ -124,6 +147,15 @@ export function Sidebar({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     readCollapsedGroups(),
   );
+  const [sortMode, setSortMode] = useState<SortMode>(() => {
+    const v = localStorage.getItem(SORT_MODE_LS) as SortMode | null;
+    return v && SORT_CYCLE.includes(v) ? v : "recent";
+  });
+  function cycleSortMode() {
+    const next = SORT_CYCLE[(SORT_CYCLE.indexOf(sortMode) + 1) % SORT_CYCLE.length];
+    setSortMode(next);
+    localStorage.setItem(SORT_MODE_LS, next);
+  }
 
   const reload = useCallback(async () => setHosts(await listHosts()), []);
 
@@ -179,13 +211,13 @@ export function Sidebar({
     // Empty folders the user created via "+ Folder" (may be nested paths).
     for (const f of knownFolders) if (f.trim()) ensure(f);
     const sortRec = (n: FolderNode) => {
-      n.hosts.sort(hostCmp);
+      n.hosts.sort((a, b) => hostCmp(a, b, sortMode));
       n.children.forEach(sortRec);
     };
     sortRec(root);
-    ungrouped.sort(hostCmp);
+    ungrouped.sort((a, b) => hostCmp(a, b, sortMode));
     return { root, ungrouped };
-  }, [filtered, knownFolders]);
+  }, [filtered, knownFolders, sortMode]);
 
   const isEmpty = root.children.size === 0 && ungrouped.length === 0;
 
@@ -388,6 +420,11 @@ export function Sidebar({
   // ---------------------------------------------------------------------
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [draggingHost, setDraggingHost] = useState<HostRecord | null>(null);
+  // When hovering another host row: where the dragged host would land.
+  const [dropTarget, setDropTarget] = useState<{
+    hostId: string;
+    before: boolean;
+  } | null>(null);
   const dragRef = useRef<{
     host: HostRecord;
     startX: number;
@@ -417,20 +454,48 @@ export function Sidebar({
         document.body.style.cursor = "grabbing";
       }
       if (!d.started) return;
-      // Find which folder header is under the cursor right now.
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      // Reorder intent: hovering another host row → insert before/after it.
+      const hostEl = el?.closest("[data-host-id]") as HTMLElement | null;
+      if (hostEl && hostEl.dataset.hostId && hostEl.dataset.hostId !== d.host.id) {
+        const r = hostEl.getBoundingClientRect();
+        setDropTarget({
+          hostId: hostEl.dataset.hostId,
+          before: e.clientY < r.top + r.height / 2,
+        });
+        setDragOverGroup(null);
+        return;
+      }
+      // Otherwise: move-into-folder intent (drop on a folder header).
+      setDropTarget(null);
       const folderEl = el?.closest("[data-folder-header]") as HTMLElement | null;
-      const g = folderEl?.dataset.folderHeader ?? null;
-      setDragOverGroup(g);
+      setDragOverGroup(folderEl?.dataset.folderHeader ?? null);
     };
     const onUp = async () => {
       const d = dragRef.current;
       dragRef.current = null;
       document.body.style.cursor = "";
       if (d && d.started) {
-        const target = dragOverGroup;
-        if (target !== null) {
-          const folder = target === ungroupedLabel ? null : target;
+        if (dropTarget) {
+          const tgt = hosts.find((h) => h.id === dropTarget.hostId);
+          if (tgt) {
+            const group = tgt.group ?? null;
+            const list = hosts
+              .filter((h) => (h.group ?? null) === group && h.id !== d.host.id)
+              .sort((a, b) => hostCmp(a, b, sortMode));
+            const idx = list.findIndex((h) => h.id === tgt.id);
+            list.splice(dropTarget.before ? idx : idx + 1, 0, d.host);
+            await reorderHosts(
+              list.map((h) => h.id),
+              group,
+            );
+            // Freeze the resulting order so the manual placement is what shows.
+            setSortMode("manual");
+            localStorage.setItem(SORT_MODE_LS, "manual");
+            reload();
+          }
+        } else if (dragOverGroup !== null) {
+          const folder = dragOverGroup === ungroupedLabel ? null : dragOverGroup;
           if (folder !== (d.host.group ?? null)) {
             await moveHostToFolder(d.host.id, folder);
             reload();
@@ -439,6 +504,7 @@ export function Sidebar({
       }
       setDraggingHost(null);
       setDragOverGroup(null);
+      setDropTarget(null);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -446,7 +512,7 @@ export function Sidebar({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dragOverGroup, ungroupedLabel, reload]);
+  }, [dragOverGroup, dropTarget, hosts, sortMode, ungroupedLabel, reload]);
 
   function makeEmptyAreaMenu(): MenuItem[] {
     return [
@@ -469,10 +535,12 @@ export function Sidebar({
 
   const renderHost = (h: HostRecord, depth: number) => {
     const isSelected = selectedId === h.id;
-    const isLive = h.id === activeHostId;
+    const isOpen = openHostIds?.has(h.id) ?? false; // any open tab → live badge
+    const isActiveTab = h.id === activeHostId; // focused tab → blinking caret
     return (
       <div
         key={h.id}
+        data-host-id={h.id}
         data-active={isSelected || undefined}
         onMouseDown={(e) => onHostMouseDown(e, h)}
         onClick={() => {
@@ -482,7 +550,16 @@ export function Sidebar({
         onDoubleClick={() => onConnect(h)}
         onContextMenu={(e) => onHostContextMenu(e, h)}
         title={t("sidebar.host_hint")}
-        style={{ paddingLeft: folderPad(depth) }}
+        style={{
+          paddingLeft: folderPad(depth),
+          ...(dropTarget?.hostId === h.id
+            ? {
+                boxShadow: dropTarget.before
+                  ? "inset 0 2px 0 var(--nx-accent)"
+                  : "inset 0 -2px 0 var(--nx-accent)",
+              }
+            : {}),
+        }}
         className={
           "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pr-3 py-1.5 cursor-pointer " +
           (draggingHost?.id === h.id ? "opacity-50" : "")
@@ -500,7 +577,7 @@ export function Sidebar({
             }
           >
             {h.name}
-            {isLive && <span className="nx-caret ml-1" />}
+            {isActiveTab && <span className="nx-caret ml-1" />}
           </div>
           <div className="font-mono text-meta text-nx-muted truncate">
             {h.user}
@@ -508,7 +585,7 @@ export function Sidebar({
             {h.host}:{h.port}
           </div>
         </div>
-        {isLive && (
+        {isOpen && (
           <span className="text-micro uppercase tracking-wider text-nx-accent border border-nx-accent/40 rounded-nx-sm px-1.5">
             live
           </span>
@@ -592,7 +669,10 @@ export function Sidebar({
   }
 
   return (
-    <aside className="w-64 shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col">
+    <aside
+      style={{ width }}
+      className="shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col"
+    >
       <div className="p-3 border-b border-[var(--nx-border)] flex gap-2 items-center">
         <Search size={14} className="text-[var(--nx-text-muted)]" />
         <input
@@ -601,6 +681,19 @@ export function Sidebar({
           placeholder={t("sidebar.filter_placeholder")}
           className="flex-1 min-w-0 bg-transparent text-[var(--nx-text-primary)] placeholder-[var(--nx-text-muted)] font-mono text-sm focus:outline-none"
         />
+        <button
+          onClick={cycleSortMode}
+          title={t("sidebar.sort_hint", { mode: t(`sidebar.sort_${sortMode}`) })}
+          className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
+        >
+          {sortMode === "alpha" ? (
+            <ArrowDownAZ size={16} />
+          ) : sortMode === "manual" ? (
+            <GripVertical size={16} />
+          ) : (
+            <Clock size={16} />
+          )}
+        </button>
         <button
           onClick={() => setDialog({ kind: "add" })}
           title={t("sidebar.add_host")}

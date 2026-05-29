@@ -291,6 +291,23 @@ pub fn vpn_parse_subscription(sub_text: String) -> Result<Vec<VpnNode>, String> 
     Ok(nodes)
 }
 
+/// Fetch a subscription URL server-side (blocking ureq on a worker thread) and
+/// return the raw body. Done in Rust to bypass the webview's CORS restrictions
+/// on cross-origin fetch.
+#[tauri::command]
+pub async fn vpn_fetch_subscription(url: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let resp = ureq::get(&url)
+            .timeout(std::time::Duration::from_secs(20))
+            .set("User-Agent", "NexuSSH")
+            .call()
+            .map_err(|e| e.to_string())?;
+        resp.into_string().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

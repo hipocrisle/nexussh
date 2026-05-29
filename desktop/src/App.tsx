@@ -32,6 +32,8 @@ import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, maybeAutoCheck } from "./updater";
 import { sshConnect, sshDisconnect } from "./ssh";
+import type { VpnNode } from "./vpn";
+import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
@@ -126,6 +128,14 @@ function WindowControls() {
       </button>
     </div>
   );
+}
+
+// Resolve a host's built-in-VPN choice into a concrete node (or null = direct).
+function resolveHostVpn(h: HostRecord): VpnNode | null {
+  if (!h.useVpn || !h.vpnProfileId) return null;
+  const profile = getProfile(h.vpnProfileId);
+  if (!profile) return null;
+  return resolveExit(profile, h.vpnExit) ?? null;
 }
 
 function App() {
@@ -367,6 +377,7 @@ function App() {
         port: h.port,
         user: h.user,
         auth,
+        vpn: resolveHostVpn(h),
       });
       bumpLastUsed(h.id).catch(() => {});
       setTabs((tabs) =>

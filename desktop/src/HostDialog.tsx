@@ -14,7 +14,9 @@ import {
   Checkbox,
   SegCtl,
   RowLabel,
+  ToggleRow,
 } from "./components/primitives";
+import { loadProfiles, type VpnProfile } from "./vpn";
 
 type AuthKind = "password" | "key" | "vault";
 
@@ -45,6 +47,10 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
   const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(false);
+  const [useVpn, setUseVpn] = useState(false);
+  const [vpnProfileId, setVpnProfileId] = useState("");
+  const [vpnExit, setVpnExit] = useState("auto");
+  const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
@@ -59,6 +65,9 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
     setGroup(initial.group ?? "");
     setNote(initial.note ?? "");
     setAlwaysAskPassword(!!initial.alwaysAskPassword);
+    setUseVpn(!!initial.useVpn);
+    setVpnProfileId(initial.vpnProfileId ?? "");
+    setVpnExit(initial.vpnExit ?? "auto");
     setAuthKind(initial.auth.kind);
     if (initial.auth.kind === "password") {
       setPassword(initial.auth.password);
@@ -108,6 +117,9 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
         note: note.trim() || undefined,
         lastUsedAt: initial?.lastUsedAt,
         alwaysAskPassword: authKind === "password" ? alwaysAskPassword : undefined,
+        useVpn: useVpn || undefined,
+        vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
+        vpnExit: useVpn ? vpnExit : undefined,
       };
       await saveHost(rec);
       onSaved(rec);
@@ -293,6 +305,54 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
                 )}
               </div>
             )}
+
+            {/* Transport — built-in VPN */}
+            <div className={kicker + " mt-6 mb-3 block"}>// {t("dialog.col_transport")}</div>
+            <ToggleRow label={t("dialog.use_vpn")} value={useVpn} onChange={setUseVpn} />
+            {useVpn &&
+              (vpnProfiles.length === 0 ? (
+                <p className="text-nx-warning text-meta font-mono mt-2">
+                  ⚠ {t("dialog.vpn_no_profiles")}
+                </p>
+              ) : (
+                <div className="mt-2 space-y-3">
+                  <div>
+                    <RowLabel>{t("dialog.vpn_profile")}</RowLabel>
+                    <select
+                      value={vpnProfileId}
+                      onChange={(e) => {
+                        setVpnProfileId(e.target.value);
+                        setVpnExit("auto");
+                      }}
+                      className="nx-focus w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-body text-nx-text"
+                    >
+                      <option value="">{t("dialog.vpn_pick_profile")}</option>
+                      {vpnProfiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {vpnProfileId && (
+                    <div>
+                      <RowLabel>{t("dialog.vpn_exit")}</RowLabel>
+                      <select
+                        value={vpnExit}
+                        onChange={(e) => setVpnExit(e.target.value)}
+                        className="nx-focus w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-body text-nx-text"
+                      >
+                        <option value="auto">{t("dialog.vpn_auto")}</option>
+                        {(vpnProfiles.find((p) => p.id === vpnProfileId)?.nodes ?? []).map((n) => (
+                          <option key={n.tag} value={n.tag}>
+                            {n.tag}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              ))}
           </div>
         </div>
 

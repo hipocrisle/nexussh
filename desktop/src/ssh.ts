@@ -2,6 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import type { VpnNode } from "./vpn";
 
 export type AuthMethod =
   | { kind: "password"; password: string }
@@ -15,6 +16,9 @@ export interface ConnectArgs {
   auth: AuthMethod;
   cols?: number;
   rows?: number;
+  /** When set, route the SSH connection through the built-in xray SOCKS proxy
+   *  egressing via this node. */
+  vpn?: VpnNode | null;
 }
 
 export interface DataEvent {

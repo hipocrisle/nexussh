@@ -28,6 +28,13 @@ export interface HostRecord {
    *  prompted on every connect. Stored password is left as-is so toggling
    *  back doesn't lose what they typed. */
   alwaysAskPassword?: boolean;
+  /** Route this host's connection through the built-in VPN transport. */
+  useVpn?: boolean;
+  /** Local VPN profile id (see vpn.ts). The sub URL itself stays local, never
+   *  in this record, so it doesn't ride the sync. */
+  vpnProfileId?: string;
+  /** Chosen exit node tag, or "auto". */
+  vpnExit?: string;
 }
 
 const STORE_FILE = "hosts.json";

@@ -26,9 +26,28 @@ Termius is paywalled. Tabby is bloated Electron+Angular. We want:
 - **xterm.js** (terminal renderer with custom byte-capture)
 - **russh** (pure Rust SSH protocol)
 
+## Built-in VPN transport
+
+Reach SSH hosts from networks where the box is blocked or filtered — **without
+installing a VPN client or needing admin rights**.
+
+NexuSSH bundles [xray-core](https://github.com/XTLS/Xray-core). Paste **your own
+subscription** (any standard VLESS / Reality / VMess / Trojan / Shadowsocks link
+or `…/sub/…` URL) in **Settings → VPN**, then flag any host with **"route via
+built-in VPN"** and pick an exit. That host's SSH connection is dialed through a
+local SOCKS proxy that egresses via your chosen node.
+
+- **Userspace only** — a local SOCKS proxy, not a system TUN. No admin rights,
+  no OS network changes; only NexuSSH's own traffic is routed and it looks like
+  ordinary outbound HTTPS, so it survives locked-down work machines.
+- **Bring your own** — works with any provider's subscription; nothing to set up
+  server-side (the subscription is access to a VPN that already exists).
+- **Local & private** — subscriptions are stored per-machine, never written to
+  `hosts.json` or pushed through sync.
+
 ## Roadmap
 
-See `ROADMAP.md` for phase breakdown. v0.1 target: ~3-4 weeks of focused work.
+See `ROADMAP.md` for phase breakdown.
 
 ## License
 

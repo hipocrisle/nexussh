@@ -461,6 +461,7 @@ function App() {
         port: tab.host.port,
         user: tab.host.user,
         auth: tab.host.auth,
+        vpn: resolveHostVpn(tab.host),
       });
       bumpLastUsed(tab.host.id).catch(() => {});
       setTabs((all) =>

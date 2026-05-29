@@ -1,7 +1,7 @@
 // TabBar — horizontal list of open terminal tabs + `+` to open a new tab.
 // Right-click on a tab opens a context menu (rename / restart / close).
 
-import { X, Plus } from "lucide-react";
+import { X, Plus, ChevronDown } from "lucide-react";
 
 export interface TabInfo {
   id: string; // session_id from backend
@@ -15,6 +15,8 @@ interface Props {
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
+  /** Caret next to + — parent opens the connection-type menu at (x, y). */
+  onNewTabDropdown?: (x: number, y: number) => void;
   /** Right-click handler — parent draws the context menu. */
   onContextMenu?: (id: string, x: number, y: number) => void;
 }
@@ -39,11 +41,12 @@ export function TabBar({
   onSelect,
   onClose,
   onNewTab,
+  onNewTabDropdown,
   onContextMenu,
 }: Props) {
   return (
     <div className="h-9 flex items-center bg-nx-bg-2 border-b border-nx-border shrink-0">
-      <div className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden flex items-center h-full">
+      <div className="min-w-0 overflow-x-auto overflow-y-hidden flex items-center h-full">
         {tabs.map((t) => {
           const active = t.id === activeId;
           return (
@@ -86,10 +89,22 @@ export function TabBar({
       <button
         onClick={onNewTab}
         title="New tab — Ctrl+T"
-        className="h-full shrink-0 px-3 flex items-center text-nx-accent hover:bg-nx-elevated transition-colors duration-[80ms]"
+        className="h-full shrink-0 pl-2.5 pr-1.5 flex items-center text-nx-accent hover:bg-nx-elevated transition-colors duration-[80ms]"
       >
         <Plus size={14} />
       </button>
+      <button
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          onNewTabDropdown?.(r.left, r.bottom);
+        }}
+        title="New tab type"
+        className="h-full shrink-0 pr-2 pl-0.5 flex items-center text-nx-muted hover:bg-nx-elevated hover:text-nx-accent transition-colors duration-[80ms]"
+      >
+        <ChevronDown size={12} />
+      </button>
+      {/* Draggable filler — empty tab-strip space moves the window, browser-style */}
+      <div data-tauri-drag-region className="flex-1 h-full" />
     </div>
   );
 }

@@ -37,7 +37,17 @@ import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Minus, Square, Copy as RestoreIcon, X as CloseIcon } from "lucide-react";
+import {
+  Minus,
+  Square,
+  Copy as RestoreIcon,
+  X as CloseIcon,
+  Terminal as TerminalIcon,
+  FolderOpen,
+  Network,
+  Monitor,
+  AppWindow,
+} from "lucide-react";
 import "./App.css";
 
 const SIDEBAR_COLLAPSED_LS_KEY = "nexussh.sidebarCollapsed";
@@ -145,6 +155,7 @@ function App() {
     title: string;
   } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
@@ -260,6 +271,7 @@ function App() {
       if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
         e.stopPropagation();
+        setPickerMode("ssh");
         setPickerOpen(true);
       } else if (meta && e.key === ",") {
         e.preventDefault();
@@ -383,6 +395,41 @@ function App() {
     setSftpTarget({
       args: { host: h.host, port: h.port, user: h.user, auth },
       title: `${h.user}@${h.host}`,
+    });
+  }
+
+  function openSshPicker() {
+    setPickerMode("ssh");
+    setPickerOpen(true);
+  }
+
+  // Caret next to "+" — choose what kind of session the new tab opens.
+  // SSH / SFTP are wired; telnet / VNC / RDP are on the roadmap and shown
+  // disabled with a "soon" tag so the menu reflects the plan.
+  function openNewTabMenu(x: number, y: number) {
+    const soon = t("tabnew.soon");
+    setMenu({
+      x,
+      y,
+      items: [
+        {
+          label: t("tabnew.ssh"),
+          icon: <TerminalIcon size={13} />,
+          onClick: openSshPicker,
+        },
+        {
+          label: t("tabnew.sftp"),
+          icon: <FolderOpen size={13} />,
+          onClick: () => {
+            setPickerMode("sftp");
+            setPickerOpen(true);
+          },
+        },
+        { separator: true, label: "" },
+        { label: t("tabnew.telnet"), icon: <Network size={13} />, shortcut: soon, disabled: true },
+        { label: t("tabnew.vnc"), icon: <Monitor size={13} />, shortcut: soon, disabled: true },
+        { label: t("tabnew.rdp"), icon: <AppWindow size={13} />, shortcut: soon, disabled: true },
+      ],
     });
   }
 
@@ -680,7 +727,8 @@ function App() {
             activeId={activeId}
             onSelect={setActiveId}
             onClose={closeTab}
-            onNewTab={() => setPickerOpen(true)}
+            onNewTab={openSshPicker}
+            onNewTabDropdown={openNewTabMenu}
             onContextMenu={onTabContextMenu}
           />
           <div className="flex-1 min-h-0 relative">
@@ -794,7 +842,7 @@ function App() {
       )}
       {pickerOpen && (
         <TabPicker
-          onPick={openHost}
+          onPick={(h) => (pickerMode === "sftp" ? openSftp(h) : openHost(h))}
           onClose={() => setPickerOpen(false)}
         />
       )}

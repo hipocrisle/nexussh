@@ -340,6 +340,14 @@ const ru = {
     hint_open: "открыть",
     hint_close: "закрыть",
   },
+  tabnew: {
+    ssh: "SSH-сессия",
+    sftp: "SFTP-браузер",
+    telnet: "Telnet",
+    vnc: "VNC",
+    rdp: "RDP",
+    soon: "скоро",
+  },
   ctx: {
     copy: "Копировать",
     cut: "Вырезать",
@@ -726,6 +734,14 @@ const en = {
     hint_move: "move",
     hint_open: "open",
     hint_close: "close",
+  },
+  tabnew: {
+    ssh: "SSH session",
+    sftp: "SFTP browser",
+    telnet: "Telnet",
+    vnc: "VNC",
+    rdp: "RDP",
+    soon: "soon",
   },
   ctx: {
     copy: "Copy",

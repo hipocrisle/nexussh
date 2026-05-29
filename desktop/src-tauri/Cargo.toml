@@ -38,6 +38,7 @@ tauri-plugin-process = "2"
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"
+tokio-socks = "0.5.2"
 
 # Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
 [target.'cfg(windows)'.dependencies]

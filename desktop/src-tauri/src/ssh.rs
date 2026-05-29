@@ -70,6 +70,11 @@ pub struct ConnectArgs {
     /// Optional terminal size
     pub cols: Option<u16>,
     pub rows: Option<u16>,
+    /// When set, route the SSH TCP connection through a local xray SOCKS proxy
+    /// egressing via this VPN node (built-in transport). The frontend resolves
+    /// the chosen profile+exit into a node and passes it here.
+    #[serde(default)]
+    pub vpn: Option<crate::vpn::VpnNode>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +100,9 @@ struct ActiveSession {
     sender: mpsc::UnboundedSender<SessionCommand>,
     /// Output gate (see `OutputGate`). Shared with the session loop task.
     gate: Arc<Mutex<OutputGate>>,
+    /// Bundled xray proxy backing this session's transport (built-in VPN).
+    /// Held here so it's killed (kill_on_drop) when the session is removed.
+    _xray: Option<tokio::process::Child>,
 }
 
 use crate::history::SessionLogger;
@@ -126,6 +134,23 @@ impl Handler for AcceptAllHandler {
     }
 }
 
+/// Grab an ephemeral free localhost port for the xray SOCKS inbound.
+fn free_local_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
+}
+
+/// Poll the local SOCKS port until xray accepts connections (or time out).
+async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
+    for _ in 0..60 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(SshError::Other("xray SOCKS proxy did not come up in time".into()))
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -134,10 +159,31 @@ pub async fn ssh_connect(
     args: ConnectArgs,
 ) -> Result<ConnectResult, SshError> {
     let session_id = Uuid::new_v4().to_string();
-    let addr = format!("{}:{}", args.host, args.port);
-
     let config = Arc::new(client::Config::default());
-    let mut session = client::connect(config, addr.as_str(), AcceptAllHandler).await?;
+
+    // Establish the transport stream: either a direct TCP connect, or — when
+    // the host is flagged "via built-in VPN" — through a local xray SOCKS5
+    // proxy that egresses via the chosen node (userspace, no TUN/admin).
+    let (mut session, xray_child) = if let Some(node) = &args.vpn {
+        let socks_port = free_local_port()?;
+        let child = crate::vpn::spawn_xray(node, socks_port)
+            .map_err(|e| SshError::Other(format!("xray spawn: {e}")))?;
+        wait_socks_ready(socks_port).await?;
+        let proxy = format!("127.0.0.1:{socks_port}");
+        let stream = tokio_socks::tcp::Socks5Stream::connect(
+            proxy.as_str(),
+            (args.host.as_str(), args.port),
+        )
+        .await
+        .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
+        let session =
+            client::connect_stream(config, stream.into_inner(), AcceptAllHandler).await?;
+        (session, Some(child))
+    } else {
+        let addr = format!("{}:{}", args.host, args.port);
+        let session = client::connect(config, addr.as_str(), AcceptAllHandler).await?;
+        (session, None)
+    };
 
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => session
@@ -186,6 +232,7 @@ pub async fn ssh_connect(
         ActiveSession {
             sender: tx.clone(),
             gate: gate.clone(),
+            _xray: xray_child,
         },
     );
 

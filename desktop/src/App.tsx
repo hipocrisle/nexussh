@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Lock,
@@ -24,6 +24,7 @@ import { ContextMenu, MenuItem } from "./ContextMenu";
 import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
+import { PasswordPrompt } from "./PasswordPrompt";
 import { SettingsScreen } from "./SettingsScreen";
 import { TranscriptOverlay } from "./TranscriptOverlay";
 import { useSettings } from "./settings/settings-store";
@@ -72,6 +73,9 @@ function readSidebarWidth(): number {
 
 interface Tab extends TabInfo {
   host: HostRecord;
+  /** Set when a connect/reconnect attempt fails — shown in the pane with a
+   *  Retry button instead of the tab silently vanishing. */
+  error?: string;
 }
 
 // --- Split-view model -------------------------------------------------------
@@ -138,6 +142,71 @@ function setNodeRatio(
     b: setNodeRatio(node.b, nodeId, ratio),
   };
 }
+
+// Pane geometry, in percentages of the main area. Computed from the layout so
+// terminals can live in ONE flat, never-reparented layer (positioned absolutely
+// per pane) — restructuring the tree must not unmount/remount any TerminalView,
+// or the xterm loses all its content. This is the core of the split-view fix.
+interface Rect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+function computeRects(node: LayoutNode, rect: Rect, out: Map<string, Rect>) {
+  if (node.kind === "leaf") {
+    out.set(node.groupId, rect);
+    return;
+  }
+  if (node.dir === "row") {
+    const aw = rect.width * node.ratio;
+    computeRects(node.a, { ...rect, width: aw }, out);
+    computeRects(
+      node.b,
+      { left: rect.left + aw, top: rect.top, width: rect.width - aw, height: rect.height },
+      out,
+    );
+  } else {
+    const ah = rect.height * node.ratio;
+    computeRects(node.a, { ...rect, height: ah }, out);
+    computeRects(
+      node.b,
+      { left: rect.left, top: rect.top + ah, width: rect.width, height: rect.height - ah },
+      out,
+    );
+  }
+}
+interface DividerInfo {
+  id: string;
+  isRow: boolean;
+  at: number; // % position of the split line along the split axis
+  cross: number; // % start along the cross axis
+  len: number; // % length along the cross axis
+}
+function collectDividers(node: LayoutNode, rect: Rect, out: DividerInfo[]) {
+  if (node.kind === "leaf") return;
+  if (node.dir === "row") {
+    const aw = rect.width * node.ratio;
+    out.push({ id: node.id, isRow: true, at: rect.left + aw, cross: rect.top, len: rect.height });
+    collectDividers(node.a, { ...rect, width: aw }, out);
+    collectDividers(
+      node.b,
+      { left: rect.left + aw, top: rect.top, width: rect.width - aw, height: rect.height },
+      out,
+    );
+  } else {
+    const ah = rect.height * node.ratio;
+    out.push({ id: node.id, isRow: false, at: rect.top + ah, cross: rect.left, len: rect.width });
+    collectDividers(node.a, { ...rect, height: ah }, out);
+    collectDividers(
+      node.b,
+      { left: rect.left, top: rect.top + ah, width: rect.width, height: rect.height - ah },
+      out,
+    );
+  }
+}
+
+const TABBAR_PX = 36; // h-9
 
 function HeaderButton({
   icon,
@@ -268,7 +337,7 @@ function App() {
           ...g,
           activeId: g.activeId === oldId ? newId : g.activeId,
           tabs: g.tabs.map((x) =>
-            x.id === oldId ? { ...x, id: newId, status } : x,
+            x.id === oldId ? { ...x, id: newId, status, error: undefined } : x,
           ),
         };
       }),
@@ -282,7 +351,6 @@ function App() {
     );
     setFocusedGroupId(groupId);
   }
-  const [error, setError] = useState<string | null>(null);
   const [vault, setVault] = useState<VaultStatus | null>(null);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
@@ -292,6 +360,18 @@ function App() {
     args: ConnectArgs;
     title: string;
   } | null>(null);
+  // "Always ask password" prompt — promise-based so openHost/openSftp can await
+  // a masked, themed dialog instead of the plaintext native window.prompt().
+  const [pwPrompt, setPwPrompt] = useState<{
+    user: string;
+    host: string;
+    resolve: (v: string | null) => void;
+  } | null>(null);
+  function askPassword(h: HostRecord): Promise<string | null> {
+    return new Promise((resolve) =>
+      setPwPrompt({ user: h.user, host: h.host, resolve }),
+    );
+  }
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -554,13 +634,10 @@ function App() {
   }, []);
 
   async function openHost(h: HostRecord) {
-    setError(null);
     // If user opted to always ask for password, prompt before opening tab.
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = window.prompt(
-        t("app.password_prompt", { user: h.user, host: h.host }),
-      );
+      const entered = await askPassword(h);
       if (entered === null) return; // cancelled
       auth = { kind: "password", password: entered };
     }
@@ -590,35 +667,16 @@ function App() {
       promoteTab(pending.id, sid, "connected");
       triggerBurst();
     } catch (e) {
-      // Drop the pending tab. In Stage A a non-sole group always has ≥1 real
-      // tab, so removing a pending can only empty the sole group → no collapse.
-      setGroups((gs) =>
-        gs.map((g) => {
-          if (!g.tabs.some((x) => x.id === pending.id)) return g;
-          const remaining = g.tabs.filter((x) => x.id !== pending.id);
-          return {
-            ...g,
-            tabs: remaining,
-            activeId:
-              g.activeId === pending.id
-                ? remaining.length
-                  ? remaining[remaining.length - 1].id
-                  : null
-                : g.activeId,
-          };
-        }),
-      );
-      setError(String(e));
+      // Keep the tab and show WHY it failed in its pane (with Retry), instead
+      // of the tab silently vanishing.
+      updateTab(pending.id, (x) => ({ ...x, status: "closed", error: String(e) }));
     }
   }
 
-  function openSftp(h: HostRecord) {
-    setError(null);
+  async function openSftp(h: HostRecord) {
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = window.prompt(
-        t("app.password_prompt", { user: h.user, host: h.host }),
-      );
+      const entered = await askPassword(h);
       if (entered === null) return;
       auth = { kind: "password", password: entered };
     }
@@ -669,7 +727,7 @@ function App() {
     if (tab.status === "connected") {
       sshDisconnect(tabId).catch(() => {});
     }
-    updateTab(tabId, (x) => ({ ...x, status: "connecting" }));
+    updateTab(tabId, (x) => ({ ...x, status: "connecting", error: undefined }));
     try {
       const sid = await sshConnect({
         host: tab.host.host,
@@ -688,8 +746,7 @@ function App() {
       if (prev?.timer != null) window.clearTimeout(prev.timer);
       reconnectRef.current.set(sid, { attempts: 0, timer: null });
     } catch (e) {
-      setError(String(e));
-      updateTab(tabId, (x) => ({ ...x, status: "closed" }));
+      updateTab(tabId, (x) => ({ ...x, status: "closed", error: String(e) }));
       // restartSession failure also triggers another backoff if eligible.
       const failedTab = allTabs.find((x) => x.id === tabId);
       if (failedTab && settings.autoReconnect) scheduleReconnect(failedTab);
@@ -859,7 +916,11 @@ function App() {
     if (!settings.autoReconnect) return;
     const prev = reconnectRef.current.get(tab.id) ?? { attempts: 0, timer: null };
     if (prev.attempts >= RECONNECT_DELAYS.length) {
-      setError(t("app.autoreconnect_gave_up", { name: tab.host.name }));
+      updateTab(tab.id, (x) => ({
+        ...x,
+        status: "closed",
+        error: t("app.autoreconnect_gave_up", { name: tab.host.name }),
+      }));
       clearReconnect(tab.id);
       return;
     }
@@ -942,142 +1003,205 @@ function App() {
 
   // One pane = a tab strip + its terminals. All panes render at once; a
   // terminal is `visible` when it's its group's active tab.
-  function renderGroup(group: PaneGroup): React.ReactNode {
-    const isFocused = group.id === focusedGroupId;
+  function renderMainArea(): React.ReactNode {
+    const rects = new Map<string, Rect>();
+    const full: Rect = { left: 0, top: 0, width: 100, height: 100 };
+    computeRects(layout, full, rects);
+    const dividers: DividerInfo[] = [];
+    collectDividers(layout, full, dividers);
     const multiPane = groups.length > 1;
-    return (
-      <div
-        key={group.id}
-        className="flex-1 min-w-0 min-h-0 flex flex-col"
-        onMouseDownCapture={() => {
-          if (group.id !== focusedGroupId) setFocusedGroupId(group.id);
-        }}
-      >
-        <TabBar
-          tabs={group.tabs}
-          activeId={group.activeId}
-          onSelect={(id) => selectTab(group.id, id)}
-          onClose={closeTab}
-          onNewTab={() => {
-            setFocusedGroupId(group.id);
-            openSshPicker();
-          }}
-          onNewTabDropdown={(x, y) => {
-            setFocusedGroupId(group.id);
-            openNewTabMenu(x, y);
-          }}
-          onContextMenu={onTabContextMenu}
-          onReorder={reorderTabs}
-        />
-        <div
-          className="flex-1 min-h-0 relative"
-          style={
-            multiPane && isFocused
-              ? { boxShadow: "inset 0 0 0 1px var(--nx-accent)" }
-              : undefined
-          }
-        >
-          {/* Matrix Rain — terminal area only, per pane. */}
-          <div className="pointer-events-none absolute inset-0 z-30">
-            <MatrixRain
-              enabled={settings.rainOn}
-              density={settings.rainDensity}
-              opacity={settings.rainOpacity}
-              accent={theme.accent}
-              fade={theme.bgBase}
-            />
-          </div>
-          {group.tabs.length === 0 && !selectedHost && (
-            <div
-              className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
-              style={{ color: theme.textMuted }}
-            >
-              {error ? (
-                <div className="max-w-md text-center" style={{ color: theme.error }}>
-                  ✗ {error}
-                </div>
-              ) : (
-                <span>&gt; {t("terminal.select_host")}</span>
-              )}
-            </div>
-          )}
-          {group.tabs.length === 0 && selectedHost && (
-            <HostInfoCard
-              host={selectedHost}
-              onConnect={() => openHost(selectedHost)}
-              onEdit={() => setEditHost(selectedHost)}
-            />
-          )}
-          {group.tabs.map((t_) =>
-            t_.status === "connecting" ? (
-              t_.id === group.activeId ? (
-                <div
-                  key={t_.id}
-                  className="absolute inset-0 flex items-center justify-center font-mono text-sm"
-                  style={{ color: theme.warning }}
-                >
-                  {t("terminal.connecting_to", {
-                    user: t_.host.user,
-                    host: t_.host.host,
-                    port: t_.host.port,
-                  })}
-                </div>
-              ) : null
-            ) : (
-              <TerminalView
-                key={t_.id}
-                sessionId={t_.id}
-                visible={t_.id === group.activeId}
-                onSessionClosed={(reason) => markClosed(t_.id, reason)}
-                onReconnect={() => restartSession(t_.id)}
-                onContextMenu={(x, y, items) => setMenu({ x, y, items })}
-              />
-            ),
-          )}
-          {group.activeId &&
-            transcriptTabs.has(group.activeId) &&
-            (() => {
-              const t_ = group.tabs.find((x) => x.id === group.activeId);
-              if (!t_) return null;
-              return (
-                <TranscriptOverlay
-                  sessionId={group.activeId}
-                  hostLabel={`${t_.host.user}@${t_.host.host}`}
-                  onClose={() => toggleTranscript(group.activeId!)}
-                  onContextMenu={(x, y, items) => setMenu({ x, y, items })}
-                />
-              );
-            })()}
-        </div>
-      </div>
-    );
-  }
+    const focusGroup = (id: string) => {
+      if (id !== focusedGroupId) setFocusedGroupId(id);
+    };
+    const contentRect = (r: Rect): React.CSSProperties => ({
+      position: "absolute",
+      left: `${r.left}%`,
+      top: `calc(${r.top}% + ${TABBAR_PX}px)`,
+      width: `${r.width}%`,
+      height: `calc(${r.height}% - ${TABBAR_PX}px)`,
+    });
 
-  function renderNode(node: LayoutNode): React.ReactNode {
-    if (node.kind === "leaf") {
-      const g = groups.find((x) => x.id === node.groupId);
-      return g ? renderGroup(g) : null;
-    }
-    const isRow = node.dir === "row";
     return (
-      <div
-        key={node.id}
-        className={"flex flex-1 min-w-0 min-h-0 " + (isRow ? "flex-row" : "flex-col")}
-      >
+      <div className="flex-1 min-w-0 relative overflow-hidden">
+        {/* Matrix Rain — terminal area only (below the tab strips). */}
         <div
-          className="flex min-w-0 min-h-0"
-          style={{ flex: `0 0 ${node.ratio * 100}%` }}
+          className="pointer-events-none absolute z-30"
+          style={{ left: 0, right: 0, top: TABBAR_PX, bottom: 0 }}
         >
-          {renderNode(node.a)}
+          <MatrixRain
+            enabled={settings.rainOn}
+            density={settings.rainDensity}
+            opacity={settings.rainOpacity}
+            accent={theme.accent}
+            fade={theme.bgBase}
+          />
         </div>
-        <div
-          onPointerDown={(e) => startPaneResize(e, node.id, isRow)}
-          className={
-            (isRow ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize") +
-            " shrink-0 bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
-          }
-        />
-        <div className="flex flex-1 min-w-0 min-h-0">{renderNode(node.b)}</div>
+
+        {/* Per-pane tab strips. */}
+        {groups.map((g) => {
+          const r = rects.get(g.id);
+          if (!r) return null;
+          return (
+            <div
+              key={"tb-" + g.id}
+              onMouseDownCapture={() => focusGroup(g.id)}
+              style={{
+                position: "absolute",
+                left: `${r.left}%`,
+                top: `${r.top}%`,
+                width: `${r.width}%`,
+                zIndex: 20,
+              }}
+            >
+              <TabBar
+                tabs={g.tabs}
+                activeId={g.activeId}
+                onSelect={(id) => selectTab(g.id, id)}
+                onClose={closeTab}
+                onNewTab={() => {
+                  focusGroup(g.id);
+                  openSshPicker();
+                }}
+                onNewTabDropdown={(x, y) => {
+                  focusGroup(g.id);
+                  openNewTabMenu(x, y);
+                }}
+                onContextMenu={onTabContextMenu}
+                onReorder={reorderTabs}
+              />
+            </div>
+          );
+        })}
+
+        {/* STABLE flat terminal layer: every live terminal is a direct child of
+         *  this container keyed by session id. Changing the split layout only
+         *  repositions them — React never unmounts/remounts a TerminalView, so
+         *  the xterm keeps its content (the v0.4.0 split bug). */}
+        {groups.flatMap((g) => {
+          const r = rects.get(g.id);
+          if (!r) return [];
+          return g.tabs
+            .filter((tab) => tab.status !== "connecting" && !tab.error)
+            .map((tab) => {
+              const show = tab.id === g.activeId;
+              return (
+                <div
+                  key={tab.id}
+                  onMouseDownCapture={() => focusGroup(g.id)}
+                  style={{ ...contentRect(r), zIndex: 10, display: show ? "block" : "none" }}
+                >
+                  <TerminalView
+                    sessionId={tab.id}
+                    visible={show}
+                    onSessionClosed={(reason) => markClosed(tab.id, reason)}
+                    onReconnect={() => restartSession(tab.id)}
+                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+                  />
+                </div>
+              );
+            });
+        })}
+
+        {/* Per-pane overlays above the terminal. */}
+        {groups.map((g) => {
+          const r = rects.get(g.id);
+          if (!r) return null;
+          const cs = contentRect(r);
+          const active = g.tabs.find((x) => x.id === g.activeId);
+          return (
+            <Fragment key={"ov-" + g.id}>
+              {multiPane && g.id === focusedGroupId && (
+                <div
+                  className="pointer-events-none"
+                  style={{ ...cs, zIndex: 24, boxShadow: "inset 0 0 0 1px var(--nx-accent)" }}
+                />
+              )}
+              {g.tabs.length === 0 && !selectedHost && (
+                <div
+                  style={{ ...cs, zIndex: 15 }}
+                  className="flex items-center justify-center font-mono text-sm pointer-events-none"
+                >
+                  <span style={{ color: theme.textMuted }}>
+                    &gt; {t("terminal.select_host")}
+                  </span>
+                </div>
+              )}
+              {g.tabs.length === 0 && selectedHost && (
+                <div style={{ ...cs, zIndex: 15 }}>
+                  <HostInfoCard
+                    host={selectedHost}
+                    onConnect={() => openHost(selectedHost)}
+                    onEdit={() => setEditHost(selectedHost)}
+                  />
+                </div>
+              )}
+              {active?.status === "connecting" && (
+                <div
+                  style={{ ...cs, zIndex: 15 }}
+                  className="flex items-center justify-center font-mono text-sm"
+                >
+                  <span style={{ color: theme.warning }}>
+                    {t("terminal.connecting_to", {
+                      user: active.host.user,
+                      host: active.host.host,
+                      port: active.host.port,
+                    })}
+                  </span>
+                </div>
+              )}
+              {active?.error && (
+                <div style={{ ...cs, zIndex: 16 }} className="flex items-center justify-center p-6">
+                  <div
+                    className="max-w-md font-mono text-sm border rounded-nx p-4"
+                    style={{ borderColor: theme.error, background: theme.bgPanel }}
+                  >
+                    <div className="mb-2" style={{ color: theme.error }}>
+                      ✗ {t("terminal.connect_failed", { host: active.host.host })}
+                    </div>
+                    <div className="mb-3 break-words" style={{ color: theme.textSoft }}>
+                      {active.error}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => restartSession(active.id)}
+                      className="px-3 py-1 rounded-nx-sm border cursor-pointer hover:opacity-80"
+                      style={{ borderColor: theme.border, color: theme.accent }}
+                    >
+                      {t("terminal.retry")}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {g.activeId && transcriptTabs.has(g.activeId) && active && (
+                <div style={{ ...cs, zIndex: 20 }}>
+                  <TranscriptOverlay
+                    sessionId={g.activeId}
+                    hostLabel={`${active.host.user}@${active.host.host}`}
+                    onClose={() => toggleTranscript(g.activeId!)}
+                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+                  />
+                </div>
+              )}
+            </Fragment>
+          );
+        })}
+
+        {/* Split dividers. */}
+        {dividers.map((d) => (
+          <div
+            key={d.id}
+            onPointerDown={(e) => startPaneResize(e, d.id, d.isRow)}
+            className={
+              (d.isRow ? "cursor-col-resize" : "cursor-row-resize") +
+              " bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
+            }
+            style={
+              d.isRow
+                ? { position: "absolute", left: `calc(${d.at}% - 2px)`, top: `${d.cross}%`, width: 4, height: `${d.len}%`, zIndex: 40 }
+                : { position: "absolute", top: `calc(${d.at}% - 2px)`, left: `${d.cross}%`, height: 4, width: `${d.len}%`, zIndex: 40 }
+            }
+          />
+        ))}
       </div>
     );
   }
@@ -1197,7 +1321,7 @@ function App() {
             className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
           />
         )}
-        {renderNode(layout)}
+        {renderMainArea()}
       </div>
 
       <StatusLine
@@ -1270,6 +1394,21 @@ function App() {
             sessionCount={allTabs.length}
           />
         </div>
+      )}
+
+      {pwPrompt && (
+        <PasswordPrompt
+          user={pwPrompt.user}
+          host={pwPrompt.host}
+          onSubmit={(password) => {
+            pwPrompt.resolve(password);
+            setPwPrompt(null);
+          }}
+          onCancel={() => {
+            pwPrompt.resolve(null);
+            setPwPrompt(null);
+          }}
+        />
       )}
     </main>
   );

@@ -159,7 +159,13 @@ pub async fn ssh_connect(
     args: ConnectArgs,
 ) -> Result<ConnectResult, SshError> {
     let session_id = Uuid::new_v4().to_string();
-    let config = Arc::new(client::Config::default());
+    // Keepalive keeps the tunnel warm so idle middleboxes (e.g. a WS proxy in
+    // front of a VPN entry) don't close an idle session, and detects a dead
+    // link quickly. Applies to all sessions; matters most for VPN-tunnelled ones.
+    let mut cfg = client::Config::default();
+    cfg.keepalive_interval = Some(std::time::Duration::from_secs(20));
+    cfg.keepalive_max = 3;
+    let config = Arc::new(cfg);
 
     // Establish the transport stream: either a direct TCP connect, or — when
     // the host is flagged "via built-in VPN" — through a local xray SOCKS5

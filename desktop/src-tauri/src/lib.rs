@@ -6,6 +6,7 @@ mod ssh_config;
 mod sync;
 mod updater;
 mod vault;
+mod vpn;
 
 use std::sync::Arc;
 
@@ -59,6 +60,7 @@ pub fn run() {
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
             import_sources::read_import_sources,
+            vpn::vpn_parse_subscription,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

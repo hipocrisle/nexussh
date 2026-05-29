@@ -372,6 +372,16 @@ function App() {
       setPwPrompt({ user: h.user, host: h.host, resolve }),
     );
   }
+  // Drag-tab-to-edge → split. Ref mirrors state so the dragend handler reads the
+  // latest hint without a render race.
+  const mainAreaRef = useRef<HTMLDivElement>(null);
+  type Edge = "left" | "right" | "top" | "bottom";
+  const [edgeHint, setEdgeHintState] = useState<Edge | null>(null);
+  const edgeHintRef = useRef<Edge | null>(null);
+  function setEdge(h: Edge | null) {
+    edgeHintRef.current = h;
+    setEdgeHintState(h);
+  }
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -523,21 +533,52 @@ function App() {
     localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
   }, [allTabs, settings.restoreSession]);
 
-  // Drag-reorder of tabs within a single group. (Cross-group drag is Stage B.)
+  // Drag-drop a tab next to `toId`. Same group → reorder; different group →
+  // move it across panes (Stage B). The terminal lives in the flat layer keyed
+  // by id, so a cross-pane move only repositions it — no remount.
   function reorderTabs(fromId: string, toId: string, before: boolean) {
     if (fromId === toId) return;
-    setGroups((gs) =>
-      gs.map((g) => {
-        if (!g.tabs.some((x) => x.id === fromId) || !g.tabs.some((x) => x.id === toId))
-          return g;
-        const arr = [...g.tabs];
-        const from = arr.findIndex((x) => x.id === fromId);
-        const [moved] = arr.splice(from, 1);
-        const to = arr.findIndex((x) => x.id === toId);
-        arr.splice(before ? to : to + 1, 0, moved);
-        return { ...g, tabs: arr };
-      }),
-    );
+    const fromG = groups.find((g) => g.tabs.some((x) => x.id === fromId));
+    const toG = groups.find((g) => g.tabs.some((x) => x.id === toId));
+    if (!fromG || !toG) return;
+    const moved = fromG.tabs.find((x) => x.id === fromId);
+    if (!moved) return;
+    const insertAround = (tabs: Tab[]): Tab[] => {
+      const arr = tabs.filter((x) => x.id !== fromId);
+      const idx = arr.findIndex((x) => x.id === toId);
+      arr.splice(before ? idx : idx + 1, 0, moved);
+      return arr;
+    };
+    if (fromG.id === toG.id) {
+      setGroups((gs) =>
+        gs.map((g) => (g.id === fromG.id ? { ...g, tabs: insertAround(g.tabs) } : g)),
+      );
+      return;
+    }
+    const fromRemaining = fromG.tabs.filter((x) => x.id !== fromId);
+    const collapse = fromRemaining.length === 0 && groups.length > 1;
+    setGroups((gs) => {
+      let next = gs.map((g) => {
+        if (g.id === toG.id)
+          return { ...g, tabs: insertAround(g.tabs), activeId: fromId };
+        if (g.id === fromG.id)
+          return {
+            ...g,
+            tabs: fromRemaining,
+            activeId:
+              g.activeId === fromId
+                ? fromRemaining.length
+                  ? fromRemaining[fromRemaining.length - 1].id
+                  : null
+                : g.activeId,
+          };
+        return g;
+      });
+      if (collapse) next = next.filter((g) => g.id !== fromG.id);
+      return next;
+    });
+    if (collapse) setLayout((lay) => removeLeaf(lay, fromG.id) ?? lay);
+    setFocusedGroupId(toG.id);
   }
 
   // Auto-update check on mount (once per 24h, silent on failure).
@@ -681,7 +722,13 @@ function App() {
       auth = { kind: "password", password: entered };
     }
     setSftpTarget({
-      args: { host: h.host, port: h.port, user: h.user, auth },
+      args: {
+        host: h.host,
+        port: h.port,
+        user: h.user,
+        auth,
+        vpn: resolveHostVpn(h),
+      },
       title: `${h.user}@${h.host}`,
     });
   }
@@ -971,6 +1018,72 @@ function App() {
   // host additionally gets the blinking caret.
   const openHostIds = new Set(allTabs.map((x) => x.host.id));
 
+  // Drag-tab-to-edge split (Stage B). Kept to the 2-pane model: only offered
+  // from a single pane with ≥2 tabs (nested grids are Stage C).
+  const EDGE_PX = 48;
+  function edgeSplitEligible(tabId: string): boolean {
+    const g = groupOfTab(tabId);
+    return groups.length === 1 && !!g && g.tabs.length >= 2;
+  }
+  function onTabDragMove(tabId: string, x: number, y: number) {
+    if (!edgeSplitEligible(tabId)) {
+      if (edgeHintRef.current) setEdge(null);
+      return;
+    }
+    const el = mainAreaRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    let hint: Edge | null = null;
+    if (x >= r.right - EDGE_PX) hint = "right";
+    else if (x <= r.left + EDGE_PX) hint = "left";
+    else if (y >= r.bottom - EDGE_PX) hint = "bottom";
+    else if (y <= r.top + EDGE_PX) hint = "top";
+    if (hint !== edgeHintRef.current) setEdge(hint);
+  }
+  function onTabDragEnd(tabId: string) {
+    const hint = edgeHintRef.current;
+    setEdge(null);
+    if (hint) splitToEdge(tabId, hint);
+  }
+  function splitToEdge(tabId: string, edge: Edge) {
+    const g = groupOfTab(tabId);
+    if (groups.length !== 1 || !g || g.tabs.length < 2) return;
+    const moved = g.tabs.find((x) => x.id === tabId);
+    if (!moved) return;
+    const newGroupId = uid("g");
+    const remaining = g.tabs.filter((x) => x.id !== tabId);
+    setGroups((gs) =>
+      gs
+        .map((x) =>
+          x.id === g.id
+            ? {
+                ...x,
+                tabs: remaining,
+                activeId:
+                  x.activeId === tabId
+                    ? remaining[remaining.length - 1]?.id ?? null
+                    : x.activeId,
+              }
+            : x,
+        )
+        .concat({ id: newGroupId, tabs: [moved], activeId: tabId }),
+    );
+    const dir: "row" | "col" =
+      edge === "left" || edge === "right" ? "row" : "col";
+    const newLeaf: LayoutNode = { kind: "leaf", groupId: newGroupId };
+    const baseLeaf: LayoutNode = { kind: "leaf", groupId: g.id };
+    const newFirst = edge === "left" || edge === "top";
+    setLayout({
+      kind: "split",
+      id: uid("s"),
+      dir,
+      ratio: 0.5,
+      a: newFirst ? newLeaf : baseLeaf,
+      b: newFirst ? baseLeaf : newLeaf,
+    });
+    setFocusedGroupId(newGroupId);
+  }
+
   // Drag a split divider: adjust the owning node's ratio live. rect is captured
   // at pointer-down (the split container doesn't move mid-drag).
   function startPaneResize(
@@ -1022,7 +1135,7 @@ function App() {
     });
 
     return (
-      <div className="flex-1 min-w-0 relative overflow-hidden">
+      <div ref={mainAreaRef} className="flex-1 min-w-0 relative overflow-hidden">
         {/* Matrix Rain — terminal area only (below the tab strips). */}
         <div
           className="pointer-events-none absolute z-30"
@@ -1036,6 +1149,27 @@ function App() {
             fade={theme.bgBase}
           />
         </div>
+
+        {/* Drag-to-edge split preview: the half the new pane would take. */}
+        {edgeHint && (
+          <div
+            className="pointer-events-none"
+            style={{
+              position: "absolute",
+              zIndex: 45,
+              background: "var(--nx-accent)",
+              opacity: 0.18,
+              border: "1px solid var(--nx-accent)",
+              ...(edgeHint === "right"
+                ? { left: "50%", right: 0, top: 0, bottom: 0 }
+                : edgeHint === "left"
+                  ? { left: 0, width: "50%", top: 0, bottom: 0 }
+                  : edgeHint === "top"
+                    ? { left: 0, right: 0, top: 0, height: "50%" }
+                    : { left: 0, right: 0, bottom: 0, height: "50%" }),
+            }}
+          />
+        )}
 
         {/* Per-pane tab strips. */}
         {groups.map((g) => {
@@ -1068,6 +1202,8 @@ function App() {
                 }}
                 onContextMenu={onTabContextMenu}
                 onReorder={reorderTabs}
+                onDragMove={onTabDragMove}
+                onDragEnd={onTabDragEnd}
               />
             </div>
           );

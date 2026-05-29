@@ -22,6 +22,11 @@ interface Props {
   onContextMenu?: (id: string, x: number, y: number) => void;
   /** Drag-reorder: move `fromId` to before/after `toId`. */
   onReorder?: (fromId: string, toId: string, before: boolean) => void;
+  /** Fired during a tab drag (after the threshold) — lets the parent show
+   *  drag-to-edge split affordances. */
+  onDragMove?: (tabId: string, x: number, y: number) => void;
+  /** Fired when a tab drag ends — parent decides edge-split, etc. */
+  onDragEnd?: (tabId: string, x: number, y: number) => void;
 }
 
 function StatusDot({ status }: { status: TabInfo["status"] }) {
@@ -47,6 +52,8 @@ export function TabBar({
   onNewTabDropdown,
   onContextMenu,
   onReorder,
+  onDragMove,
+  onDragEnd,
 }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{
@@ -74,6 +81,7 @@ export function TabBar({
         document.body.style.cursor = "grabbing";
       }
       if (!d.started) return;
+      onDragMove?.(d.id, e.clientX, e.clientY);
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       const tabEl = el?.closest("[data-tab-id]") as HTMLElement | null;
       const id = tabEl?.dataset.tabId;
@@ -84,12 +92,15 @@ export function TabBar({
         setDropTarget(null);
       }
     };
-    const onUp = () => {
+    const onUp = (e: MouseEvent) => {
       const d = dragRef.current;
       dragRef.current = null;
       document.body.style.cursor = "";
-      if (d?.started && dropTarget) {
-        onReorder?.(d.id, dropTarget.id, dropTarget.before);
+      if (d?.started) {
+        // A tab was under the cursor → reorder/cross-pane move; otherwise let
+        // the parent decide (e.g. drag-to-edge split).
+        if (dropTarget) onReorder?.(d.id, dropTarget.id, dropTarget.before);
+        else onDragEnd?.(d.id, e.clientX, e.clientY);
       }
       setDragId(null);
       setDropTarget(null);
@@ -100,7 +111,7 @@ export function TabBar({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dropTarget, onReorder]);
+  }, [dropTarget, onReorder, onDragMove, onDragEnd]);
 
   return (
     <div className="h-9 flex items-center bg-nx-bg-2 border-b border-nx-border shrink-0">

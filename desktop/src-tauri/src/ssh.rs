@@ -137,13 +137,13 @@ impl Handler for AcceptAllHandler {
 }
 
 /// Grab an ephemeral free localhost port for the xray SOCKS inbound.
-fn free_local_port() -> std::io::Result<u16> {
+pub(crate) fn free_local_port() -> std::io::Result<u16> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     Ok(listener.local_addr()?.port())
 }
 
 /// Poll the local SOCKS port until xray accepts connections (or time out).
-async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
+pub(crate) async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
     for _ in 0..60 {
         if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
             return Ok(());
@@ -161,7 +161,7 @@ async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
 /// match" → connection drops at handshake). Host-key `ssh-rsa` (SHA-1) is the
 /// `Rsa { hash: None }` entry. We never *prefer* the weak ones — they only get
 /// picked when the device offers nothing stronger.
-fn permissive_preferred() -> Preferred {
+pub(crate) fn permissive_preferred() -> Preferred {
     Preferred {
         kex: Cow::Owned(vec![
             kex::CURVE25519,

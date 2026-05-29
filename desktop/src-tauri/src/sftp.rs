@@ -64,6 +64,9 @@ impl Handler for SftpHandler {
 struct SftpHandle {
     sftp: SftpSession,
     _conn: client::Handle<SftpHandler>,
+    /// xray child for VPN-routed SFTP — kill_on_drop tears the proxy down with
+    /// the session.
+    _xray: Option<tokio::process::Child>,
 }
 
 #[derive(Default)]
@@ -114,9 +117,37 @@ pub async fn sftp_connect(
     vault: State<'_, crate::vault::VaultState>,
     args: ConnectArgs,
 ) -> Result<SftpConnectResult, SftpError> {
-    let addr = format!("{}:{}", args.host, args.port);
-    let config = Arc::new(client::Config::default());
-    let mut session = client::connect(config, addr.as_str(), SftpHandler).await?;
+    // Same permissive algorithm set as the shell side, so SFTP also reaches old
+    // gear (Cisco/ESXi). See ssh.rs::permissive_preferred.
+    let config = Arc::new({
+        let mut c = client::Config::default();
+        c.preferred = crate::ssh::permissive_preferred();
+        c
+    });
+
+    // Route through the built-in VPN (xray SOCKS) when the host is flagged,
+    // mirroring ssh.rs — otherwise a VPN-only host can't open files.
+    let (mut session, xray_child) = if let Some(node) = &args.vpn {
+        let socks_port = crate::ssh::free_local_port()?;
+        let child = crate::vpn::spawn_xray(node, socks_port)
+            .map_err(|e| SftpError::Other(format!("xray spawn: {e}")))?;
+        crate::ssh::wait_socks_ready(socks_port)
+            .await
+            .map_err(|e| SftpError::Other(e.to_string()))?;
+        let proxy = format!("127.0.0.1:{socks_port}");
+        let stream = tokio_socks::tcp::Socks5Stream::connect(
+            proxy.as_str(),
+            (args.host.as_str(), args.port),
+        )
+        .await
+        .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
+        let session =
+            client::connect_stream(config, stream.into_inner(), SftpHandler).await?;
+        (session, Some(child))
+    } else {
+        let addr = format!("{}:{}", args.host, args.port);
+        (client::connect(config, addr.as_str(), SftpHandler).await?, None)
+    };
 
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => session
@@ -159,6 +190,7 @@ pub async fn sftp_connect(
         Arc::new(SftpHandle {
             sftp,
             _conn: session,
+            _xray: xray_child,
         }),
     );
     Ok(SftpConnectResult { sftp_id })

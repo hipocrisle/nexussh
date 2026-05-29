@@ -271,15 +271,19 @@ pub fn spawn_xray(node: &VpnNode, socks_port: u16) -> std::io::Result<tokio::pro
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
     let path = std::env::temp_dir().join(format!("nexussh-xray-{socks_port}.json"));
     std::fs::File::create(&path)?.write_all(&bytes)?;
-    tokio::process::Command::new(xray_bin_path())
-        .arg("run")
+    let mut cmd = tokio::process::Command::new(xray_bin_path());
+    cmd.arg("run")
         .arg("-c")
         .arg(&path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    // Windows: xray is a console app — spawning it from the GUI pops an empty
+    // cmd window that lingers for the session's life. CREATE_NO_WINDOW hides it.
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd.spawn()
 }
 
 #[tauri::command]

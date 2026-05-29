@@ -74,6 +74,71 @@ interface Tab extends TabInfo {
   host: HostRecord;
 }
 
+// --- Split-view model -------------------------------------------------------
+// A PaneGroup is one tab-strip + its terminals (like a VS Code editor group).
+// The LayoutNode tree describes how groups are arranged on screen. Stage A only
+// ever builds depth-1 (a single split = two panes), but the tree + helpers are
+// general so the grid (Stage C) drops in without another refactor.
+interface PaneGroup {
+  id: string;
+  tabs: Tab[];
+  activeId: string | null;
+}
+type LayoutNode =
+  | { kind: "leaf"; groupId: string }
+  | {
+      kind: "split";
+      id: string;
+      dir: "row" | "col";
+      ratio: number; // size fraction of child `a` (0..1)
+      a: LayoutNode;
+      b: LayoutNode;
+    };
+
+function uid(prefix: string): string {
+  return prefix + "-" + crypto.randomUUID();
+}
+
+// Replace the leaf for `groupId` with `replacement` — turns a pane into a split.
+function replaceLeaf(
+  node: LayoutNode,
+  groupId: string,
+  replacement: LayoutNode,
+): LayoutNode {
+  if (node.kind === "leaf")
+    return node.groupId === groupId ? replacement : node;
+  return {
+    ...node,
+    a: replaceLeaf(node.a, groupId, replacement),
+    b: replaceLeaf(node.b, groupId, replacement),
+  };
+}
+
+// Drop the leaf for `groupId`, collapsing its parent split into the sibling.
+// Returns null when the removed leaf was the entire tree.
+function removeLeaf(node: LayoutNode, groupId: string): LayoutNode | null {
+  if (node.kind === "leaf") return node.groupId === groupId ? null : node;
+  const a = removeLeaf(node.a, groupId);
+  const b = removeLeaf(node.b, groupId);
+  if (a === null) return b;
+  if (b === null) return a;
+  return { ...node, a, b };
+}
+
+function setNodeRatio(
+  node: LayoutNode,
+  nodeId: string,
+  ratio: number,
+): LayoutNode {
+  if (node.kind === "leaf") return node;
+  if (node.id === nodeId) return { ...node, ratio };
+  return {
+    ...node,
+    a: setNodeRatio(node.a, nodeId, ratio),
+    b: setNodeRatio(node.b, nodeId, ratio),
+  };
+}
+
 function HeaderButton({
   icon,
   children,
@@ -161,8 +226,62 @@ function App() {
   }, [settings.theme]);
 
   const [version, setVersion] = useState<string>("");
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // Split-view state: a list of pane-groups + the layout tree arranging them +
+  // which group currently has focus (receives new tabs / hotkeys / highlight).
+  const initialGroupId = useRef(uid("g")).current;
+  const [groups, setGroups] = useState<PaneGroup[]>(() => [
+    { id: initialGroupId, tabs: [], activeId: null },
+  ]);
+  const [layout, setLayout] = useState<LayoutNode>(() => ({
+    kind: "leaf",
+    groupId: initialGroupId,
+  }));
+  const [focusedGroupId, setFocusedGroupId] = useState<string>(initialGroupId);
+
+  // Derived views. `allTabs` flattens every group; `activeId` is the focused
+  // group's active tab (the "current terminal" the rest of the app talks about).
+  const allTabs = groups.flatMap((g) => g.tabs);
+  const focusedGroup = groups.find((g) => g.id === focusedGroupId) ?? groups[0];
+  const activeId = focusedGroup?.activeId ?? null;
+
+  function groupOfTab(tabId: string): PaneGroup | undefined {
+    return groups.find((g) => g.tabs.some((x) => x.id === tabId));
+  }
+
+  // Update one tab in place wherever it lives.
+  function updateTab(tabId: string, fn: (t: Tab) => Tab) {
+    setGroups((gs) =>
+      gs.map((g) => ({
+        ...g,
+        tabs: g.tabs.map((x) => (x.id === tabId ? fn(x) : x)),
+      })),
+    );
+  }
+
+  // Swap a tab's id (pending → real session id) within its group, set status,
+  // and make it the group's active tab.
+  function promoteTab(oldId: string, newId: string, status: Tab["status"]) {
+    setGroups((gs) =>
+      gs.map((g) => {
+        if (!g.tabs.some((x) => x.id === oldId)) return g;
+        return {
+          ...g,
+          activeId: g.activeId === oldId ? newId : g.activeId,
+          tabs: g.tabs.map((x) =>
+            x.id === oldId ? { ...x, id: newId, status } : x,
+          ),
+        };
+      }),
+    );
+  }
+
+  // Select a tab inside `groupId` and focus that group.
+  function selectTab(groupId: string, tabId: string) {
+    setGroups((gs) =>
+      gs.map((g) => (g.id === groupId ? { ...g, activeId: tabId } : g)),
+    );
+    setFocusedGroupId(groupId);
+  }
   const [error, setError] = useState<string | null>(null);
   const [vault, setVault] = useState<VaultStatus | null>(null);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
@@ -255,8 +374,8 @@ function App() {
   // Confirm-on-quit: if any tab is live, intercept the window close and ask
   // first (user once closed everything by accident). Listener reads a ref so it
   // always sees the current tab list without re-registering.
-  const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
+  const tabsRef = useRef(allTabs);
+  tabsRef.current = allTabs;
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
@@ -320,23 +439,25 @@ function App() {
   // next launch can restore them.
   useEffect(() => {
     if (!settings.restoreSession) return;
-    const ids = tabs.map((t_) => t_.host.id);
+    const ids = allTabs.map((t_) => t_.host.id);
     localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
-  }, [tabs, settings.restoreSession]);
+  }, [allTabs, settings.restoreSession]);
 
-  // Drag-reorder of tabs. Persisted for free by the effect above.
+  // Drag-reorder of tabs within a single group. (Cross-group drag is Stage B.)
   function reorderTabs(fromId: string, toId: string, before: boolean) {
     if (fromId === toId) return;
-    setTabs((prev) => {
-      const arr = [...prev];
-      const from = arr.findIndex((x) => x.id === fromId);
-      if (from < 0) return prev;
-      const [moved] = arr.splice(from, 1);
-      const to = arr.findIndex((x) => x.id === toId);
-      if (to < 0) return prev;
-      arr.splice(before ? to : to + 1, 0, moved);
-      return arr;
-    });
+    setGroups((gs) =>
+      gs.map((g) => {
+        if (!g.tabs.some((x) => x.id === fromId) || !g.tabs.some((x) => x.id === toId))
+          return g;
+        const arr = [...g.tabs];
+        const from = arr.findIndex((x) => x.id === fromId);
+        const [moved] = arr.splice(from, 1);
+        const to = arr.findIndex((x) => x.id === toId);
+        arr.splice(before ? to : to + 1, 0, moved);
+        return { ...g, tabs: arr };
+      }),
+    );
   }
 
   // Auto-update check on mount (once per 24h, silent on failure).
@@ -449,8 +570,14 @@ function App() {
       status: "connecting",
       host: h,
     };
-    setTabs((tabs) => [...tabs, pending]);
-    setActiveId(pending.id);
+    const targetGroupId = focusedGroupId;
+    setGroups((gs) =>
+      gs.map((g) =>
+        g.id === targetGroupId
+          ? { ...g, tabs: [...g.tabs, pending], activeId: pending.id }
+          : g,
+      ),
+    );
     try {
       const sid = await sshConnect({
         host: h.host,
@@ -460,15 +587,27 @@ function App() {
         vpn: resolveHostVpn(h),
       });
       bumpLastUsed(h.id).catch(() => {});
-      setTabs((tabs) =>
-        tabs.map((x) =>
-          x.id === pending.id ? { ...x, id: sid, status: "connected" } : x,
-        ),
-      );
-      setActiveId(sid);
+      promoteTab(pending.id, sid, "connected");
       triggerBurst();
     } catch (e) {
-      setTabs((tabs) => tabs.filter((x) => x.id !== pending.id));
+      // Drop the pending tab. In Stage A a non-sole group always has ≥1 real
+      // tab, so removing a pending can only empty the sole group → no collapse.
+      setGroups((gs) =>
+        gs.map((g) => {
+          if (!g.tabs.some((x) => x.id === pending.id)) return g;
+          const remaining = g.tabs.filter((x) => x.id !== pending.id);
+          return {
+            ...g,
+            tabs: remaining,
+            activeId:
+              g.activeId === pending.id
+                ? remaining.length
+                  ? remaining[remaining.length - 1].id
+                  : null
+                : g.activeId,
+          };
+        }),
+      );
       setError(String(e));
     }
   }
@@ -525,16 +664,12 @@ function App() {
   }
 
   async function restartSession(tabId: string) {
-    const tab = tabs.find((x) => x.id === tabId);
+    const tab = allTabs.find((x) => x.id === tabId);
     if (!tab) return;
     if (tab.status === "connected") {
       sshDisconnect(tabId).catch(() => {});
     }
-    setTabs((all) =>
-      all.map((x) =>
-        x.id === tabId ? { ...x, status: "connecting" as const } : x,
-      ),
-    );
+    updateTab(tabId, (x) => ({ ...x, status: "connecting" }));
     try {
       const sid = await sshConnect({
         host: tab.host.host,
@@ -544,33 +679,28 @@ function App() {
         vpn: resolveHostVpn(tab.host),
       });
       bumpLastUsed(tab.host.id).catch(() => {});
-      setTabs((all) =>
-        all.map((x) =>
-          x.id === tabId ? { ...x, id: sid, status: "connected" as const } : x,
-        ),
-      );
+      // promoteTab keeps focus where it is (no focus-steal on auto-reconnect of
+      // a background pane) and only re-activates within the tab's own group.
+      promoteTab(tabId, sid, "connected");
       // Move reconnect bookkeeping to the new session id and reset attempts.
       const prev = reconnectRef.current.get(tabId);
       reconnectRef.current.delete(tabId);
       if (prev?.timer != null) window.clearTimeout(prev.timer);
       reconnectRef.current.set(sid, { attempts: 0, timer: null });
-      setActiveId(sid);
     } catch (e) {
       setError(String(e));
-      setTabs((all) =>
-        all.map((x) =>
-          x.id === tabId ? { ...x, status: "closed" as const } : x,
-        ),
-      );
+      updateTab(tabId, (x) => ({ ...x, status: "closed" }));
       // restartSession failure also triggers another backoff if eligible.
-      const failedTab = tabs.find((x) => x.id === tabId);
+      const failedTab = allTabs.find((x) => x.id === tabId);
       if (failedTab && settings.autoReconnect) scheduleReconnect(failedTab);
     }
   }
 
   function onTabContextMenu(tabId: string, x: number, y: number) {
-    const tab = tabs.find((x) => x.id === tabId);
+    const tab = allTabs.find((x) => x.id === tabId);
     if (!tab) return;
+    const g = groupOfTab(tabId);
+    const groupTabCount = g?.tabs.length ?? 0;
     setMenu({
       x,
       y,
@@ -596,6 +726,14 @@ function App() {
         },
         { separator: true, label: "" },
         {
+          // Stage A: only one split allowed → enabled when there's a single
+          // group with ≥2 tabs (so both panes end up with content).
+          label: t("tabmenu.split_right"),
+          onClick: () => splitRight(tabId),
+          disabled: groups.length > 1 || groupTabCount < 2,
+        },
+        { separator: true, label: "" },
+        {
           label: t("tabmenu.close"),
           onClick: () => closeTab(tabId),
           destructive: true,
@@ -603,17 +741,57 @@ function App() {
         {
           label: t("tabmenu.close_others"),
           onClick: () => {
-            tabs.filter((x) => x.id !== tabId).forEach((x) => closeTab(x.id));
+            (g?.tabs ?? [])
+              .filter((x) => x.id !== tabId)
+              .forEach((x) => closeTab(x.id));
           },
-          disabled: tabs.length <= 1,
+          disabled: groupTabCount <= 1,
           destructive: true,
         },
       ],
     });
   }
 
+  // Move a tab out into a new group on the right, turning its pane into a
+  // vertical split. Stage A: only from a single, multi-tab group.
+  function splitRight(tabId: string) {
+    const g = groupOfTab(tabId);
+    if (!g) return;
+    const movedTab = g.tabs.find((x) => x.id === tabId);
+    if (!movedTab) return;
+    const newGroupId = uid("g");
+    setGroups((gs) => {
+      const updated = gs.map((x) => {
+        if (x.id !== g.id) return x;
+        const remaining = x.tabs.filter((t_) => t_.id !== tabId);
+        return {
+          ...x,
+          tabs: remaining,
+          activeId:
+            x.activeId === tabId
+              ? remaining.length
+                ? remaining[remaining.length - 1].id
+                : null
+              : x.activeId,
+        };
+      });
+      return [...updated, { id: newGroupId, tabs: [movedTab], activeId: tabId }];
+    });
+    setLayout((lay) =>
+      replaceLeaf(lay, g.id, {
+        kind: "split",
+        id: uid("s"),
+        dir: "row",
+        ratio: 0.5,
+        a: { kind: "leaf", groupId: g.id },
+        b: { kind: "leaf", groupId: newGroupId },
+      }),
+    );
+    setFocusedGroupId(newGroupId);
+  }
+
   async function closeTab(id: string) {
-    const target = tabs.find((x) => x.id === id);
+    const target = allTabs.find((x) => x.id === id);
     if (
       settings.confirmClose &&
       target &&
@@ -631,10 +809,34 @@ function App() {
       sshDisconnect(id).catch(() => {});
     }
     clearReconnect(id);
-    setTabs((all) => all.filter((x) => x.id !== id));
-    if (activeId === id) {
-      const remaining = tabs.filter((x) => x.id !== id);
-      setActiveId(remaining.length ? remaining[remaining.length - 1].id : null);
+    const g = groupOfTab(id);
+    if (!g) return;
+    const remaining = g.tabs.filter((x) => x.id !== id);
+    if (remaining.length === 0 && groups.length > 1) {
+      // Last tab in a split pane → drop the pane and collapse the layout.
+      setGroups((gs) => gs.filter((x) => x.id !== g.id));
+      setLayout((lay) => removeLeaf(lay, g.id) ?? lay);
+      if (focusedGroupId === g.id) {
+        const sibling = groups.find((x) => x.id !== g.id);
+        if (sibling) setFocusedGroupId(sibling.id);
+      }
+    } else {
+      setGroups((gs) =>
+        gs.map((x) =>
+          x.id === g.id
+            ? {
+                ...x,
+                tabs: remaining,
+                activeId:
+                  x.activeId === id
+                    ? remaining.length
+                      ? remaining[remaining.length - 1].id
+                      : null
+                    : x.activeId,
+              }
+            : x,
+        ),
+      );
     }
   }
 
@@ -670,9 +872,7 @@ function App() {
   }
 
   function markClosed(id: string, reason: string) {
-    setTabs((all) =>
-      all.map((x) => (x.id === id ? { ...x, status: "closed" } : x)),
-    );
+    updateTab(id, (x) => ({ ...x, status: "closed" }));
     // Auto-reconnect only on UNEXPECTED close (network drop, server-side EOF
     // etc.). Don't retry when the user themselves closed the session.
     const userInitiated = reason === "user disconnected";
@@ -680,7 +880,7 @@ function App() {
       clearReconnect(id);
       return;
     }
-    const tab = tabs.find((x) => x.id === id);
+    const tab = allTabs.find((x) => x.id === id);
     if (tab) scheduleReconnect(tab);
   }
 
@@ -705,10 +905,182 @@ function App() {
     fontFamily: fontStack,
   } as React.CSSProperties;
 
-  const activeSession = tabs.find((x) => x.id === activeId)?.host;
+  const activeSession = allTabs.find((x) => x.id === activeId)?.host;
   // Hosts that have an open tab → "live" badge in the sidebar; the active tab's
   // host additionally gets the blinking caret.
-  const openHostIds = new Set(tabs.map((x) => x.host.id));
+  const openHostIds = new Set(allTabs.map((x) => x.host.id));
+
+  // Drag a split divider: adjust the owning node's ratio live. rect is captured
+  // at pointer-down (the split container doesn't move mid-drag).
+  function startPaneResize(
+    e: React.PointerEvent,
+    nodeId: string,
+    isRow: boolean,
+  ) {
+    e.preventDefault();
+    const container = (e.currentTarget as HTMLElement).parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const onMove = (ev: PointerEvent) => {
+      const frac = isRow
+        ? (ev.clientX - rect.left) / rect.width
+        : (ev.clientY - rect.top) / rect.height;
+      const ratio = Math.min(0.85, Math.max(0.15, frac));
+      setLayout((lay) => setNodeRatio(lay, nodeId, ratio));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = isRow ? "col-resize" : "row-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  // One pane = a tab strip + its terminals. All panes render at once; a
+  // terminal is `visible` when it's its group's active tab.
+  function renderGroup(group: PaneGroup): React.ReactNode {
+    const isFocused = group.id === focusedGroupId;
+    const multiPane = groups.length > 1;
+    return (
+      <div
+        key={group.id}
+        className="flex-1 min-w-0 min-h-0 flex flex-col"
+        onMouseDownCapture={() => {
+          if (group.id !== focusedGroupId) setFocusedGroupId(group.id);
+        }}
+      >
+        <TabBar
+          tabs={group.tabs}
+          activeId={group.activeId}
+          onSelect={(id) => selectTab(group.id, id)}
+          onClose={closeTab}
+          onNewTab={() => {
+            setFocusedGroupId(group.id);
+            openSshPicker();
+          }}
+          onNewTabDropdown={(x, y) => {
+            setFocusedGroupId(group.id);
+            openNewTabMenu(x, y);
+          }}
+          onContextMenu={onTabContextMenu}
+          onReorder={reorderTabs}
+        />
+        <div
+          className="flex-1 min-h-0 relative"
+          style={
+            multiPane && isFocused
+              ? { boxShadow: "inset 0 0 0 1px var(--nx-accent)" }
+              : undefined
+          }
+        >
+          {/* Matrix Rain — terminal area only, per pane. */}
+          <div className="pointer-events-none absolute inset-0 z-30">
+            <MatrixRain
+              enabled={settings.rainOn}
+              density={settings.rainDensity}
+              opacity={settings.rainOpacity}
+              accent={theme.accent}
+              fade={theme.bgBase}
+            />
+          </div>
+          {group.tabs.length === 0 && !selectedHost && (
+            <div
+              className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
+              style={{ color: theme.textMuted }}
+            >
+              {error ? (
+                <div className="max-w-md text-center" style={{ color: theme.error }}>
+                  ✗ {error}
+                </div>
+              ) : (
+                <span>&gt; {t("terminal.select_host")}</span>
+              )}
+            </div>
+          )}
+          {group.tabs.length === 0 && selectedHost && (
+            <HostInfoCard
+              host={selectedHost}
+              onConnect={() => openHost(selectedHost)}
+              onEdit={() => setEditHost(selectedHost)}
+            />
+          )}
+          {group.tabs.map((t_) =>
+            t_.status === "connecting" ? (
+              t_.id === group.activeId ? (
+                <div
+                  key={t_.id}
+                  className="absolute inset-0 flex items-center justify-center font-mono text-sm"
+                  style={{ color: theme.warning }}
+                >
+                  {t("terminal.connecting_to", {
+                    user: t_.host.user,
+                    host: t_.host.host,
+                    port: t_.host.port,
+                  })}
+                </div>
+              ) : null
+            ) : (
+              <TerminalView
+                key={t_.id}
+                sessionId={t_.id}
+                visible={t_.id === group.activeId}
+                onSessionClosed={(reason) => markClosed(t_.id, reason)}
+                onReconnect={() => restartSession(t_.id)}
+                onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+              />
+            ),
+          )}
+          {group.activeId &&
+            transcriptTabs.has(group.activeId) &&
+            (() => {
+              const t_ = group.tabs.find((x) => x.id === group.activeId);
+              if (!t_) return null;
+              return (
+                <TranscriptOverlay
+                  sessionId={group.activeId}
+                  hostLabel={`${t_.host.user}@${t_.host.host}`}
+                  onClose={() => toggleTranscript(group.activeId!)}
+                  onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+                />
+              );
+            })()}
+        </div>
+      </div>
+    );
+  }
+
+  function renderNode(node: LayoutNode): React.ReactNode {
+    if (node.kind === "leaf") {
+      const g = groups.find((x) => x.id === node.groupId);
+      return g ? renderGroup(g) : null;
+    }
+    const isRow = node.dir === "row";
+    return (
+      <div
+        key={node.id}
+        className={"flex flex-1 min-w-0 min-h-0 " + (isRow ? "flex-row" : "flex-col")}
+      >
+        <div
+          className="flex min-w-0 min-h-0"
+          style={{ flex: `0 0 ${node.ratio * 100}%` }}
+        >
+          {renderNode(node.a)}
+        </div>
+        <div
+          onPointerDown={(e) => startPaneResize(e, node.id, isRow)}
+          className={
+            (isRow ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize") +
+            " shrink-0 bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
+          }
+        />
+        <div className="flex flex-1 min-w-0 min-h-0">{renderNode(node.b)}</div>
+      </div>
+    );
+  }
 
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
@@ -825,102 +1197,12 @@ function App() {
             className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
           />
         )}
-        <div className="flex-1 min-w-0 flex flex-col">
-          <TabBar
-            tabs={tabs}
-            activeId={activeId}
-            onSelect={setActiveId}
-            onClose={closeTab}
-            onNewTab={openSshPicker}
-            onNewTabDropdown={openNewTabMenu}
-            onContextMenu={onTabContextMenu}
-            onReorder={reorderTabs}
-          />
-          <div className="flex-1 min-h-0 relative">
-            {/* Matrix Rain ONLY in the terminal area, never over header/
-             *  sidebar/inputs. mix-blend-mode: screen + pointer-events-none
-             *  means clicks/wheel pass through and content stays readable. */}
-            <div className="pointer-events-none absolute inset-0 z-30">
-              <MatrixRain
-                enabled={settings.rainOn}
-                density={settings.rainDensity}
-                opacity={settings.rainOpacity}
-                accent={theme.accent}
-                fade={theme.bgBase}
-              />
-            </div>
-            {tabs.length === 0 && !selectedHost && (
-              <div
-                className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
-                style={{ color: theme.textMuted }}
-              >
-                {error ? (
-                  <div
-                    className="max-w-md text-center"
-                    style={{ color: theme.error }}
-                  >
-                    ✗ {error}
-                  </div>
-                ) : (
-                  <span>&gt; {t("terminal.select_host")}</span>
-                )}
-              </div>
-            )}
-            {tabs.length === 0 && selectedHost && (
-              <HostInfoCard
-                host={selectedHost}
-                onConnect={() => openHost(selectedHost)}
-                onEdit={() => setEditHost(selectedHost)}
-              />
-            )}
-            {tabs.map((t_) =>
-              t_.status === "connecting" ? (
-                t_.id === activeId ? (
-                  <div
-                    key={t_.id}
-                    className="absolute inset-0 flex items-center justify-center font-mono text-sm"
-                    style={{ color: theme.warning }}
-                  >
-                    {t("terminal.connecting_to", {
-                      user: t_.host.user,
-                      host: t_.host.host,
-                      port: t_.host.port,
-                    })}
-                  </div>
-                ) : null
-              ) : (
-                <TerminalView
-                  key={t_.id}
-                  sessionId={t_.id}
-                  visible={t_.id === activeId}
-                  onSessionClosed={(reason) => markClosed(t_.id, reason)}
-                  onReconnect={() => restartSession(t_.id)}
-                  onContextMenu={(x, y, items) => setMenu({ x, y, items })}
-                />
-              ),
-            )}
-            {/* Transcript overlay for the active tab when toggled */}
-            {activeId &&
-              transcriptTabs.has(activeId) &&
-              (() => {
-                const t_ = tabs.find((x) => x.id === activeId);
-                if (!t_) return null;
-                return (
-                  <TranscriptOverlay
-                    sessionId={activeId}
-                    hostLabel={`${t_.host.user}@${t_.host.host}`}
-                    onClose={() => toggleTranscript(activeId)}
-                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
-                  />
-                );
-              })()}
-          </div>
-        </div>
+        {renderNode(layout)}
       </div>
 
       <StatusLine
-        sessionCount={tabs.length}
-        connectingCount={tabs.filter((x) => x.status === "connecting").length}
+        sessionCount={allTabs.length}
+        connectingCount={allTabs.filter((x) => x.status === "connecting").length}
         syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
       />
 
@@ -985,7 +1267,7 @@ function App() {
         <div className="fixed inset-0 z-40">
           <SettingsScreen
             onClose={() => setSettingsOpen(false)}
-            sessionCount={tabs.length}
+            sessionCount={allTabs.length}
           />
         </div>
       )}

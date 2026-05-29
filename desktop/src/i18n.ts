@@ -412,6 +412,7 @@ const ru = {
   tabmenu: {
     restart: "Перезапустить сессию",
     duplicate: "Дублировать вкладку",
+    split_right: "Разделить вправо",
     close: "Закрыть",
     close_others: "Закрыть остальные",
     open_transcript: "Прокрутить историю (Ctrl+Shift+↑)",
@@ -843,6 +844,7 @@ const en = {
   tabmenu: {
     restart: "Restart session",
     duplicate: "Duplicate tab",
+    split_right: "Split right",
     close: "Close",
     close_others: "Close others",
     open_transcript: "Scroll history (Ctrl+Shift+↑)",

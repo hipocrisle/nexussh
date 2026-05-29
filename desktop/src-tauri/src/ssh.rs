@@ -160,11 +160,15 @@ pub async fn ssh_connect(
 ) -> Result<ConnectResult, SshError> {
     let session_id = Uuid::new_v4().to_string();
     // Keepalive keeps the tunnel warm so idle middleboxes (e.g. a WS proxy in
-    // front of a VPN entry) don't close an idle session, and detects a dead
-    // link quickly. Applies to all sessions; matters most for VPN-tunnelled ones.
+    // front of a VPN entry) don't close an idle session. keepalive_max = 0 is
+    // critical for VPN-tunnelled sessions: a high-latency / lossy cascade can
+    // delay or drop keepalive replies, and with a non-zero max russh would
+    // force-disconnect after that many unanswered keepalives (KeepaliveTimeout)
+    // — the real cause of variable VPN drops. With 0, we never proactively
+    // disconnect; a truly dead link is still caught when the TCP socket closes.
     let mut cfg = client::Config::default();
     cfg.keepalive_interval = Some(std::time::Duration::from_secs(20));
-    cfg.keepalive_max = 3;
+    cfg.keepalive_max = 0;
     let config = Arc::new(cfg);
 
     // Establish the transport stream: either a direct TCP connect, or — when

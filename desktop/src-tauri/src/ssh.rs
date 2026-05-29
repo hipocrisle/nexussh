@@ -11,8 +11,10 @@
 
 use russh::client::{self, Handler};
 use russh::keys::ssh_key::PublicKey;
-use russh::{ChannelMsg, Disconnect};
+use russh::keys::{Algorithm, EcdsaCurve, HashAlg};
+use russh::{cipher, kex, mac, ChannelMsg, Disconnect, Preferred};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -151,6 +153,66 @@ async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
     Err(SshError::Other("xray SOCKS proxy did not come up in time".into()))
 }
 
+/// Permissive algorithm set: modern algorithms first (negotiated whenever the
+/// peer supports them), with legacy SHA-1 KEX/MAC and CBC/3DES cipher fallbacks
+/// appended so we can still reach old network gear — Cisco IOS, older ESXi,
+/// switches/routers — the way PuTTY does. russh's defaults omit the legacy
+/// algorithms for security, which leaves that hardware unreachable (KEX/MAC "no
+/// match" → connection drops at handshake). Host-key `ssh-rsa` (SHA-1) is the
+/// `Rsa { hash: None }` entry. We never *prefer* the weak ones — they only get
+/// picked when the device offers nothing stronger.
+fn permissive_preferred() -> Preferred {
+    Preferred {
+        kex: Cow::Owned(vec![
+            kex::CURVE25519,
+            kex::CURVE25519_PRE_RFC_8731,
+            kex::DH_GEX_SHA256,
+            kex::DH_G18_SHA512,
+            kex::DH_G16_SHA512,
+            kex::DH_G14_SHA256,
+            // legacy fallback for old gear
+            kex::DH_G14_SHA1,
+            kex::DH_GEX_SHA1,
+            kex::DH_G1_SHA1,
+            // capability markers (mirror russh defaults)
+            kex::EXTENSION_SUPPORT_AS_CLIENT,
+            kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+        ]),
+        key: Cow::Owned(vec![
+            Algorithm::Ed25519,
+            Algorithm::Ecdsa { curve: EcdsaCurve::NistP256 },
+            Algorithm::Ecdsa { curve: EcdsaCurve::NistP384 },
+            Algorithm::Ecdsa { curve: EcdsaCurve::NistP521 },
+            Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
+            Algorithm::Rsa { hash: Some(HashAlg::Sha256) },
+            Algorithm::Rsa { hash: None }, // ssh-rsa (SHA-1) — old gear
+        ]),
+        cipher: Cow::Owned(vec![
+            cipher::CHACHA20_POLY1305,
+            cipher::AES_256_GCM,
+            cipher::AES_128_GCM,
+            cipher::AES_256_CTR,
+            cipher::AES_192_CTR,
+            cipher::AES_128_CTR,
+            // legacy fallback
+            cipher::AES_256_CBC,
+            cipher::AES_192_CBC,
+            cipher::AES_128_CBC,
+            cipher::TRIPLE_DES_CBC,
+        ]),
+        mac: Cow::Owned(vec![
+            mac::HMAC_SHA512_ETM,
+            mac::HMAC_SHA256_ETM,
+            mac::HMAC_SHA512,
+            mac::HMAC_SHA256,
+            // legacy fallback
+            mac::HMAC_SHA1_ETM,
+            mac::HMAC_SHA1,
+        ]),
+        compression: Preferred::DEFAULT.compression.clone(),
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -169,6 +231,8 @@ pub async fn ssh_connect(
     let mut cfg = client::Config::default();
     cfg.keepalive_interval = Some(std::time::Duration::from_secs(20));
     cfg.keepalive_max = 0;
+    // Offer legacy algorithms too, so old gear (Cisco IOS / ESXi) can connect.
+    cfg.preferred = permissive_preferred();
     let config = Arc::new(cfg);
 
     // Establish the transport stream: either a direct TCP connect, or — when

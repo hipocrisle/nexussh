@@ -3342,7 +3342,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexussh"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "age",
@@ -4727,6 +4727,7 @@ dependencies = [
  "data-encoding",
  "delegate",
  "der 0.8.0",
+ "des",
  "digest 0.11.3",
  "ecdsa 0.17.0-rc.18",
  "ed25519-dalek 3.0.0-pre.7",

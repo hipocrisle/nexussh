@@ -333,8 +333,20 @@ async fn run_session_loop(
         }
     }
 
+    // Explicit application-level keepalive. russh's built-in client keepalive
+    // timer didn't keep VPN-tunnelled (WS-proxied) sessions alive in practice,
+    // so we drive it ourselves: every 25s send keepalive@openssh.com (want_reply)
+    // via the Handle's Msg channel — the server's reply generates bidirectional
+    // traffic that resets the WS proxy's ~60s idle timeout. Harmless for direct
+    // sessions too. First tick is immediate; consume it so we don't fire at t=0.
+    let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(25));
+    keepalive.tick().await;
+
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                let _ = session.send_keepalive(true).await;
+            }
             cmd = rx.recv() => {
                 let Some(cmd) = cmd else { return "channel closed".into(); };
                 match cmd {

@@ -2,12 +2,14 @@
 // Right-click on a tab opens a context menu (rename / restart / close).
 
 import { useEffect, useRef, useState } from "react";
-import { X, Plus, ChevronDown } from "lucide-react";
+import { X, Plus, ChevronDown, Columns2, LayoutGrid } from "lucide-react";
 
 export interface TabInfo {
   id: string; // session_id from backend
   title: string;
   status: "connecting" | "connected" | "closed";
+  /** When > 1, render a small split badge to the left of the title. */
+  paneCount?: number;
 }
 
 interface Props {
@@ -177,6 +179,19 @@ export function TabBar({
               }
             >
               <StatusDot status={t.status} />
+              {t.paneCount && t.paneCount > 1 ? (
+                <span
+                  title={`Split: ${t.paneCount} panes`}
+                  className="inline-flex items-center gap-0.5 text-nx-accent shrink-0"
+                >
+                  {t.paneCount >= 3 ? (
+                    <LayoutGrid size={11} />
+                  ) : (
+                    <Columns2 size={11} />
+                  )}
+                  <span className="text-meta tabular-nums">{t.paneCount}</span>
+                </span>
+              ) : null}
               <span
                 className={
                   "font-mono text-body truncate max-w-[180px] " +

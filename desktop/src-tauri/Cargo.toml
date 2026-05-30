@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "0.7.2"
+version = "0.8.0"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"
@@ -47,5 +47,5 @@ winreg = "0.52"
 # Job Object APIs: attach xray children so they auto-die when NexuSSH dies
 # (clean exit, crash, force-quit) — prevents zombie xray.exe blocking the next
 # installer.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 

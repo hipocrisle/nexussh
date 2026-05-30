@@ -29,6 +29,7 @@ import { HostDialog } from "./HostDialog";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { SettingsScreen } from "./SettingsScreen";
 import { TranscriptOverlay } from "./TranscriptOverlay";
+import { PaneHeader } from "./PaneHeader";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
@@ -54,6 +55,11 @@ import {
   AppWindow,
 } from "lucide-react";
 import "./App.css";
+
+// Height of the per-pane mini-toolbar (PaneHeader.tsx). Rendered only when the
+// active workspace has ≥2 panes; the terminal layer is offset by this amount
+// in that case so the header sits ABOVE the terminal rather than over it.
+const PANE_HEADER_PX = 24;
 
 const SIDEBAR_COLLAPSED_LS_KEY = "nexussh.sidebarCollapsed";
 
@@ -421,6 +427,24 @@ function App() {
   }
 
   const mainAreaRef = useRef<HTMLDivElement>(null);
+
+  // Pane-extract drag: pointer started on a pane's PaneHeader, user is now
+  // dragging. The floating chip follows the cursor; on release outside the
+  // main area we move the pane into its own brand-new workspace. `active` is
+  // set after the cursor moves >24px outside the main area's bounding rect,
+  // so a normal click on the header just focuses the pane.
+  const [paneDragState, setPaneDragState] = useState<{
+    wsId: string;
+    paneId: string;
+    hostLabel: string;
+    x: number;
+    y: number;
+    active: boolean;
+  } | null>(null);
+  // Ref mirror — pointer handlers run outside React state propagation.
+  const paneDragRef = useRef<typeof paneDragState>(null);
+  paneDragRef.current = paneDragState;
+
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
   // When set, the next host picked completes a split inside this workspace
@@ -1041,6 +1065,184 @@ function App() {
     );
   }
 
+  // Move a pane out of its source workspace into a brand-new workspace as a
+  // single pane. The session is NOT touched — the TerminalView keeps running
+  // because it lives in the flat layer keyed by session.id; only the
+  // pane-tree / workspace bookkeeping changes around it.
+  function extractPaneToNewWorkspace(wsId: string, paneId: string) {
+    setWorkspaces((ws_) => {
+      const source = ws_.find((w) => w.id === wsId);
+      if (!source) return ws_;
+      // No-op when the source has only this pane — it would just be a rename.
+      if (source.panes.length <= 1) return ws_;
+      const moved = source.panes.find((p) => p.id === paneId);
+      if (!moved) return ws_;
+      const remainingPanes = source.panes.filter((p) => p.id !== paneId);
+      const newSourceLayout =
+        removeLeaf(source.layout, paneId) ?? {
+          kind: "leaf" as const,
+          paneId: remainingPanes[0].id,
+        };
+      const newSourceFocused =
+        source.focusedPaneId === paneId
+          ? remainingPanes[remainingPanes.length - 1].id
+          : source.focusedPaneId;
+      const newWs: Workspace = {
+        id: uid("w"),
+        panes: [moved],
+        layout: { kind: "leaf", paneId: moved.id },
+        focusedPaneId: moved.id,
+      };
+      const next = ws_.map((w) =>
+        w.id === wsId
+          ? {
+              ...w,
+              panes: remainingPanes,
+              layout: newSourceLayout,
+              focusedPaneId: newSourceFocused,
+            }
+          : w,
+      );
+      next.push(newWs);
+      // Defer activeWorkspaceId switch — setState inside setState is unsafe.
+      queueMicrotask(() => setActiveWorkspaceId(newWs.id));
+      return next;
+    });
+  }
+
+  // Start dragging a pane by its header. Tracks pointer movement; once the
+  // cursor leaves the main-area bounding rect by >24px we mark the drag
+  // "active" and the floating chip starts following. On release outside the
+  // main area we extract the pane into a new workspace.
+  function startPaneDrag(
+    e: React.PointerEvent,
+    wsId: string,
+    paneId: string,
+  ) {
+    // Only left button — ignore right-click & touch-pan.
+    if (e.button !== 0) return;
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
+    if (!pane) return;
+    // Extraction only makes sense when the workspace has another pane to
+    // leave behind. Single-pane workspaces just focus on click.
+    if (ws.panes.length <= 1) return;
+    const hostLabel = `${pane.session.host.user}@${pane.session.host.host}`;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let armed = false; // becomes true once we've crossed the threshold
+    const SLIP = 24;
+    const onMove = (ev: PointerEvent) => {
+      const main = mainAreaRef.current;
+      const r = main?.getBoundingClientRect();
+      const outside =
+        !r ||
+        ev.clientX < r.left - SLIP ||
+        ev.clientX > r.right + SLIP ||
+        ev.clientY < r.top - SLIP ||
+        ev.clientY > r.bottom + SLIP;
+      // Also arm if user moved a lot from the header even while still over
+      // the workspace — covers the case where they then drag back out.
+      const movedFar =
+        Math.abs(ev.clientX - startX) > 12 ||
+        Math.abs(ev.clientY - startY) > 12;
+      if (!armed && (outside || movedFar)) armed = true;
+      if (armed) {
+        setPaneDragState({
+          wsId,
+          paneId,
+          hostLabel,
+          x: ev.clientX,
+          y: ev.clientY,
+          active: outside,
+        });
+      }
+    };
+    const finish = (ev: PointerEvent | null) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("blur", onCancel);
+      const s = paneDragRef.current;
+      setPaneDragState(null);
+      if (!ev || !s) return;
+      const main = mainAreaRef.current;
+      const r = main?.getBoundingClientRect();
+      const outside =
+        !r ||
+        ev.clientX < r.left ||
+        ev.clientX > r.right ||
+        ev.clientY < r.top ||
+        ev.clientY > r.bottom;
+      if (outside) extractPaneToNewWorkspace(s.wsId, s.paneId);
+    };
+    const onUp = (ev: PointerEvent) => finish(ev);
+    const onCancel = () => finish(null);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("blur", onCancel);
+  }
+
+  // The ⋮ button on a PaneHeader opens this menu — actions targeting a SPECIFIC
+  // pane (vs the workspace-tab right-click menu which always acts on the
+  // workspace's focused pane).
+  function openPaneMenu(wsId: string, paneId: string, x: number, y: number) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
+    if (!pane) return;
+    const sid = pane.session.id;
+    const host = pane.session.host;
+    const canExtract = ws.panes.length > 1;
+    setMenu({
+      x,
+      y,
+      items: [
+        {
+          label: transcriptTabs.has(sid)
+            ? t("tabmenu.exit_transcript")
+            : t("tabmenu.open_transcript"),
+          onClick: () => toggleTranscript(sid),
+        },
+        {
+          label: t("tabmenu.restart"),
+          onClick: () => restartSession(sid),
+          disabled: pane.session.status === "connecting",
+        },
+        {
+          label: t("tabmenu.split_right"),
+          onClick: () => {
+            // Re-focus this pane first so the split lands next to it.
+            setFocusedPane(wsId, paneId);
+            splitFocusedPane(wsId, "row");
+          },
+        },
+        {
+          label: t("tabmenu.split_down"),
+          onClick: () => {
+            setFocusedPane(wsId, paneId);
+            splitFocusedPane(wsId, "col");
+          },
+        },
+        {
+          label: t("sidebar.menu_sftp"),
+          onClick: () => openSftp(host),
+        },
+        { separator: true, label: "" },
+        {
+          label: t("tabmenu.move_to_new_tab"),
+          onClick: () => extractPaneToNewWorkspace(wsId, paneId),
+          disabled: !canExtract,
+        },
+        {
+          label: t("tabmenu.close_pane"),
+          onClick: () => closePane(wsId, paneId),
+          destructive: true,
+        },
+      ],
+    });
+  }
+
   // Per-session auto-reconnect bookkeeping. Each entry tracks how many retry
   // attempts have been made + the pending setTimeout handle so we can cancel
   // when the user explicitly closes the pane.
@@ -1215,6 +1417,22 @@ function App() {
       width: `${r.width}%`,
       height: `${r.height}%`,
     });
+    // When the workspace is split, the terminal + overlay rects are pushed
+    // down by PANE_HEADER_PX to leave room for the PaneHeader chrome strip.
+    // The strip itself is rendered in its own layer above (zIndex 22).
+    const paneBodyStyle = (
+      r: Rect,
+      offsetForHeader: boolean,
+    ): React.CSSProperties => {
+      if (!offsetForHeader) return paneRectStyle(r);
+      return {
+        position: "absolute",
+        left: `${r.left}%`,
+        top: `calc(${r.top}% + ${PANE_HEADER_PX}px)`,
+        width: `${r.width}%`,
+        height: `calc(${r.height}% - ${PANE_HEADER_PX}px)`,
+      };
+    };
     return (
       <div
         ref={mainAreaRef}
@@ -1243,9 +1461,12 @@ function App() {
               !!r &&
               p.session.status !== "connecting" &&
               !p.session.error;
+            // Multi-pane workspaces draw the PaneHeader chrome strip at the
+            // top of every pane; the terminal area sits beneath it.
+            const offsetForHeader = w.panes.length > 1;
             const style: React.CSSProperties = r
               ? {
-                  ...paneRectStyle(r),
+                  ...paneBodyStyle(r, offsetForHeader),
                   zIndex: 10,
                   display: show ? "block" : "none",
                 }
@@ -1272,29 +1493,17 @@ function App() {
           }),
         )}
 
-        {/* Per-pane overlays of the active workspace. */}
+        {/* Per-pane overlays of the active workspace. Drops the focus-ring
+         *  overlay — in split mode the PaneHeader stripe + background already
+         *  convey focus, and a single-pane workspace doesn't need one. */}
         {ws.panes.map((p) => {
           const r = rects.get(p.id);
           if (!r) return null;
-          const cs: React.CSSProperties = {
-            position: "absolute",
-            left: `${r.left}%`,
-            top: `${r.top}%`,
-            width: `${r.width}%`,
-            height: `${r.height}%`,
-          };
+          // Overlays sit on the terminal body (below the header strip when
+          // multiPane), so they match what the user sees as the "pane".
+          const cs: React.CSSProperties = paneBodyStyle(r, multiPane);
           return (
             <Fragment key={"ov-" + p.id}>
-              {multiPane && p.id === ws.focusedPaneId && (
-                <div
-                  className="pointer-events-none"
-                  style={{
-                    ...cs,
-                    zIndex: 24,
-                    boxShadow: "inset 0 0 0 1px var(--nx-accent)",
-                  }}
-                />
-              )}
               {p.session.status === "connecting" && (
                 <div
                   style={{ ...cs, zIndex: 15 }}
@@ -1359,6 +1568,38 @@ function App() {
             </Fragment>
           );
         })}
+
+        {/* PaneHeader chrome strip — only when the workspace has ≥2 panes.
+         *  Sits above the terminal body (zIndex 22) and is the drag handle
+         *  for pane extraction. */}
+        {multiPane &&
+          ws.panes.map((p) => {
+            const r = rects.get(p.id);
+            if (!r) return null;
+            return (
+              <div
+                key={"hdr-" + p.id}
+                style={{
+                  position: "absolute",
+                  left: `${r.left}%`,
+                  top: `${r.top}%`,
+                  width: `${r.width}%`,
+                  height: PANE_HEADER_PX,
+                  zIndex: 22,
+                }}
+              >
+                <PaneHeader
+                  hostLabel={`${p.session.host.user}@${p.session.host.host}`}
+                  status={p.session.status}
+                  focused={p.id === ws.focusedPaneId}
+                  onClick={() => setFocusedPane(ws.id, p.id)}
+                  onClose={() => closePane(ws.id, p.id)}
+                  onMenu={(x, y) => openPaneMenu(ws.id, p.id, x, y)}
+                  onDragStart={(e) => startPaneDrag(e, ws.id, p.id)}
+                />
+              </div>
+            );
+          })}
 
         {/* Split dividers. */}
         {dividers.map((d) => (
@@ -1514,6 +1755,7 @@ function App() {
                 id: w.id,
                 title: w.title ?? fp?.session.host.name ?? "?",
                 status: fp?.session.status ?? "closed",
+                paneCount: w.panes.length,
               };
             })}
             activeId={activeWorkspaceId}
@@ -1636,6 +1878,35 @@ function App() {
       )}
 
       <DialogHost />
+
+      {/* Pane-extract drag chip — follows the cursor while a header drag is
+       *  active and the user has crossed out of the main area. Translucent
+       *  accent bg + ↗ extract hint. zIndex 100 puts it above all panels. */}
+      {paneDragState && paneDragState.active && (
+        <div
+          className="fixed pointer-events-none font-mono text-meta select-none"
+          style={{
+            left: paneDragState.x + 12,
+            top: paneDragState.y + 12,
+            zIndex: 100,
+            background: "color-mix(in srgb, var(--nx-accent) 22%, var(--nx-bg-panel))",
+            color: "var(--nx-text-primary)",
+            border: "1px solid var(--nx-accent)",
+            borderRadius: 4,
+            padding: "4px 8px",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
+            whiteSpace: "nowrap",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span style={{ color: "var(--nx-accent)" }}>↗</span>
+          <span style={{ opacity: 0.75 }}>{t("tabmenu.move_to_new_tab")}</span>
+          <span style={{ opacity: 0.5 }}>·</span>
+          <span>{paneDragState.hostLabel}</span>
+        </div>
+      )}
     </main>
   );
 }

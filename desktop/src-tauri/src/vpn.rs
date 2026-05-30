@@ -283,7 +283,56 @@ pub fn spawn_xray(node: &VpnNode, socks_port: u16) -> std::io::Result<tokio::pro
     // cmd window that lingers for the session's life. CREATE_NO_WINDOW hides it.
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    cmd.spawn()
+    let child = cmd.spawn()?;
+    // Windows: attach xray to a kill-on-job-close Job Object so it dies whenever
+    // NexuSSH dies — clean exit, crash, or Task Manager kill. Otherwise a force-
+    // quit leaves xray.exe running, and the next installer can't overwrite it.
+    #[cfg(windows)]
+    attach_to_job(&child);
+    Ok(child)
+}
+
+#[cfg(windows)]
+fn attach_to_job(child: &tokio::process::Child) {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_BASIC_LIMIT_INFORMATION,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // One job per process; all xray children join it. The job handle is never
+    // closed explicitly — Windows closes it when the parent process exits
+    // (clean OR abrupt), and KILL_ON_JOB_CLOSE then terminates every assigned
+    // child. HANDLE isn't Send/Sync so we stash it as usize.
+    static JOB: OnceLock<usize> = OnceLock::new();
+    let job = *JOB.get_or_init(|| unsafe {
+        let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if h.is_null() {
+            return 0;
+        }
+        let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+            BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                ..std::mem::zeroed()
+            },
+            ..std::mem::zeroed()
+        };
+        SetInformationJobObject(
+            h,
+            JobObjectExtendedLimitInformation,
+            (&info as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        h as usize
+    });
+    if job == 0 {
+        return;
+    }
+    let Some(raw) = child.raw_handle() else { return };
+    unsafe {
+        AssignProcessToJobObject(job as HANDLE, raw as HANDLE);
+    }
 }
 
 #[tauri::command]

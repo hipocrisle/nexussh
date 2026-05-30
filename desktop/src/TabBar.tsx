@@ -214,7 +214,7 @@ export function TabBar({
       </div>
       <button
         onClick={onNewTab}
-        title="New tab — Ctrl+N"
+        title="New tab — Ctrl+T"
         className="h-full shrink-0 pl-2.5 pr-1.5 flex items-center text-nx-accent hover:bg-nx-elevated transition-colors duration-[80ms]"
       >
         <Plus size={14} />

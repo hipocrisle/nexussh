@@ -811,11 +811,13 @@ function App() {
           fn(activeWorkspaceId);
         }
       };
-      if (meta && !e.shiftKey && k === "n") {
-        // Ctrl/Cmd+N — new tab via picker (workspace). Moved from Ctrl+T
-        // to free Ctrl+T for pass-through into the focused SSH session
-        // (e.g. claude-code uses Ctrl+T to toggle its task panel —
-        // hiding that panel cuts most TUI-overdraw noise in long streams).
+      if (meta && !e.shiftKey && (k === "t" || k === "n")) {
+        // Ctrl/Cmd+T or Ctrl/Cmd+N — new tab via picker (workspace).
+        // Original binding has been Ctrl+T since v0.0.20; v1.0.8 briefly
+        // remapped to Ctrl+N to free Ctrl+T as a passthrough to
+        // claude-code's hide-tasks. That didn't work in users' setups —
+        // muscle memory broke for no gain. v1.0.10 restores Ctrl+T and
+        // keeps Ctrl+N as a synonym for anyone who got used to it.
         e.preventDefault();
         e.stopPropagation();
         openSshPicker();

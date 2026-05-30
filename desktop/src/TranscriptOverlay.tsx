@@ -174,28 +174,102 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change
+  // Replay events. Strategy:
+  //
+  //   1. Concatenate all cast bytes (with filterAltBuffer applied: strip
+  //      alt-screen toggles + ESC[3J — same as v0.0.20). This gives us
+  //      a single linear ANSI-text stream.
+  //   2. Strip ANSI. Split by lines.
+  //   3. Detect claude-code session (any line starts with "●" — claude's
+  //      AI-response marker that prefixes every assistant message).
+  //   4. If claude-code mode: walk lines, extract content blocks. A block
+  //      starts on a "●"-prefixed line and continues through subsequent
+  //      indented lines (2-space indent — claude-code's continuation
+  //      convention) and blank lines, until a non-claude line is hit
+  //      (like ❯ user input, status text, TUI panel rows).
+  //   5. Write the extracted blocks linearly into the visible xterm.
+  //
+  //   If no "●" markers present (regular SSH, vim, etc.): fall through to
+  //   the classic raw replay so non-claude sessions still work.
   useEffect(() => {
     const term = termRef.current;
     if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
-    let prev = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prev) continue;
-        term.write(line + sep);
-        if (sep) prev = line;
-      }
-    };
-    for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+
+    // Concatenate and apply byte-level filter.
+    const allText = events.map((e) => filterAltBuffer(e.d)).join("");
+
+    // Strip ANSI for content detection. We keep a parallel "ansi" version
+    // so we can write the original styled lines, not stripped ones.
+    const stripAnsi = (s: string) =>
+      s.replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
+        .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+        .replace(/\x1b./g, "");
+
+    // Split by linefeed. \r without \n is a redraw artifact — collapse runs
+    // by keeping the LAST segment after the last \r on a logical line.
+    const lines: string[] = []; // ANSI-preserving lines
+    const plain: string[] = []; // stripped for matching
+    for (const rawLine of allText.split("\n")) {
+      // Take final segment after any \r — that's the last "frame" of a
+      // line that got redrawn in place (status bar / spinner updates).
+      const segments = rawLine.split("\r");
+      const finalAnsi = segments[segments.length - 1];
+      lines.push(finalAnsi);
+      plain.push(stripAnsi(finalAnsi));
     }
-    // Scroll to BOTTOM so user sees the latest output first; they can wheel
-    // up to inspect older content. Same UX as terminal scrollback.
+
+    // Detect claude-code session: any plain line containing "●" as the
+    // first non-space character.
+    const claudeRe = /^\s*●/;
+    const isClaudeSession = plain.some((p) => claudeRe.test(p));
+
+    let outLines: string[];
+    if (isClaudeSession) {
+      // Pass: extract AI-response blocks.
+      outLines = [];
+      let inBlock = false;
+      for (let i = 0; i < plain.length; i++) {
+        const p = plain[i];
+        const trimmed = p.trim();
+        if (claudeRe.test(p)) {
+          // Block start. Emit a separator if we have prior content.
+          if (outLines.length > 0) outLines.push("");
+          outLines.push(lines[i]);
+          inBlock = true;
+          continue;
+        }
+        if (inBlock) {
+          // Continue block if: indented continuation, or blank line.
+          if (trimmed === "" || /^( {2,}|\t)/.test(p)) {
+            outLines.push(lines[i]);
+            continue;
+          }
+          // Otherwise: block ended (user prompt ❯, status, TUI row).
+          inBlock = false;
+        }
+        // Outside block: also surface user prompts (lines starting with ❯)
+        // so the conversation flow is readable.
+        if (/^\s*❯/.test(p) && trimmed.length > 2) {
+          if (outLines.length > 0 && outLines[outLines.length - 1] !== "")
+            outLines.push("");
+          outLines.push(lines[i]);
+        }
+      }
+    } else {
+      // No claude markers — classic v0.0.20 replay with consecutive dedup.
+      outLines = [];
+      let prev = "";
+      for (let i = 0; i < lines.length; i++) {
+        const p = plain[i];
+        if (p && p === prev) continue;
+        outLines.push(lines[i]);
+        if (p) prev = p;
+      }
+    }
+
+    term.write(outLines.join("\r\n") + "\r\n");
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });

@@ -272,18 +272,39 @@ pub struct CastEvent {
     pub d: String,
 }
 
+/// Replay payload — events + original session dimensions so the UI can
+/// resize its replay xterm to the SAME cols/rows the bytes were authored
+/// against. Without this, ESC sequences (ESC[K, absolute positioning, line
+/// wrap) operate against the wrong column count and the text "shifts".
+#[derive(Debug, Clone, Serialize)]
+pub struct CastReplay {
+    pub cols: u16,
+    pub rows: u16,
+    pub events: Vec<CastEvent>,
+}
+
 #[tauri::command]
 pub async fn history_read_events(
     app: AppHandle,
     session_id: String,
-) -> Result<Vec<CastEvent>, HistoryError> {
+) -> Result<CastReplay, HistoryError> {
     let dir = sessions_dir(&app)?;
+    let mut cols: u16 = 0;
+    let mut rows: u16 = 0;
     let cast = dir.join(format!("{}.cast", session_id));
     if cast.exists() {
         let text = std::fs::read_to_string(&cast)?;
         let mut events = Vec::new();
         for (i, line) in text.lines().enumerate() {
-            if i == 0 || line.is_empty() {
+            if i == 0 {
+                // Header: {"version":2,"width":80,"height":24,...}
+                if let Ok(hdr) = serde_json::from_str::<serde_json::Value>(line) {
+                    cols = hdr.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                    rows = hdr.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                }
+                continue;
+            }
+            if line.is_empty() {
                 continue;
             }
             let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(line) else {
@@ -295,16 +316,37 @@ pub async fn history_read_events(
                 events.push(CastEvent { t, d });
             }
         }
-        return Ok(events);
+        if cols == 0 || rows == 0 {
+            // Header missing dims — fall back to meta sidecar.
+            let meta_path = dir.join(format!("{}.json", session_id));
+            if let Ok(meta_txt) = std::fs::read_to_string(&meta_path) {
+                if let Ok(meta) = serde_json::from_str::<SessionMeta>(&meta_txt) {
+                    if cols == 0 { cols = meta.cols; }
+                    if rows == 0 { rows = meta.rows; }
+                }
+            }
+        }
+        return Ok(CastReplay { cols, rows, events });
     }
-    // Legacy .log — return as single event at t=0
+    // Legacy .log — return as single event at t=0; pick dims from meta.
     let log = dir.join(format!("{}.log", session_id));
     if log.exists() {
         let bytes = std::fs::read(&log)?;
-        return Ok(vec![CastEvent {
-            t: 0.0,
-            d: String::from_utf8_lossy(&bytes).into_owned(),
-        }]);
+        let meta_path = dir.join(format!("{}.json", session_id));
+        if let Ok(meta_txt) = std::fs::read_to_string(&meta_path) {
+            if let Ok(meta) = serde_json::from_str::<SessionMeta>(&meta_txt) {
+                cols = meta.cols;
+                rows = meta.rows;
+            }
+        }
+        return Ok(CastReplay {
+            cols,
+            rows,
+            events: vec![CastEvent {
+                t: 0.0,
+                d: String::from_utf8_lossy(&bytes).into_owned(),
+            }],
+        });
     }
     Err(HistoryError::NotFound)
 }

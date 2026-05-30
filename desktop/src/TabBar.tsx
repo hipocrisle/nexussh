@@ -27,6 +27,9 @@ interface Props {
   onDragMove?: (tabId: string, x: number, y: number) => void;
   /** Fired when a tab drag ends — parent decides edge-split, etc. */
   onDragEnd?: (tabId: string, x: number, y: number) => void;
+  /** Fired when a drag is aborted (window lost focus, button released outside
+   *  the page). Lets the parent clear any preview overlays without splitting. */
+  onDragCancel?: (tabId: string) => void;
 }
 
 function StatusDot({ status }: { status: TabInfo["status"] }) {
@@ -54,6 +57,7 @@ export function TabBar({
   onReorder,
   onDragMove,
   onDragEnd,
+  onDragCancel,
 }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{
@@ -72,9 +76,25 @@ export function TabBar({
   }
 
   useEffect(() => {
+    // Resets local drag state without firing a drop. Used when the user aborts
+    // — released the mouse outside the page, alt-tabbed, etc.
+    const cancel = (id?: string) => {
+      dragRef.current = null;
+      setDragId(null);
+      setDropTarget(null);
+      document.body.style.cursor = "";
+      if (id) onDragCancel?.(id);
+    };
     const onMove = (e: MouseEvent) => {
       const d = dragRef.current;
       if (!d) return;
+      // If no buttons are pressed but a drag is in progress, the user released
+      // outside the window. Treat as cancel — don't accidentally split on the
+      // next click. e.buttons is 0 only when no button is being held.
+      if (d.started && e.buttons === 0) {
+        cancel(d.id);
+        return;
+      }
       if (!d.started && Math.abs(e.clientX - d.startX) > 5) {
         d.started = true;
         setDragId(d.id);
@@ -105,13 +125,19 @@ export function TabBar({
       setDragId(null);
       setDropTarget(null);
     };
+    const onWindowBlur = () => {
+      const d = dragRef.current;
+      if (d?.started) cancel(d.id);
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("blur", onWindowBlur);
     };
-  }, [dropTarget, onReorder, onDragMove, onDragEnd]);
+  }, [dropTarget, onReorder, onDragMove, onDragEnd, onDragCancel]);
 
   return (
     <div className="h-9 flex items-center bg-nx-bg-2 border-b border-nx-border shrink-0">

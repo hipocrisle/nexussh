@@ -9,8 +9,9 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
-import { TabBar, TabInfo } from "./TabBar";
+import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -40,7 +41,6 @@ import { VaultStatus, vaultStatus } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from "@tauri-apps/plugin-dialog";
 import {
   Minus,
   Square,
@@ -71,25 +71,33 @@ function readSidebarWidth(): number {
   return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 256;
 }
 
-interface Tab extends TabInfo {
+// --- Workspace model (v0.7.0) ----------------------------------------------
+// Single tab strip at the top — each tab is a Workspace = layout of Panes;
+// each Pane holds one Session. New hosts open as their own Workspace (single
+// pane, full screen). Splits add panes to the active workspace's layout. The
+// LayoutNode tree references paneIds; it's general so nested grids work.
+interface Session {
+  id: string; // pending-xxx or backend sid
   host: HostRecord;
+  status: "connecting" | "connected" | "closed";
   /** Set when a connect/reconnect attempt fails — shown in the pane with a
    *  Retry button instead of the tab silently vanishing. */
   error?: string;
 }
-
-// --- Split-view model -------------------------------------------------------
-// A PaneGroup is one tab-strip + its terminals (like a VS Code editor group).
-// The LayoutNode tree describes how groups are arranged on screen. Stage A only
-// ever builds depth-1 (a single split = two panes), but the tree + helpers are
-// general so the grid (Stage C) drops in without another refactor.
-interface PaneGroup {
+interface Pane {
   id: string;
-  tabs: Tab[];
-  activeId: string | null;
+  session: Session;
+}
+interface Workspace {
+  id: string;
+  /** User-renamed title; if absent, derive from the focused pane's host. */
+  title?: string;
+  panes: Pane[];
+  layout: LayoutNode;
+  focusedPaneId: string;
 }
 type LayoutNode =
-  | { kind: "leaf"; groupId: string }
+  | { kind: "leaf"; paneId: string }
   | {
       kind: "split";
       id: string;
@@ -103,27 +111,27 @@ function uid(prefix: string): string {
   return prefix + "-" + crypto.randomUUID();
 }
 
-// Replace the leaf for `groupId` with `replacement` — turns a pane into a split.
+// Replace the leaf for `paneId` with `replacement` — turns a pane into a split.
 function replaceLeaf(
   node: LayoutNode,
-  groupId: string,
+  paneId: string,
   replacement: LayoutNode,
 ): LayoutNode {
   if (node.kind === "leaf")
-    return node.groupId === groupId ? replacement : node;
+    return node.paneId === paneId ? replacement : node;
   return {
     ...node,
-    a: replaceLeaf(node.a, groupId, replacement),
-    b: replaceLeaf(node.b, groupId, replacement),
+    a: replaceLeaf(node.a, paneId, replacement),
+    b: replaceLeaf(node.b, paneId, replacement),
   };
 }
 
-// Drop the leaf for `groupId`, collapsing its parent split into the sibling.
+// Drop the leaf for `paneId`, collapsing its parent split into the sibling.
 // Returns null when the removed leaf was the entire tree.
-function removeLeaf(node: LayoutNode, groupId: string): LayoutNode | null {
-  if (node.kind === "leaf") return node.groupId === groupId ? null : node;
-  const a = removeLeaf(node.a, groupId);
-  const b = removeLeaf(node.b, groupId);
+function removeLeaf(node: LayoutNode, paneId: string): LayoutNode | null {
+  if (node.kind === "leaf") return node.paneId === paneId ? null : node;
+  const a = removeLeaf(node.a, paneId);
+  const b = removeLeaf(node.b, paneId);
   if (a === null) return b;
   if (b === null) return a;
   return { ...node, a, b };
@@ -155,7 +163,7 @@ interface Rect {
 }
 function computeRects(node: LayoutNode, rect: Rect, out: Map<string, Rect>) {
   if (node.kind === "leaf") {
-    out.set(node.groupId, rect);
+    out.set(node.paneId, rect);
     return;
   }
   if (node.dir === "row") {
@@ -222,8 +230,6 @@ function collectDividers(node: LayoutNode, rect: Rect, out: DividerInfo[]) {
     );
   }
 }
-
-const TABBAR_PX = 36; // h-9
 
 function HeaderButton({
   icon,
@@ -312,62 +318,84 @@ function App() {
   }, [settings.theme]);
 
   const [version, setVersion] = useState<string>("");
-  // Split-view state: a list of pane-groups + the layout tree arranging them +
-  // which group currently has focus (receives new tabs / hotkeys / highlight).
-  const initialGroupId = useRef(uid("g")).current;
-  const [groups, setGroups] = useState<PaneGroup[]>(() => [
-    { id: initialGroupId, tabs: [], activeId: null },
-  ]);
-  const [layout, setLayout] = useState<LayoutNode>(() => ({
-    kind: "leaf",
-    groupId: initialGroupId,
-  }));
-  const [focusedGroupId, setFocusedGroupId] = useState<string>(initialGroupId);
 
-  // Derived views. `allTabs` flattens every group; `activeId` is the focused
-  // group's active tab (the "current terminal" the rest of the app talks about).
-  const allTabs = groups.flatMap((g) => g.tabs);
-  const focusedGroup = groups.find((g) => g.id === focusedGroupId) ?? groups[0];
-  const activeId = focusedGroup?.activeId ?? null;
+  // Workspace tab model: ONE top tab strip; each tab is a workspace = layout
+  // of panes; each pane holds one session. New hosts open as their own
+  // workspace (single pane). Splits add panes WITHIN a workspace's layout.
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+    null,
+  );
+  const activeWorkspace =
+    workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
+  const allSessions = workspaces.flatMap((w) => w.panes.map((p) => p.session));
+  const focusedSession =
+    activeWorkspace?.panes.find((p) => p.id === activeWorkspace.focusedPaneId)
+      ?.session ?? null;
+  // Back-compat name used by hotkeys / transcript / status header.
+  const activeId = focusedSession?.id ?? null;
+  const activeSession = focusedSession?.host ?? null;
+  // Hosts that have an open pane → "live" badge in the sidebar; the focused
+  // pane's host additionally gets the blinking caret.
+  const openHostIds = new Set(allSessions.map((s) => s.host.id));
 
-  function groupOfTab(tabId: string): PaneGroup | undefined {
-    return groups.find((g) => g.tabs.some((x) => x.id === tabId));
+  // Walk all workspaces to find which workspace + pane owns a given session id.
+  function findPane(
+    sessionId: string,
+  ): { ws: Workspace; pane: Pane } | undefined {
+    for (const ws of workspaces) {
+      const pane = ws.panes.find((p) => p.session.id === sessionId);
+      if (pane) return { ws, pane };
+    }
+    return undefined;
   }
 
-  // Update one tab in place wherever it lives.
-  function updateTab(tabId: string, fn: (t: Tab) => Tab) {
-    setGroups((gs) =>
-      gs.map((g) => ({
-        ...g,
-        tabs: g.tabs.map((x) => (x.id === tabId ? fn(x) : x)),
+  // Functional update of a single session anywhere in the workspace tree.
+  function updateSession(sessionId: string, fn: (s: Session) => Session) {
+    setWorkspaces((ws_) =>
+      ws_.map((w) => ({
+        ...w,
+        panes: w.panes.map((p) =>
+          p.session.id === sessionId ? { ...p, session: fn(p.session) } : p,
+        ),
       })),
     );
   }
 
-  // Swap a tab's id (pending → real session id) within its group, set status,
-  // and make it the group's active tab.
-  function promoteTab(oldId: string, newId: string, status: Tab["status"]) {
-    setGroups((gs) =>
-      gs.map((g) => {
-        if (!g.tabs.some((x) => x.id === oldId)) return g;
-        return {
-          ...g,
-          activeId: g.activeId === oldId ? newId : g.activeId,
-          tabs: g.tabs.map((x) =>
-            x.id === oldId ? { ...x, id: newId, status, error: undefined } : x,
-          ),
-        };
-      }),
+  // Swap a session's id (pending → real sid), set status, clear error.
+  function promoteSession(
+    oldSessionId: string,
+    newSessionId: string,
+    status: Session["status"],
+  ) {
+    setWorkspaces((ws_) =>
+      ws_.map((w) => ({
+        ...w,
+        panes: w.panes.map((p) =>
+          p.session.id === oldSessionId
+            ? {
+                ...p,
+                session: {
+                  ...p.session,
+                  id: newSessionId,
+                  status,
+                  error: undefined,
+                },
+              }
+            : p,
+        ),
+      })),
     );
   }
 
-  // Select a tab inside `groupId` and focus that group.
-  function selectTab(groupId: string, tabId: string) {
-    setGroups((gs) =>
-      gs.map((g) => (g.id === groupId ? { ...g, activeId: tabId } : g)),
+  // Move focus to a specific pane inside a workspace and activate that workspace.
+  function setFocusedPane(wsId: string, paneId: string) {
+    setWorkspaces((ws_) =>
+      ws_.map((w) => (w.id === wsId ? { ...w, focusedPaneId: paneId } : w)),
     );
-    setFocusedGroupId(groupId);
+    setActiveWorkspaceId(wsId);
   }
+
   const [vault, setVault] = useState<VaultStatus | null>(null);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
@@ -377,6 +405,7 @@ function App() {
     args: ConnectArgs;
     title: string;
   } | null>(null);
+
   // "Always ask password" prompt — promise-based so openHost/openSftp can await
   // a masked, themed dialog instead of the plaintext native window.prompt().
   const [pwPrompt, setPwPrompt] = useState<{
@@ -389,18 +418,40 @@ function App() {
       setPwPrompt({ user: h.user, host: h.host, resolve }),
     );
   }
-  // Drag-tab-to-edge → split. Ref mirrors state so the dragend handler reads the
-  // latest hint without a render race.
-  const mainAreaRef = useRef<HTMLDivElement>(null);
-  type Edge = "left" | "right" | "top" | "bottom";
-  const [edgeHint, setEdgeHintState] = useState<Edge | null>(null);
-  const edgeHintRef = useRef<Edge | null>(null);
-  function setEdge(h: Edge | null) {
-    edgeHintRef.current = h;
-    setEdgeHintState(h);
+
+  // Promise-based themed confirm dialog (replaces window.confirm + Tauri ask()).
+  const [confirmState, setConfirmState] = useState<{
+    message: string;
+    title?: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    destructive?: boolean;
+    resolve: (v: boolean) => void;
+  } | null>(null);
+  function askConfirm(
+    message: string,
+    opts: {
+      title?: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+      destructive?: boolean;
+    } = {},
+  ): Promise<boolean> {
+    return new Promise((resolve) =>
+      setConfirmState({ message, ...opts, resolve }),
+    );
   }
+
+  const mainAreaRef = useRef<HTMLDivElement>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
+  // When set, the next host picked completes a split inside this workspace
+  // rather than opening a new workspace.
+  const [pendingSplit, setPendingSplit] = useState<{
+    wsId: string;
+    paneId: string;
+    dir: "row" | "col";
+  } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
@@ -417,18 +468,19 @@ function App() {
   } | null>(null);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
-  // Per-tab scrollback overlay state. When a tab id is in this set, the
-  // active TerminalView is hidden behind a TranscriptOverlay that lets the
+
+  // Per-session scrollback overlay state. When a session id is in this set,
+  // the active TerminalView is hidden behind a TranscriptOverlay that lets the
   // user wheel-scroll through everything written so far (works even in
   // alt-screen mode like Claude Code).
   const [transcriptTabs, setTranscriptTabs] = useState<Set<string>>(
     () => new Set<string>(),
   );
-  function toggleTranscript(tabId: string) {
+  function toggleTranscript(sessionId: string) {
     setTranscriptTabs((prev) => {
       const next = new Set(prev);
-      if (next.has(tabId)) next.delete(tabId);
-      else next.add(tabId);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
       return next;
     });
   }
@@ -478,24 +530,24 @@ function App() {
     return () => clearTimeout(id);
   }, [rainBurst]);
 
-  // Confirm-on-quit: if any tab is live, intercept the window close and ask
-  // first (user once closed everything by accident). Listener reads a ref so it
-  // always sees the current tab list without re-registering.
-  const tabsRef = useRef(allTabs);
-  tabsRef.current = allTabs;
+  // Confirm-on-quit: if any session is live, intercept the window close and
+  // ask first via the themed ConfirmDialog. Listener reads a ref so it always
+  // sees the current session list without re-registering.
+  const sessionsRef = useRef(allSessions);
+  sessionsRef.current = allSessions;
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
-        const live = tabsRef.current.filter(
-          (x) => x.status === "connected" || x.status === "connecting",
+        const live = sessionsRef.current.filter(
+          (s) => s.status === "connected" || s.status === "connecting",
         );
         if (live.length === 0) return;
         event.preventDefault();
-        const ok = await ask(t("app.confirm_quit", { n: live.length }), {
-          title: "NexuSSH",
-          kind: "warning",
-        });
+        const ok = await askConfirm(
+          t("app.confirm_quit", { n: live.length }),
+          { destructive: true },
+        );
         if (ok) getCurrentWindow().destroy();
       })
       .then((fn) => {
@@ -511,7 +563,7 @@ function App() {
 
   // restoreSession — on first mount, if enabled, reopen the hosts that were
   // open last time. We persist host IDs (not session IDs, since the live
-  // PTY dies with the process).
+  // PTY dies with the process). Each host becomes its own workspace.
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current) return;
@@ -522,8 +574,6 @@ function App() {
       if (!raw) return;
       const ids: string[] = JSON.parse(raw);
       if (!Array.isArray(ids) || ids.length === 0) return;
-      // Fire dialed reconnects sequentially so the order matches what the
-      // user had. Use async IIFE so we await listHosts once.
       (async () => {
         const { listHosts } = await import("./hosts");
         const all = await listHosts();
@@ -542,60 +592,27 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep localStorage in sync with the current open-tab host ids so the
-  // next launch can restore them.
+  // Keep localStorage in sync with the open-tab host ids so the next launch
+  // can restore them.
   useEffect(() => {
     if (!settings.restoreSession) return;
-    const ids = allTabs.map((t_) => t_.host.id);
+    const ids = allSessions.map((s) => s.host.id);
     localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
-  }, [allTabs, settings.restoreSession]);
+  }, [allSessions, settings.restoreSession]);
 
-  // Drag-drop a tab next to `toId`. Same group → reorder; different group →
-  // move it across panes (Stage B). The terminal lives in the flat layer keyed
-  // by id, so a cross-pane move only repositions it — no remount.
-  function reorderTabs(fromId: string, toId: string, before: boolean) {
+  // Reorder workspaces in the top strip (analogous to old reorderTabs but
+  // operating on whole workspaces, not individual sessions).
+  function reorderWorkspaces(fromId: string, toId: string, before: boolean) {
     if (fromId === toId) return;
-    const fromG = groups.find((g) => g.tabs.some((x) => x.id === fromId));
-    const toG = groups.find((g) => g.tabs.some((x) => x.id === toId));
-    if (!fromG || !toG) return;
-    const moved = fromG.tabs.find((x) => x.id === fromId);
-    if (!moved) return;
-    const insertAround = (tabs: Tab[]): Tab[] => {
-      const arr = tabs.filter((x) => x.id !== fromId);
-      const idx = arr.findIndex((x) => x.id === toId);
-      arr.splice(before ? idx : idx + 1, 0, moved);
-      return arr;
-    };
-    if (fromG.id === toG.id) {
-      setGroups((gs) =>
-        gs.map((g) => (g.id === fromG.id ? { ...g, tabs: insertAround(g.tabs) } : g)),
-      );
-      return;
-    }
-    const fromRemaining = fromG.tabs.filter((x) => x.id !== fromId);
-    const collapse = fromRemaining.length === 0 && groups.length > 1;
-    setGroups((gs) => {
-      let next = gs.map((g) => {
-        if (g.id === toG.id)
-          return { ...g, tabs: insertAround(g.tabs), activeId: fromId };
-        if (g.id === fromG.id)
-          return {
-            ...g,
-            tabs: fromRemaining,
-            activeId:
-              g.activeId === fromId
-                ? fromRemaining.length
-                  ? fromRemaining[fromRemaining.length - 1].id
-                  : null
-                : g.activeId,
-          };
-        return g;
-      });
-      if (collapse) next = next.filter((g) => g.id !== fromG.id);
-      return next;
+    setWorkspaces((ws_) => {
+      const moved = ws_.find((w) => w.id === fromId);
+      if (!moved) return ws_;
+      const without = ws_.filter((w) => w.id !== fromId);
+      const idx = without.findIndex((w) => w.id === toId);
+      if (idx === -1) return ws_;
+      without.splice(before ? idx : idx + 1, 0, moved);
+      return without;
     });
-    if (collapse) setLayout((lay) => removeLeaf(lay, fromG.id) ?? lay);
-    setFocusedGroupId(toG.id);
   }
 
   // Auto-update check on mount (once per 24h, silent on failure).
@@ -607,21 +624,19 @@ function App() {
       .catch(() => {});
   }, []);
 
-  // Global hotkeys: Ctrl/Cmd+T (picker), Ctrl/Cmd+, (settings),
-  // Ctrl+Shift+Up (open transcript overlay for active tab).
+  // Global hotkeys: Ctrl/Cmd+T (picker → new workspace), Ctrl/Cmd+, (settings),
+  // Ctrl+Shift+Up (open transcript overlay for focused session).
   //
   // IMPORTANT: use CAPTURE phase. xterm.js attaches its own keydown listener
   // on the helper textarea and forwards keys to the PTY before bubble-phase
-  // handlers run. Without capture, Ctrl+Shift+Up was being eaten by xterm
-  // and never reached our toggle.
+  // handlers run. Without capture, Ctrl+Shift+Up was being eaten by xterm.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       if (meta && e.key.toLowerCase() === "t") {
         e.preventDefault();
         e.stopPropagation();
-        setPickerMode("ssh");
-        setPickerOpen(true);
+        openSshPicker();
       } else if (meta && e.key === ",") {
         e.preventDefault();
         e.stopPropagation();
@@ -644,11 +659,7 @@ function App() {
         (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "i" || e.key === "J")
       ) {
         // Block WebView's "Inspect Element" / DevTools shortcuts so they
-        // don't shadow our Ctrl+Shift+C copy. preventDefault only — we DON'T
-        // stopPropagation, so the event still bubbles to xterm whose own
-        // attachCustomKeyEventHandler does the actual term.getSelection() →
-        // clipboard write. (DOM window.getSelection() returns empty for
-        // xterm canvases; only xterm knows the selection.)
+        // don't shadow our Ctrl+Shift+C copy.
         e.preventDefault();
       }
     };
@@ -656,17 +667,9 @@ function App() {
     return () => window.removeEventListener("keydown", handler, true);
   }, [activeId]);
 
-  // Suppress the WebView's native context menu everywhere and replace it
-  // with our own. The native one ships "Print", "Share", "Copy link to
-  // highlight" (Tauri URL garbage), "Other tools" (empty) etc. — none of
-  // which make sense in a terminal client. Terminal area has its own custom
-  // menu already (built in Terminal.tsx); for the rest of the app we show
-  // contextual Copy / Cut / Paste / Select All based on selection + target.
+  // Suppress the WebView's native context menu and replace it with our own.
   useEffect(() => {
     const onContextMenu = (e: MouseEvent) => {
-      // Terminal.tsx attaches a contextmenu listener on its container and
-      // calls preventDefault + opens its own menu — by the time the event
-      // bubbles up to us, defaultPrevented is true.
       if (e.defaultPrevented) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest(".xterm, .xterm-helper-textarea")) {
@@ -681,8 +684,6 @@ function App() {
     };
     window.addEventListener("contextmenu", onContextMenu);
     return () => window.removeEventListener("contextmenu", onContextMenu);
-    // t comes from useTranslation; it is stable across renders for the
-    // same language, so re-binding on language change is desirable.
   }, [t]);
 
   // Poll vault + sync status on mount
@@ -690,6 +691,10 @@ function App() {
     vaultStatus().then(setVault).catch(() => {});
     syncStatus().then(setSync).catch(() => {});
   }, []);
+
+  // ---------------------------------------------------------------------------
+  // Session operations
+  // ---------------------------------------------------------------------------
 
   async function openHost(h: HostRecord) {
     // If user opted to always ask for password, prompt before opening tab.
@@ -699,20 +704,20 @@ function App() {
       if (entered === null) return; // cancelled
       auth = { kind: "password", password: entered };
     }
-    const pending: Tab = {
-      id: "pending-" + crypto.randomUUID(),
-      title: h.name,
-      status: "connecting",
-      host: h,
+    const pendingId = "pending-" + crypto.randomUUID();
+    const paneId = uid("p");
+    const pane: Pane = {
+      id: paneId,
+      session: { id: pendingId, host: h, status: "connecting" },
     };
-    const targetGroupId = focusedGroupId;
-    setGroups((gs) =>
-      gs.map((g) =>
-        g.id === targetGroupId
-          ? { ...g, tabs: [...g.tabs, pending], activeId: pending.id }
-          : g,
-      ),
-    );
+    const ws: Workspace = {
+      id: uid("w"),
+      panes: [pane],
+      layout: { kind: "leaf", paneId },
+      focusedPaneId: paneId,
+    };
+    setWorkspaces((ws_) => [...ws_, ws]);
+    setActiveWorkspaceId(ws.id);
     try {
       const sid = await sshConnect({
         host: h.host,
@@ -722,12 +727,15 @@ function App() {
         vpn: resolveHostVpn(h),
       });
       bumpLastUsed(h.id).catch(() => {});
-      promoteTab(pending.id, sid, "connected");
+      promoteSession(pendingId, sid, "connected");
       triggerBurst();
     } catch (e) {
-      // Keep the tab and show WHY it failed in its pane (with Retry), instead
-      // of the tab silently vanishing.
-      updateTab(pending.id, (x) => ({ ...x, status: "closed", error: String(e) }));
+      // Keep the pane and show WHY it failed (with Retry), instead of vanishing.
+      updateSession(pendingId, (s) => ({
+        ...s,
+        status: "closed",
+        error: String(e),
+      }));
     }
   }
 
@@ -756,8 +764,6 @@ function App() {
   }
 
   // Caret next to "+" — choose what kind of session the new tab opens.
-  // SSH / SFTP are wired; telnet / VNC / RDP are on the roadmap and shown
-  // disabled with a "soon" tag so the menu reflects the plan.
   function openNewTabMenu(x: number, y: number) {
     const soon = t("tabnew.soon");
     setMenu({
@@ -785,240 +791,334 @@ function App() {
     });
   }
 
-  async function restartSession(tabId: string) {
-    const tab = allTabs.find((x) => x.id === tabId);
-    if (!tab) return;
-    if (tab.status === "connected") {
-      sshDisconnect(tabId).catch(() => {});
+  async function restartSession(sessionId: string) {
+    const found = findPane(sessionId);
+    if (!found) return;
+    const { pane } = found;
+    const host = pane.session.host;
+    if (pane.session.status === "connected") {
+      sshDisconnect(sessionId).catch(() => {});
     }
-    updateTab(tabId, (x) => ({ ...x, status: "connecting", error: undefined }));
+    updateSession(sessionId, (s) => ({
+      ...s,
+      status: "connecting",
+      error: undefined,
+    }));
     try {
       const sid = await sshConnect({
-        host: tab.host.host,
-        port: tab.host.port,
-        user: tab.host.user,
-        auth: tab.host.auth,
-        vpn: resolveHostVpn(tab.host),
+        host: host.host,
+        port: host.port,
+        user: host.user,
+        auth: host.auth,
+        vpn: resolveHostVpn(host),
       });
-      bumpLastUsed(tab.host.id).catch(() => {});
-      // promoteTab keeps focus where it is (no focus-steal on auto-reconnect of
-      // a background pane) and only re-activates within the tab's own group.
-      promoteTab(tabId, sid, "connected");
+      bumpLastUsed(host.id).catch(() => {});
+      // promoteSession keeps focus where it is (no focus-steal on auto-reconnect
+      // of a background pane).
+      promoteSession(sessionId, sid, "connected");
       // Move reconnect bookkeeping to the new session id and reset attempts.
-      const prev = reconnectRef.current.get(tabId);
-      reconnectRef.current.delete(tabId);
+      const prev = reconnectRef.current.get(sessionId);
+      reconnectRef.current.delete(sessionId);
       if (prev?.timer != null) window.clearTimeout(prev.timer);
       reconnectRef.current.set(sid, { attempts: 0, timer: null });
     } catch (e) {
-      updateTab(tabId, (x) => ({ ...x, status: "closed", error: String(e) }));
-      // restartSession failure also triggers another backoff if eligible.
-      const failedTab = allTabs.find((x) => x.id === tabId);
-      if (failedTab && settings.autoReconnect) scheduleReconnect(failedTab);
+      updateSession(sessionId, (s) => ({
+        ...s,
+        status: "closed",
+        error: String(e),
+      }));
+      if (settings.autoReconnect) {
+        // schedule a retry; use the session as it now exists (still keyed
+        // by the old id, since promoteSession never ran).
+        scheduleReconnect(pane.session);
+      }
     }
   }
 
-  function onTabContextMenu(tabId: string, x: number, y: number) {
-    const tab = allTabs.find((x) => x.id === tabId);
-    if (!tab) return;
-    const g = groupOfTab(tabId);
-    const groupTabCount = g?.tabs.length ?? 0;
+  // Start a split flow: park the split intent and open the SSH picker. When
+  // the user picks a host, completeSplit fires.
+  function splitFocusedPane(wsId: string, dir: "row" | "col") {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    setPendingSplit({ wsId, paneId: ws.focusedPaneId, dir });
+    setPickerMode("ssh");
+    setPickerOpen(true);
+  }
+
+  // Finish a split: add a new pane next to the focused one, replace its leaf
+  // with a split node, then connect.
+  async function completeSplit(
+    intent: { wsId: string; paneId: string; dir: "row" | "col" },
+    h: HostRecord,
+  ) {
+    let auth = h.auth;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const entered = await askPassword(h);
+      if (entered === null) return;
+      auth = { kind: "password", password: entered };
+    }
+    const pendingId = "pending-" + crypto.randomUUID();
+    const newPaneId = uid("p");
+    const newPane: Pane = {
+      id: newPaneId,
+      session: { id: pendingId, host: h, status: "connecting" },
+    };
+    setWorkspaces((ws_) =>
+      ws_.map((w) => {
+        if (w.id !== intent.wsId) return w;
+        return {
+          ...w,
+          panes: [...w.panes, newPane],
+          layout: replaceLeaf(w.layout, intent.paneId, {
+            kind: "split",
+            id: uid("s"),
+            dir: intent.dir,
+            ratio: 0.5,
+            a: { kind: "leaf", paneId: intent.paneId },
+            b: { kind: "leaf", paneId: newPaneId },
+          }),
+          focusedPaneId: newPaneId,
+        };
+      }),
+    );
+    setActiveWorkspaceId(intent.wsId);
+    try {
+      const sid = await sshConnect({
+        host: h.host,
+        port: h.port,
+        user: h.user,
+        auth,
+        vpn: resolveHostVpn(h),
+      });
+      bumpLastUsed(h.id).catch(() => {});
+      promoteSession(pendingId, sid, "connected");
+      triggerBurst();
+    } catch (e) {
+      updateSession(pendingId, (s) => ({
+        ...s,
+        status: "closed",
+        error: String(e),
+      }));
+    }
+  }
+
+  // Right-click on a workspace tab → menu of actions on its focused pane.
+  function onWorkspaceContextMenu(wsId: string, x: number, y: number) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const focused = ws.panes.find((p) => p.id === ws.focusedPaneId);
+    const focusedSid = focused?.session.id ?? null;
+    const focusedHost = focused?.session.host;
+    const hasPanes = ws.panes.length > 0;
     setMenu({
       x,
       y,
       items: [
         {
-          label: transcriptTabs.has(tabId)
-            ? t("tabmenu.exit_transcript")
-            : t("tabmenu.open_transcript"),
-          onClick: () => toggleTranscript(tabId),
+          label:
+            focusedSid && transcriptTabs.has(focusedSid)
+              ? t("tabmenu.exit_transcript")
+              : t("tabmenu.open_transcript"),
+          onClick: () => {
+            if (focusedSid) toggleTranscript(focusedSid);
+          },
+          disabled: !focusedSid,
         },
         {
           label: t("tabmenu.restart"),
-          onClick: () => restartSession(tabId),
-          disabled: tab.status === "connecting",
+          onClick: () => {
+            if (focusedSid) restartSession(focusedSid);
+          },
+          disabled: !focused || focused.session.status === "connecting",
         },
         {
-          label: t("tabmenu.duplicate"),
-          onClick: () => openHost(tab.host),
-        },
-        {
-          label: t("sidebar.menu_sftp"),
-          onClick: () => openSftp(tab.host),
-        },
-        { separator: true, label: "" },
-        {
-          // Stage C: arbitrary nesting allowed; only constraint is that the
-          // source pane must keep ≥1 tab after the move.
           label: t("tabmenu.split_right"),
-          onClick: () => splitFromPane(tabId, "row"),
-          disabled: groupTabCount < 2,
+          onClick: () => splitFocusedPane(wsId, "row"),
+          disabled: !hasPanes,
         },
         {
           label: t("tabmenu.split_down"),
-          onClick: () => splitFromPane(tabId, "col"),
-          disabled: groupTabCount < 2,
+          onClick: () => splitFocusedPane(wsId, "col"),
+          disabled: !hasPanes,
+        },
+        {
+          label: t("sidebar.menu_sftp"),
+          onClick: () => {
+            if (focusedHost) openSftp(focusedHost);
+          },
+          disabled: !focusedHost,
         },
         { separator: true, label: "" },
         {
-          label: t("tabmenu.close"),
-          onClick: () => closeTab(tabId),
+          label: t("tabmenu.close_pane"),
+          onClick: () => {
+            if (focused) closePane(wsId, focused.id);
+          },
+          disabled: !hasPanes,
+          destructive: true,
+        },
+        {
+          label: t("tabmenu.close_workspace"),
+          onClick: () => closeWorkspace(wsId),
           destructive: true,
         },
         {
           label: t("tabmenu.close_others"),
           onClick: () => {
-            (g?.tabs ?? [])
-              .filter((x) => x.id !== tabId)
-              .forEach((x) => closeTab(x.id));
+            workspaces
+              .filter((w) => w.id !== wsId)
+              .forEach((w) => closeWorkspace(w.id));
           },
-          disabled: groupTabCount <= 1,
+          disabled: workspaces.length <= 1,
           destructive: true,
         },
       ],
     });
   }
 
-  // Move a tab out into a new group on the right, turning its pane into a
-  // vertical split. Stage A: only from a single, multi-tab group.
-  // Split the tab's current pane locally — row→side by side, col→stacked. Used
-  // by both "Split right" and "Split down". Nestable: replaces the leaf for the
-  // source group, so an already-split layout just gets deeper. Requires the
-  // source group to keep ≥1 tab after the move (so neither pane ends up empty).
-  function splitFromPane(tabId: string, dir: "row" | "col") {
-    const g = groupOfTab(tabId);
-    if (!g || g.tabs.length < 2) return;
-    const movedTab = g.tabs.find((x) => x.id === tabId);
-    if (!movedTab) return;
-    const newGroupId = uid("g");
-    setGroups((gs) => {
-      const updated = gs.map((x) => {
-        if (x.id !== g.id) return x;
-        const remaining = x.tabs.filter((t_) => t_.id !== tabId);
+  async function closeWorkspace(wsId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const live = ws.panes.filter(
+      (p) =>
+        p.session.status === "connected" || p.session.status === "connecting",
+    );
+    if (settings.confirmClose && live.length > 0) {
+      const ok = await askConfirm(
+        t("app.confirm_close_workspace", { n: live.length }),
+        { destructive: true },
+      );
+      if (!ok) return;
+    }
+    for (const p of ws.panes) {
+      if (p.session.status === "connected") {
+        sshDisconnect(p.session.id).catch(() => {});
+      }
+      clearReconnect(p.session.id);
+    }
+    // Pick a sensible successor before mutating state — same index, else last.
+    const idx = workspaces.findIndex((w) => w.id === wsId);
+    const remaining = workspaces.filter((w) => w.id !== wsId);
+    const successor =
+      remaining.length === 0
+        ? null
+        : remaining[Math.min(idx, remaining.length - 1)].id;
+    setWorkspaces(remaining);
+    if (activeWorkspaceId === wsId) setActiveWorkspaceId(successor);
+  }
+
+  async function closePane(wsId: string, paneId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
+    if (!pane) return;
+    const live =
+      pane.session.status === "connected" ||
+      pane.session.status === "connecting";
+    if (settings.confirmClose && live) {
+      const ok = await askConfirm(
+        t("app.confirm_close_tab", { name: pane.session.host.name }),
+        { destructive: true },
+      );
+      if (!ok) return;
+    }
+    if (pane.session.status === "connected") {
+      sshDisconnect(pane.session.id).catch(() => {});
+    }
+    clearReconnect(pane.session.id);
+    // Last pane in the workspace → close the workspace too (no extra prompt,
+    // user already confirmed).
+    if (ws.panes.length <= 1) {
+      const idx = workspaces.findIndex((w) => w.id === wsId);
+      const remaining = workspaces.filter((w) => w.id !== wsId);
+      const successor =
+        remaining.length === 0
+          ? null
+          : remaining[Math.min(idx, remaining.length - 1)].id;
+      setWorkspaces(remaining);
+      if (activeWorkspaceId === wsId) setActiveWorkspaceId(successor);
+      return;
+    }
+    // Otherwise, drop the pane and collapse its leaf out of the layout tree.
+    setWorkspaces((ws_) =>
+      ws_.map((w) => {
+        if (w.id !== wsId) return w;
+        const remainingPanes = w.panes.filter((p) => p.id !== paneId);
+        const newLayout =
+          removeLeaf(w.layout, paneId) ?? {
+            kind: "leaf" as const,
+            paneId: remainingPanes[0].id,
+          };
+        const newFocused =
+          w.focusedPaneId === paneId
+            ? remainingPanes[remainingPanes.length - 1].id
+            : w.focusedPaneId;
         return {
-          ...x,
-          tabs: remaining,
-          activeId:
-            x.activeId === tabId
-              ? remaining[remaining.length - 1]?.id ?? null
-              : x.activeId,
+          ...w,
+          panes: remainingPanes,
+          layout: newLayout,
+          focusedPaneId: newFocused,
         };
-      });
-      return [...updated, { id: newGroupId, tabs: [movedTab], activeId: tabId }];
-    });
-    setLayout((lay) =>
-      replaceLeaf(lay, g.id, {
-        kind: "split",
-        id: uid("s"),
-        dir,
-        ratio: 0.5,
-        a: { kind: "leaf", groupId: g.id },
-        b: { kind: "leaf", groupId: newGroupId },
       }),
     );
-    setFocusedGroupId(newGroupId);
   }
 
-  async function closeTab(id: string) {
-    const target = allTabs.find((x) => x.id === id);
-    if (
-      settings.confirmClose &&
-      target &&
-      (target.status === "connected" || target.status === "connecting")
-    ) {
-      if (
-        !window.confirm(
-          t("app.confirm_close_tab", { name: target.host.name }),
-        )
-      ) {
-        return;
-      }
-    }
-    if (target && target.status === "connected") {
-      sshDisconnect(id).catch(() => {});
-    }
-    clearReconnect(id);
-    const g = groupOfTab(id);
-    if (!g) return;
-    const remaining = g.tabs.filter((x) => x.id !== id);
-    if (remaining.length === 0 && groups.length > 1) {
-      // Last tab in a split pane → drop the pane and collapse the layout.
-      setGroups((gs) => gs.filter((x) => x.id !== g.id));
-      setLayout((lay) => removeLeaf(lay, g.id) ?? lay);
-      if (focusedGroupId === g.id) {
-        const sibling = groups.find((x) => x.id !== g.id);
-        if (sibling) setFocusedGroupId(sibling.id);
-      }
-    } else {
-      setGroups((gs) =>
-        gs.map((x) =>
-          x.id === g.id
-            ? {
-                ...x,
-                tabs: remaining,
-                activeId:
-                  x.activeId === id
-                    ? remaining.length
-                      ? remaining[remaining.length - 1].id
-                      : null
-                    : x.activeId,
-              }
-            : x,
-        ),
-      );
-    }
-  }
-
-  // Per-tab auto-reconnect bookkeeping. Each entry tracks how many retry
+  // Per-session auto-reconnect bookkeeping. Each entry tracks how many retry
   // attempts have been made + the pending setTimeout handle so we can cancel
-  // when the user explicitly closes the tab.
+  // when the user explicitly closes the pane.
   const reconnectRef = useRef(
     new Map<string, { attempts: number; timer: number | null }>(),
   );
 
   const RECONNECT_DELAYS = [2000, 4000, 8000, 16000, 30000];
 
-  function clearReconnect(id: string) {
-    const r = reconnectRef.current.get(id);
+  function clearReconnect(sessionId: string) {
+    const r = reconnectRef.current.get(sessionId);
     if (r?.timer != null) window.clearTimeout(r.timer);
-    reconnectRef.current.delete(id);
+    reconnectRef.current.delete(sessionId);
   }
 
-  function scheduleReconnect(tab: Tab) {
+  function scheduleReconnect(session: Session) {
     if (!settings.autoReconnect) return;
-    const prev = reconnectRef.current.get(tab.id) ?? { attempts: 0, timer: null };
+    const prev = reconnectRef.current.get(session.id) ?? {
+      attempts: 0,
+      timer: null,
+    };
     if (prev.attempts >= RECONNECT_DELAYS.length) {
-      updateTab(tab.id, (x) => ({
-        ...x,
+      updateSession(session.id, (s) => ({
+        ...s,
         status: "closed",
-        error: t("app.autoreconnect_gave_up", { name: tab.host.name }),
+        error: t("app.autoreconnect_gave_up", { name: session.host.name }),
       }));
-      clearReconnect(tab.id);
+      clearReconnect(session.id);
       return;
     }
     const delay = RECONNECT_DELAYS[prev.attempts];
     const timer = window.setTimeout(() => {
       prev.attempts += 1;
-      restartSession(tab.id);
+      restartSession(session.id);
     }, delay);
-    reconnectRef.current.set(tab.id, { attempts: prev.attempts, timer });
+    reconnectRef.current.set(session.id, {
+      attempts: prev.attempts,
+      timer,
+    });
   }
 
-  function markClosed(id: string, reason: string) {
-    updateTab(id, (x) => ({ ...x, status: "closed" }));
+  function markClosed(sessionId: string, reason: string) {
+    updateSession(sessionId, (s) => ({ ...s, status: "closed" }));
     // Auto-reconnect only on UNEXPECTED close (network drop, server-side EOF
     // etc.). Don't retry when the user themselves closed the session.
-    const userInitiated = reason === "user disconnected";
-    if (userInitiated) {
-      clearReconnect(id);
+    if (reason === "user disconnected") {
+      clearReconnect(sessionId);
       return;
     }
-    const tab = allTabs.find((x) => x.id === id);
-    if (tab) scheduleReconnect(tab);
+    const found = findPane(sessionId);
+    if (found) scheduleReconnect(found.pane.session);
   }
 
   // Propagate active theme as CSS variables on the root, so every Tailwind
-  // arbitrary-value class anywhere in the tree (e.g. `bg-[var(--nx-bg-base)]`)
-  // re-themes for free when the user picks a different palette.
+  // arbitrary-value class (e.g. `bg-[var(--nx-bg-base)]`) re-themes for free
+  // when the user picks a different palette.
   const themeStyle = {
     "--nx-bg-base": theme.bgBase,
     "--nx-bg-secondary": theme.bgSecondary,
@@ -1036,85 +1136,6 @@ function App() {
     color: theme.textPrimary,
     fontFamily: fontStack,
   } as React.CSSProperties;
-
-  const activeSession = allTabs.find((x) => x.id === activeId)?.host;
-  // Hosts that have an open tab → "live" badge in the sidebar; the active tab's
-  // host additionally gets the blinking caret.
-  const openHostIds = new Set(allTabs.map((x) => x.host.id));
-
-  // Drag-tab-to-edge split (Stage C). Works for any pane count — the new pane
-  // wraps the WHOLE existing layout from the chosen edge, nesting if needed.
-  // Eligibility: either the source has ≥2 tabs (it stays non-empty), or there
-  // are other groups (so the source can collapse out and the rest survives).
-  const EDGE_PX = 48;
-  function edgeSplitEligible(tabId: string): boolean {
-    const g = groupOfTab(tabId);
-    if (!g) return false;
-    return g.tabs.length >= 2 || groups.length > 1;
-  }
-  function onTabDragMove(tabId: string, x: number, y: number) {
-    if (!edgeSplitEligible(tabId)) {
-      if (edgeHintRef.current) setEdge(null);
-      return;
-    }
-    const el = mainAreaRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    let hint: Edge | null = null;
-    if (x >= r.right - EDGE_PX) hint = "right";
-    else if (x <= r.left + EDGE_PX) hint = "left";
-    else if (y >= r.bottom - EDGE_PX) hint = "bottom";
-    else if (y <= r.top + EDGE_PX) hint = "top";
-    if (hint !== edgeHintRef.current) setEdge(hint);
-  }
-  function onTabDragEnd(tabId: string) {
-    const hint = edgeHintRef.current;
-    setEdge(null);
-    if (hint) splitToEdge(tabId, hint);
-  }
-  function splitToEdge(tabId: string, edge: Edge) {
-    const g = groupOfTab(tabId);
-    if (!g || !edgeSplitEligible(tabId)) return;
-    const moved = g.tabs.find((x) => x.id === tabId);
-    if (!moved) return;
-    const remaining = g.tabs.filter((x) => x.id !== tabId);
-    // Collapse the source group out of the layout if it ends up empty (only
-    // when there are other groups to keep the layout non-degenerate).
-    const collapse = remaining.length === 0 && groups.length > 1;
-    const newGroupId = uid("g");
-    setGroups((gs) => {
-      let next = gs.map((x) =>
-        x.id === g.id
-          ? {
-              ...x,
-              tabs: remaining,
-              activeId:
-                x.activeId === tabId
-                  ? remaining[remaining.length - 1]?.id ?? null
-                  : x.activeId,
-            }
-          : x,
-      );
-      if (collapse) next = next.filter((x) => x.id !== g.id);
-      return [...next, { id: newGroupId, tabs: [moved], activeId: tabId }];
-    });
-    setLayout((prev) => {
-      const base = collapse ? removeLeaf(prev, g.id) ?? prev : prev;
-      const newLeaf: LayoutNode = { kind: "leaf", groupId: newGroupId };
-      const dir: "row" | "col" =
-        edge === "left" || edge === "right" ? "row" : "col";
-      const newFirst = edge === "left" || edge === "top";
-      return {
-        kind: "split",
-        id: uid("s"),
-        dir,
-        ratio: 0.5,
-        a: newFirst ? newLeaf : base,
-        b: newFirst ? base : newLeaf,
-      };
-    });
-    setFocusedGroupId(newGroupId);
-  }
 
   // Drag a split divider: adjust the owning node's ratio live. The split's
   // region (in %) lets us compute ratio against the correct sub-rectangle even
@@ -1138,7 +1159,13 @@ function App() {
         ? (ev.clientX - regionLeft) / regionW
         : (ev.clientY - regionTop) / regionH;
       const ratio = Math.min(0.85, Math.max(0.15, frac));
-      setLayout((lay) => setNodeRatio(lay, nodeId, ratio));
+      setWorkspaces((ws_) =>
+        ws_.map((w) =>
+          w.id === activeWorkspaceId
+            ? { ...w, layout: setNodeRatio(w.layout, nodeId, ratio) }
+            : w,
+        ),
+      );
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -1152,33 +1179,71 @@ function App() {
     window.addEventListener("pointerup", onUp);
   }
 
-  // One pane = a tab strip + its terminals. All panes render at once; a
-  // terminal is `visible` when it's its group's active tab.
-  function renderMainArea(): React.ReactNode {
+  // Active workspace's layout area: rain + flat terminal layer + overlays +
+  // dividers. The terminal layer renders ALL sessions across ALL workspaces
+  // (keyed by session.id) and hides the non-active ones via display:none, so
+  // a Terminal never remounts when the user switches workspaces.
+  function renderActiveLayoutArea(): React.ReactNode {
+    const ws = activeWorkspace;
+    if (!ws) {
+      return (
+        <div
+          ref={mainAreaRef}
+          className="flex-1 min-w-0 relative overflow-hidden"
+        >
+          <div className="pointer-events-none absolute inset-0 z-30">
+            <MatrixRain
+              enabled={settings.rainOn}
+              density={settings.rainDensity}
+              opacity={settings.rainOpacity}
+              accent={theme.accent}
+              fade={theme.bgBase}
+            />
+          </div>
+          {selectedHost ? (
+            <HostInfoCard
+              host={selectedHost}
+              onConnect={() => openHost(selectedHost)}
+              onEdit={() => setEditHost(selectedHost)}
+            />
+          ) : (
+            <div
+              className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
+              style={{ color: theme.textMuted }}
+            >
+              <span>&gt; {t("terminal.select_host")}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
     const rects = new Map<string, Rect>();
-    const full: Rect = { left: 0, top: 0, width: 100, height: 100 };
-    computeRects(layout, full, rects);
+    computeRects(
+      ws.layout,
+      { left: 0, top: 0, width: 100, height: 100 },
+      rects,
+    );
     const dividers: DividerInfo[] = [];
-    collectDividers(layout, full, dividers);
-    const multiPane = groups.length > 1;
-    const focusGroup = (id: string) => {
-      if (id !== focusedGroupId) setFocusedGroupId(id);
-    };
-    const contentRect = (r: Rect): React.CSSProperties => ({
+    collectDividers(
+      ws.layout,
+      { left: 0, top: 0, width: 100, height: 100 },
+      dividers,
+    );
+    const multiPane = ws.panes.length > 1;
+    const paneRectStyle = (r: Rect): React.CSSProperties => ({
       position: "absolute",
       left: `${r.left}%`,
-      top: `calc(${r.top}% + ${TABBAR_PX}px)`,
+      top: `${r.top}%`,
       width: `${r.width}%`,
-      height: `calc(${r.height}% - ${TABBAR_PX}px)`,
+      height: `${r.height}%`,
     });
-
     return (
-      <div ref={mainAreaRef} className="flex-1 min-w-0 relative overflow-hidden">
-        {/* Matrix Rain — terminal area only (below the tab strips). */}
-        <div
-          className="pointer-events-none absolute z-30"
-          style={{ left: 0, right: 0, top: TABBAR_PX, bottom: 0 }}
-        >
+      <div
+        ref={mainAreaRef}
+        className="flex-1 min-w-0 relative overflow-hidden"
+      >
+        {/* Rain — full pane area (no per-pane tabbar offset in the new model). */}
+        <div className="pointer-events-none absolute inset-0 z-30">
           <MatrixRain
             enabled={settings.rainOn}
             density={settings.rainDensity}
@@ -1188,156 +1253,111 @@ function App() {
           />
         </div>
 
-        {/* Drag-to-edge split preview: the half the new pane would take. */}
-        {edgeHint && (
-          <div
-            className="pointer-events-none"
-            style={{
-              position: "absolute",
-              zIndex: 45,
-              background: "var(--nx-accent)",
-              opacity: 0.18,
-              border: "1px solid var(--nx-accent)",
-              ...(edgeHint === "right"
-                ? { left: "50%", right: 0, top: 0, bottom: 0 }
-                : edgeHint === "left"
-                  ? { left: 0, width: "50%", top: 0, bottom: 0 }
-                  : edgeHint === "top"
-                    ? { left: 0, right: 0, top: 0, height: "50%" }
-                    : { left: 0, right: 0, bottom: 0, height: "50%" }),
-            }}
-          />
+        {/* STABLE flat terminal layer for ALL workspaces' sessions (keyed by
+         *  session.id so React never remounts a Terminal). Inactive workspace
+         *  sessions are display:none. */}
+        {workspaces.flatMap((w) =>
+          w.panes.map((p) => {
+            const isActiveWs = w.id === activeWorkspaceId;
+            const r = isActiveWs ? rects.get(p.id) : undefined;
+            const show =
+              isActiveWs &&
+              !!r &&
+              p.session.status !== "connecting" &&
+              !p.session.error;
+            const style: React.CSSProperties = r
+              ? {
+                  ...paneRectStyle(r),
+                  zIndex: 10,
+                  display: show ? "block" : "none",
+                }
+              : { display: "none" };
+            return (
+              <div
+                key={p.session.id}
+                onMouseDownCapture={() => setFocusedPane(w.id, p.id)}
+                style={style}
+              >
+                <TerminalView
+                  sessionId={p.session.id}
+                  visible={show}
+                  onSessionClosed={(reason) =>
+                    markClosed(p.session.id, reason)
+                  }
+                  onReconnect={() => restartSession(p.session.id)}
+                  onContextMenu={(x, y, items) =>
+                    setMenu({ x, y, items })
+                  }
+                />
+              </div>
+            );
+          }),
         )}
 
-        {/* Per-pane tab strips. */}
-        {groups.map((g) => {
-          const r = rects.get(g.id);
+        {/* Per-pane overlays of the active workspace. */}
+        {ws.panes.map((p) => {
+          const r = rects.get(p.id);
           if (!r) return null;
+          const cs: React.CSSProperties = {
+            position: "absolute",
+            left: `${r.left}%`,
+            top: `${r.top}%`,
+            width: `${r.width}%`,
+            height: `${r.height}%`,
+          };
           return (
-            <div
-              key={"tb-" + g.id}
-              onMouseDownCapture={() => focusGroup(g.id)}
-              style={{
-                position: "absolute",
-                left: `${r.left}%`,
-                top: `${r.top}%`,
-                width: `${r.width}%`,
-                zIndex: 20,
-              }}
-            >
-              <TabBar
-                tabs={g.tabs}
-                activeId={g.activeId}
-                onSelect={(id) => selectTab(g.id, id)}
-                onClose={closeTab}
-                onNewTab={() => {
-                  focusGroup(g.id);
-                  openSshPicker();
-                }}
-                onNewTabDropdown={(x, y) => {
-                  focusGroup(g.id);
-                  openNewTabMenu(x, y);
-                }}
-                onContextMenu={onTabContextMenu}
-                onReorder={reorderTabs}
-                onDragMove={onTabDragMove}
-                onDragEnd={onTabDragEnd}
-              />
-            </div>
-          );
-        })}
-
-        {/* STABLE flat terminal layer: every live terminal is a direct child of
-         *  this container keyed by session id. Changing the split layout only
-         *  repositions them — React never unmounts/remounts a TerminalView, so
-         *  the xterm keeps its content (the v0.4.0 split bug). */}
-        {groups.flatMap((g) => {
-          const r = rects.get(g.id);
-          if (!r) return [];
-          return g.tabs
-            .filter((tab) => tab.status !== "connecting" && !tab.error)
-            .map((tab) => {
-              const show = tab.id === g.activeId;
-              return (
-                <div
-                  key={tab.id}
-                  onMouseDownCapture={() => focusGroup(g.id)}
-                  style={{ ...contentRect(r), zIndex: 10, display: show ? "block" : "none" }}
-                >
-                  <TerminalView
-                    sessionId={tab.id}
-                    visible={show}
-                    onSessionClosed={(reason) => markClosed(tab.id, reason)}
-                    onReconnect={() => restartSession(tab.id)}
-                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
-                  />
-                </div>
-              );
-            });
-        })}
-
-        {/* Per-pane overlays above the terminal. */}
-        {groups.map((g) => {
-          const r = rects.get(g.id);
-          if (!r) return null;
-          const cs = contentRect(r);
-          const active = g.tabs.find((x) => x.id === g.activeId);
-          return (
-            <Fragment key={"ov-" + g.id}>
-              {multiPane && g.id === focusedGroupId && (
+            <Fragment key={"ov-" + p.id}>
+              {multiPane && p.id === ws.focusedPaneId && (
                 <div
                   className="pointer-events-none"
-                  style={{ ...cs, zIndex: 24, boxShadow: "inset 0 0 0 1px var(--nx-accent)" }}
+                  style={{
+                    ...cs,
+                    zIndex: 24,
+                    boxShadow: "inset 0 0 0 1px var(--nx-accent)",
+                  }}
                 />
               )}
-              {g.tabs.length === 0 && !selectedHost && (
-                <div
-                  style={{ ...cs, zIndex: 15 }}
-                  className="flex items-center justify-center font-mono text-sm pointer-events-none"
-                >
-                  <span style={{ color: theme.textMuted }}>
-                    &gt; {t("terminal.select_host")}
-                  </span>
-                </div>
-              )}
-              {g.tabs.length === 0 && selectedHost && (
-                <div style={{ ...cs, zIndex: 15 }}>
-                  <HostInfoCard
-                    host={selectedHost}
-                    onConnect={() => openHost(selectedHost)}
-                    onEdit={() => setEditHost(selectedHost)}
-                  />
-                </div>
-              )}
-              {active?.status === "connecting" && (
+              {p.session.status === "connecting" && (
                 <div
                   style={{ ...cs, zIndex: 15 }}
                   className="flex items-center justify-center font-mono text-sm"
                 >
                   <span style={{ color: theme.warning }}>
                     {t("terminal.connecting_to", {
-                      user: active.host.user,
-                      host: active.host.host,
-                      port: active.host.port,
+                      user: p.session.host.user,
+                      host: p.session.host.host,
+                      port: p.session.host.port,
                     })}
                   </span>
                 </div>
               )}
-              {active?.error && (
-                <div style={{ ...cs, zIndex: 16 }} className="flex items-center justify-center p-6">
+              {p.session.error && (
+                <div
+                  style={{ ...cs, zIndex: 16 }}
+                  className="flex items-center justify-center p-6"
+                >
                   <div
                     className="max-w-md font-mono text-sm border rounded-nx p-4"
-                    style={{ borderColor: theme.error, background: theme.bgPanel }}
+                    style={{
+                      borderColor: theme.error,
+                      background: theme.bgPanel,
+                    }}
                   >
                     <div className="mb-2" style={{ color: theme.error }}>
-                      ✗ {t("terminal.connect_failed", { host: active.host.host })}
+                      ✗{" "}
+                      {t("terminal.connect_failed", {
+                        host: p.session.host.host,
+                      })}
                     </div>
-                    <div className="mb-3 break-words" style={{ color: theme.textSoft }}>
-                      {active.error}
+                    <div
+                      className="mb-3 break-words"
+                      style={{ color: theme.textSoft }}
+                    >
+                      {p.session.error}
                     </div>
                     <button
                       type="button"
-                      onClick={() => restartSession(active.id)}
+                      onClick={() => restartSession(p.session.id)}
                       className="px-3 py-1 rounded-nx-sm border cursor-pointer hover:opacity-80"
                       style={{ borderColor: theme.border, color: theme.accent }}
                     >
@@ -1346,13 +1366,15 @@ function App() {
                   </div>
                 </div>
               )}
-              {g.activeId && transcriptTabs.has(g.activeId) && active && (
+              {transcriptTabs.has(p.session.id) && (
                 <div style={{ ...cs, zIndex: 20 }}>
                   <TranscriptOverlay
-                    sessionId={g.activeId}
-                    hostLabel={`${active.host.user}@${active.host.host}`}
-                    onClose={() => toggleTranscript(g.activeId!)}
-                    onContextMenu={(x, y, items) => setMenu({ x, y, items })}
+                    sessionId={p.session.id}
+                    hostLabel={`${p.session.host.user}@${p.session.host.host}`}
+                    onClose={() => toggleTranscript(p.session.id)}
+                    onContextMenu={(x, y, items) =>
+                      setMenu({ x, y, items })
+                    }
                   />
                 </div>
               )}
@@ -1371,8 +1393,22 @@ function App() {
             }
             style={
               d.isRow
-                ? { position: "absolute", left: `calc(${d.at}% - 2px)`, top: `${d.cross}%`, width: 4, height: `${d.len}%`, zIndex: 40 }
-                : { position: "absolute", top: `calc(${d.at}% - 2px)`, left: `${d.cross}%`, height: 4, width: `${d.len}%`, zIndex: 40 }
+                ? {
+                    position: "absolute",
+                    left: `calc(${d.at}% - 2px)`,
+                    top: `${d.cross}%`,
+                    width: 4,
+                    height: `${d.len}%`,
+                    zIndex: 40,
+                  }
+                : {
+                    position: "absolute",
+                    top: `calc(${d.at}% - 2px)`,
+                    left: `${d.cross}%`,
+                    height: 4,
+                    width: `${d.len}%`,
+                    zIndex: 40,
+                  }
             }
           />
         ))}
@@ -1382,9 +1418,6 @@ function App() {
 
   return (
     <main className="h-full w-full flex flex-col relative" style={themeStyle}>
-      {/* Matrix Rain — rendered inside the terminal-area container below so
-       *  the cascade only appears there. Header, sidebar, modals stay clean. */}
-
       {/* Brief full-app matrix burst on connect (keyed so it replays). */}
       {rainBurst > 0 && <div key={rainBurst} className="nx-rain-burst" />}
 
@@ -1412,7 +1445,7 @@ function App() {
           — {t("app.tagline")}
         </span>
 
-        {/* Prompt-style breadcrumb of the active session */}
+        {/* Prompt-style breadcrumb of the focused pane's session */}
         {activeSession && (
           <div className="ml-1 flex items-center gap-1.5 px-2.5 py-0.5 border border-nx-border rounded-nx bg-nx-panel text-meta font-mono min-w-0">
             <span className="text-nx-accent mr-0.5 shrink-0">&gt;</span>
@@ -1495,12 +1528,38 @@ function App() {
             className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
           />
         )}
-        {renderMainArea()}
+        <div className="flex-1 min-w-0 flex flex-col">
+          <TabBar
+            tabs={workspaces.map((w) => {
+              const fp = w.panes.find((p) => p.id === w.focusedPaneId);
+              return {
+                id: w.id,
+                title: w.title ?? fp?.session.host.name ?? "?",
+                status: fp?.session.status ?? "closed",
+              };
+            })}
+            activeId={activeWorkspaceId}
+            onSelect={(id) => setActiveWorkspaceId(id)}
+            onClose={(id) => closeWorkspace(id)}
+            onNewTab={openSshPicker}
+            onNewTabDropdown={openNewTabMenu}
+            onContextMenu={onWorkspaceContextMenu}
+            onReorder={reorderWorkspaces}
+            onDragCancel={() => {
+              /* nothing to clear — no edge-band in the workspace model */
+            }}
+          />
+          <div className="flex-1 min-h-0 relative">
+            {renderActiveLayoutArea()}
+          </div>
+        </div>
       </div>
 
       <StatusLine
-        sessionCount={allTabs.length}
-        connectingCount={allTabs.filter((x) => x.status === "connecting").length}
+        sessionCount={allSessions.length}
+        connectingCount={
+          allSessions.filter((s) => s.status === "connecting").length
+        }
         syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
       />
 
@@ -1528,8 +1587,21 @@ function App() {
       )}
       {pickerOpen && (
         <TabPicker
-          onPick={(h) => (pickerMode === "sftp" ? openSftp(h) : openHost(h))}
-          onClose={() => setPickerOpen(false)}
+          onPick={(h) => {
+            if (pickerMode === "sftp") {
+              openSftp(h);
+            } else if (pendingSplit) {
+              completeSplit(pendingSplit, h);
+              setPendingSplit(null);
+            } else {
+              openHost(h);
+            }
+            setPickerOpen(false);
+          }}
+          onClose={() => {
+            setPickerOpen(false);
+            setPendingSplit(null);
+          }}
         />
       )}
       {updatePanel !== null && (
@@ -1565,7 +1637,7 @@ function App() {
         <div className="fixed inset-0 z-40">
           <SettingsScreen
             onClose={() => setSettingsOpen(false)}
-            sessionCount={allTabs.length}
+            sessionCount={allSessions.length}
           />
         </div>
       )}
@@ -1581,6 +1653,24 @@ function App() {
           onCancel={() => {
             pwPrompt.resolve(null);
             setPwPrompt(null);
+          }}
+        />
+      )}
+
+      {confirmState && (
+        <ConfirmDialog
+          message={confirmState.message}
+          title={confirmState.title}
+          confirmLabel={confirmState.confirmLabel}
+          cancelLabel={confirmState.cancelLabel}
+          destructive={confirmState.destructive}
+          onConfirm={() => {
+            confirmState.resolve(true);
+            setConfirmState(null);
+          }}
+          onCancel={() => {
+            confirmState.resolve(false);
+            setConfirmState(null);
           }}
         />
       )}

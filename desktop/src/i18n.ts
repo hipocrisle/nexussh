@@ -14,6 +14,7 @@ const ru = {
     cancel: "Отмена",
     connect: "Подключиться",
     confirm_close_tab: "Закрыть подключённую сессию «{{name}}»?",
+    confirm_close_workspace: "Закрыть вкладку с {{n}} активной сессией?",
     autoreconnect_gave_up: "Не удалось переподключиться к «{{name}}» после 5 попыток",
     confirm_quit: "Сейчас активных сессий: {{n}}. Закрыть NexuSSH?",
   },
@@ -422,6 +423,8 @@ const ru = {
     split_down: "Разделить вниз",
     close: "Закрыть",
     close_others: "Закрыть остальные",
+    close_workspace: "Закрыть вкладку",
+    close_pane: "Закрыть панель",
     open_transcript: "Прокрутить историю (Ctrl+Shift+↑)",
     exit_transcript: "Вернуться в live (Esc)",
   },
@@ -441,6 +444,10 @@ const ru = {
     auth_failed: "Ошибка аутентификации",
     connection_failed: "Не удалось подключиться",
   },
+  confirm: {
+    title: "Подтверждение",
+    ok: "OK",
+  },
 };
 
 const en = {
@@ -453,6 +460,7 @@ const en = {
     cancel: "Cancel",
     connect: "Connect",
     confirm_close_tab: "Close active session \"{{name}}\"?",
+    confirm_close_workspace: "Close tab with {{n}} active session(s)?",
     autoreconnect_gave_up: "Could not reconnect to \"{{name}}\" after 5 attempts",
     confirm_quit: "{{n}} active session(s). Quit NexuSSH?",
   },
@@ -861,6 +869,8 @@ const en = {
     split_down: "Split down",
     close: "Close",
     close_others: "Close others",
+    close_workspace: "Close tab",
+    close_pane: "Close pane",
     open_transcript: "Scroll history (Ctrl+Shift+↑)",
     exit_transcript: "Back to live (Esc)",
   },
@@ -879,6 +889,10 @@ const en = {
   errors: {
     auth_failed: "Authentication failed",
     connection_failed: "Connection failed",
+  },
+  confirm: {
+    title: "Confirm",
+    ok: "OK",
   },
 };
 

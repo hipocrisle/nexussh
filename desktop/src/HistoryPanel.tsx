@@ -190,80 +190,38 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events. See TranscriptOverlay for the algorithm — concatenate
-  // bytes, strip alt-screen + ESC[3J, collapse \r-runs to last segment,
-  // detect claude-code by "●" marker and extract AI-response blocks if
-  // found; otherwise consecutive-line dedup.
+  // Replay events into xterm
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
     if (!events) return;
+
+    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
 
-    const allText = events.map((e) => filterAltBuffer(e.d)).join("");
-    const stripAnsi = (s: string) =>
-      s.replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
-        .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
-        .replace(/\x1b./g, "");
-
-    const lines: string[] = [];
-    const plain: string[] = [];
-    for (const rawLine of allText.split("\n")) {
-      const clean = rawLine.replace(/\r+$/, "");
-      const segments = clean.split("\r");
-      let finalAnsi = "";
-      for (let j = segments.length - 1; j >= 0; j--) {
-        if (segments[j] !== "") {
-          finalAnsi = segments[j];
-          break;
-        }
-      }
-      lines.push(finalAnsi);
-      plain.push(stripAnsi(finalAnsi));
-    }
-
-    const claudeRe = /^\s*●/;
-    const isClaudeSession = plain.some((p) => claudeRe.test(p));
-
-    let outLines: string[];
-    if (isClaudeSession) {
-      outLines = [];
-      let inBlock = false;
-      for (let i = 0; i < plain.length; i++) {
-        const p = plain[i];
-        const trimmed = p.trim();
-        if (claudeRe.test(p)) {
-          if (outLines.length > 0) outLines.push("");
-          outLines.push(lines[i]);
-          inBlock = true;
+    // Replay with a simple consecutive-line dedup: Claude Code's streaming
+    // responses often emit the same paragraph multiple times as the model
+    // re-flows text. We accumulate output into a buffer and skip lines that
+    // are byte-identical to the immediately preceding one.
+    let prevLine = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        if (line && sep && line === prevLine) {
+          // skip the duplicate line + its newline
           continue;
         }
-        if (inBlock) {
-          if (trimmed === "" || /^( {2,}|\t)/.test(p)) {
-            outLines.push(lines[i]);
-            continue;
-          }
-          inBlock = false;
-        }
-        if (/^\s*❯/.test(p) && trimmed.length > 2) {
-          if (outLines.length > 0 && outLines[outLines.length - 1] !== "")
-            outLines.push("");
-          outLines.push(lines[i]);
-        }
+        term.write(line + sep);
+        if (sep) prevLine = line;
       }
-    } else {
-      outLines = [];
-      let prev = "";
-      for (let i = 0; i < lines.length; i++) {
-        const p = plain[i];
-        if (p && p === prev) continue;
-        outLines.push(lines[i]);
-        if (p) prev = p;
-      }
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
     }
 
-    term.write(outLines.join("\r\n") + "\r\n");
     term.scrollToTop();
     requestAnimationFrame(() => fitRef.current?.fit());
   }, [events]);

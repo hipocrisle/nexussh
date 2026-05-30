@@ -19,6 +19,8 @@ import { X, ArrowDown } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { Terminal as HeadlessTerminal } from "@xterm/headless";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import {
   historyReadEvents,
   filterAltBuffer,
@@ -174,28 +176,93 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change
+  // Replay events. Two-pass strategy for noisy TUI sessions
+  // (claude-code, htop, tmux): the cast file stores TUI redraws byte-for-byte
+  // mixed with content, so the naive xterm replay either shows alt-screen
+  // (no scrollback) or floods scrollback with TUI fossils.
+  //
+  // Pass 1 — feed bytes (with alt-screen toggles stripped) into a HEADLESS
+  //   xterm at a wide grid (no fixed cols/rows constraint) and let it
+  //   process all positioning natively. Lines that scroll out of the visible
+  //   region accumulate in main-buffer scrollback. Serialize the whole
+  //   scrollback as ANSI text to preserve colors.
+  //
+  // Pass 2 — dedup. Hash each line by its TEXT CONTENT only (strip ANSI,
+  //   normalize spaces, drop pure digit/colon runs that look like clocks).
+  //   Drop lines whose content hash appears MORE THAN TWICE in the whole
+  //   scrollback — that's how tmux clock / claude TUI / status spinners
+  //   manifest. Also drop consecutive identical lines.
+  //
+  // Pass 3 — write the resulting ANSI lines back to the VISIBLE xterm
+  //   (with colors), scroll to bottom. User wheels up through clean content.
   useEffect(() => {
     const term = termRef.current;
     if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
-    let prev = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prev) continue;
-        term.write(line + sep);
-        if (sep) prev = line;
-      }
-    };
+
+    // Pass 1: headless processor.
+    const headless = new HeadlessTerminal({
+      cols: Math.max(term.cols, 200), // wide so long lines don't wrap weirdly
+      rows: term.rows,
+      scrollback: 1_000_000,
+      allowProposedApi: true,
+    });
+    const serializer = new SerializeAddon();
+    headless.loadAddon(serializer);
     for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+      headless.write(filterAltBuffer(ev.d));
     }
-    // Scroll to BOTTOM so user sees the latest output first; they can wheel
-    // up to inspect older content. Same UX as terminal scrollback.
+
+    // Serialize with scrollback so we capture everything that scrolled out.
+    const ansi = serializer.serialize({ scrollback: 1_000_000 });
+    headless.dispose();
+
+    // Pass 2: dedup by content hash.
+    const stripAnsi = (s: string) =>
+      // CSI / OSC / single-byte ESC sequences — strip for hashing only.
+      s.replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
+        .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+        .replace(/\x1b./g, "");
+    const norm = (s: string) =>
+      // Normalize for hashing — strip ANSI, collapse whitespace, drop
+      // common time/clock patterns ("00:45", "1m 23s", "↓ 2.5k tokens",
+      // "(7s · ↓ ...)") that change between TUI redraws.
+      stripAnsi(s)
+        .replace(/\d+/g, "#")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const rawLines = ansi.split(/\r?\n/);
+    const hashCount = new Map<string, number>();
+    for (const ln of rawLines) {
+      const h = norm(ln);
+      if (h === "") continue;
+      hashCount.set(h, (hashCount.get(h) ?? 0) + 1);
+    }
+
+    const outLines: string[] = [];
+    let prevHash = "";
+    let blankRun = 0;
+    for (const ln of rawLines) {
+      const h = norm(ln);
+      // Collapse runs of blank lines to at most one.
+      if (h === "") {
+        blankRun++;
+        if (blankRun <= 1) outLines.push(ln);
+        continue;
+      }
+      blankRun = 0;
+      // TUI fossil: same content (modulo digits/spaces) seen more than twice.
+      if ((hashCount.get(h) ?? 0) > 2) continue;
+      // Consecutive identical lines — keep one.
+      if (h === prevHash) continue;
+      outLines.push(ln);
+      prevHash = h;
+    }
+
+    // Pass 3: write the cleaned ANSI stream back to the visible xterm.
+    term.write(outLines.join("\r\n") + "\r\n");
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });

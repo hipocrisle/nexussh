@@ -26,6 +26,8 @@ import {
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { Terminal as HeadlessTerminal } from "@xterm/headless";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import "@xterm/xterm/css/xterm.css";
 import {
   HistoryEntry,
@@ -190,38 +192,68 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm
+  // Replay events into xterm via the headless-emulator + dedup pipeline.
+  // See TranscriptOverlay for the rationale — same noisy claude-code/tmux
+  // cast streams. Pass 1: headless xterm processes all bytes natively.
+  // Pass 2: serialize the scrollback as ANSI, dedup lines whose
+  // content-hash (digits/spaces normalized, ANSI stripped) appears more
+  // than twice — that's how TUI fossils manifest. Pass 3: write the
+  // cleaned ANSI stream back to the visible xterm preserving colors.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
     if (!events) return;
 
-    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
 
-    // Replay with a simple consecutive-line dedup: Claude Code's streaming
-    // responses often emit the same paragraph multiple times as the model
-    // re-flows text. We accumulate output into a buffer and skip lines that
-    // are byte-identical to the immediately preceding one.
-    let prevLine = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prevLine) {
-          // skip the duplicate line + its newline
-          continue;
-        }
-        term.write(line + sep);
-        if (sep) prevLine = line;
-      }
-    };
+    const headless = new HeadlessTerminal({
+      cols: Math.max(term.cols, 200),
+      rows: term.rows,
+      scrollback: 1_000_000,
+      allowProposedApi: true,
+    });
+    const serializer = new SerializeAddon();
+    headless.loadAddon(serializer);
     for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+      headless.write(filterAltBuffer(ev.d));
+    }
+    const ansi = serializer.serialize({ scrollback: 1_000_000 });
+    headless.dispose();
+
+    const stripAnsi = (s: string) =>
+      s.replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
+        .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+        .replace(/\x1b./g, "");
+    const norm = (s: string) =>
+      stripAnsi(s).replace(/\d+/g, "#").replace(/\s+/g, " ").trim();
+
+    const rawLines = ansi.split(/\r?\n/);
+    const hashCount = new Map<string, number>();
+    for (const ln of rawLines) {
+      const h = norm(ln);
+      if (h === "") continue;
+      hashCount.set(h, (hashCount.get(h) ?? 0) + 1);
     }
 
+    const outLines: string[] = [];
+    let prevHash = "";
+    let blankRun = 0;
+    for (const ln of rawLines) {
+      const h = norm(ln);
+      if (h === "") {
+        blankRun++;
+        if (blankRun <= 1) outLines.push(ln);
+        continue;
+      }
+      blankRun = 0;
+      if ((hashCount.get(h) ?? 0) > 2) continue;
+      if (h === prevHash) continue;
+      outLines.push(ln);
+      prevHash = h;
+    }
+
+    term.write(outLines.join("\r\n") + "\r\n");
     term.scrollToTop();
     requestAnimationFrame(() => fitRef.current?.fit());
   }, [events]);

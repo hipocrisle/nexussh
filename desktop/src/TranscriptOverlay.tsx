@@ -190,13 +190,42 @@ export function TranscriptOverlay({
       const rows = Math.max(replay.rows, term.rows);
       term.resize(replay.cols, rows);
     }
+    // Pass 1: process bytes through a hidden terminal at the original
+    // session dimensions so absolute positioning lands on the right grid.
+    // We then read the rendered cells back, near-dedup, and rewrite —
+    // this is what kills the TUI/tmux-status pile-up in scrollback.
+    // claude-code (Ink) and tmux don't use scroll regions, so every TUI
+    // redraw scrolls into scrollback as a fresh copy. Without dedup,
+    // hundreds of "[claude] 0:claude*" and "105 tasks" rows bury the
+    // actual content.
     for (const ev of replay.events) {
       term.write(filterAltBuffer(ev.d));
     }
-    // Scroll to bottom — user sees the latest output first, wheels up
-    // to inspect older content. Same UX as terminal scrollback.
+    // Pass 2: extract lines, near-dedup, rewrite. The dedup window of 8
+    // lines kills tmux/claude TUI redraws (typically 1–4 lines tall)
+    // while preserving legitimate adjacent content (e.g. list items that
+    // happen to repeat are kept unless they're identical AND within the
+    // window).
     requestAnimationFrame(() => {
-      term.scrollToBottom();
+      const buf = term.buffer.normal;
+      const total = buf.length;
+      const lines: string[] = [];
+      const recent: string[] = [];
+      const WINDOW = 8;
+      for (let y = 0; y < total; y++) {
+        const raw = buf.getLine(y)?.translateToString(true) ?? "";
+        const line = raw.trimEnd();
+        // Skip empty consecutive runs > 1 line and dedup against recent.
+        if (line === "" && recent[recent.length - 1] === "") continue;
+        if (line !== "" && recent.includes(line)) continue;
+        lines.push(line);
+        recent.push(line);
+        if (recent.length > WINDOW) recent.shift();
+      }
+      term.reset();
+      // term.write is async over a parser; chunk in big batches.
+      term.write(lines.join("\r\n") + "\r\n");
+      requestAnimationFrame(() => term.scrollToBottom());
     });
   }, [replay]);
 

@@ -190,12 +190,12 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm.
-  // Resize to the ORIGINAL session dims (from cast header) BEFORE writing
-  // so the program's absolute positioning + scroll region lines up with
-  // the same grid it was authored for. Without this, fit's container size
-  // is wrong and the layout collapses — status bars land mid-screen,
-  // content wraps at the wrong column.
+  // Replay events into xterm with near-dedup. claude-code (Ink) and tmux
+  // redraw their TUI panels every few hundred ms without scroll regions,
+  // so each frame's bottom rows end up duplicated in scrollback. Pass 1
+  // processes bytes at the original session grid; pass 2 reads back the
+  // rendered scrollback lines, drops near-duplicates within a small
+  // window, and rewrites — what remains is mostly the user's content.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -210,7 +210,25 @@ export function HistoryPanel({ onClose }: Props) {
     for (const ev of replay.events) {
       term.write(filterAltBuffer(ev.d));
     }
-    term.scrollToTop();
+    requestAnimationFrame(() => {
+      const buf = term.buffer.normal;
+      const total = buf.length;
+      const lines: string[] = [];
+      const recent: string[] = [];
+      const WINDOW = 8;
+      for (let y = 0; y < total; y++) {
+        const raw = buf.getLine(y)?.translateToString(true) ?? "";
+        const line = raw.trimEnd();
+        if (line === "" && recent[recent.length - 1] === "") continue;
+        if (line !== "" && recent.includes(line)) continue;
+        lines.push(line);
+        recent.push(line);
+        if (recent.length > WINDOW) recent.shift();
+      }
+      term.reset();
+      term.write(lines.join("\r\n") + "\r\n");
+      term.scrollToTop();
+    });
   }, [replay]);
 
   // In-session search: highlight current match on submit

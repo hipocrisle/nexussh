@@ -135,9 +135,10 @@ pub async fn sftp_connect(
             .await
             .map_err(|e| SftpError::Other(e.to_string()))?;
         let proxy = format!("127.0.0.1:{socks_port}");
-        let stream = tokio_socks::tcp::Socks5Stream::connect(
+        let stream = crate::ssh::socks_connect_with_retry(
             proxy.as_str(),
-            (args.host.as_str(), args.port),
+            &args.host,
+            args.port,
         )
         .await
         .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;

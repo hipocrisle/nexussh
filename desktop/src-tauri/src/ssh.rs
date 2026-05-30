@@ -144,13 +144,35 @@ pub(crate) fn free_local_port() -> std::io::Result<u16> {
 
 /// Poll the local SOCKS port until xray accepts connections (or time out).
 pub(crate) async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
-    for _ in 0..60 {
+    for _ in 0..100 {
         if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err(SshError::Other("xray SOCKS proxy did not come up in time".into()))
+}
+
+/// SOCKS connect via xray with one retry. On a cold start xray accepts the
+/// SOCKS port well before the upstream cascade has finished negotiating, so the
+/// first `Socks5Stream::connect` to a brand-new VPN can fail before xray has a
+/// route. Wait 1.2s and try again — solves the cold-SFTP-via-VPN case the user
+/// hit (SSH worked because they sat on the "connecting…" screen long enough to
+/// retry implicitly; SFTPPanel did one attempt and gave up).
+pub(crate) async fn socks_connect_with_retry(
+    proxy: &str,
+    host: &str,
+    port: u16,
+) -> Result<tokio_socks::tcp::Socks5Stream<tokio::net::TcpStream>, tokio_socks::Error>
+{
+    use tokio_socks::tcp::Socks5Stream;
+    match Socks5Stream::connect(proxy, (host, port)).await {
+        Ok(s) => Ok(s),
+        Err(_) => {
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+            Socks5Stream::connect(proxy, (host, port)).await
+        }
+    }
 }
 
 /// Permissive algorithm set: modern algorithms first (negotiated whenever the
@@ -244,12 +266,9 @@ pub async fn ssh_connect(
             .map_err(|e| SshError::Other(format!("xray spawn: {e}")))?;
         wait_socks_ready(socks_port).await?;
         let proxy = format!("127.0.0.1:{socks_port}");
-        let stream = tokio_socks::tcp::Socks5Stream::connect(
-            proxy.as_str(),
-            (args.host.as_str(), args.port),
-        )
-        .await
-        .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
+        let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+            .await
+            .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
         let session =
             client::connect_stream(config, stream.into_inner(), AcceptAllHandler).await?;
         (session, Some(child))

@@ -912,70 +912,142 @@ function App() {
     const focusedSid = focused?.session.id ?? null;
     const focusedHost = focused?.session.host;
     const hasPanes = ws.panes.length > 0;
-    setMenu({
-      x,
-      y,
-      items: [
-        {
-          label:
-            focusedSid && transcriptTabs.has(focusedSid)
-              ? t("tabmenu.exit_transcript")
-              : t("tabmenu.open_transcript"),
-          onClick: () => {
-            if (focusedSid) toggleTranscript(focusedSid);
-          },
-          disabled: !focusedSid,
+    const others = workspaces.filter((w) => w.id !== wsId);
+    const items: MenuItem[] = [
+      {
+        label:
+          focusedSid && transcriptTabs.has(focusedSid)
+            ? t("tabmenu.exit_transcript")
+            : t("tabmenu.open_transcript"),
+        onClick: () => {
+          if (focusedSid) toggleTranscript(focusedSid);
         },
-        {
-          label: t("tabmenu.restart"),
-          onClick: () => {
-            if (focusedSid) restartSession(focusedSid);
-          },
-          disabled: !focused || focused.session.status === "connecting",
+        disabled: !focusedSid,
+      },
+      {
+        label: t("tabmenu.restart"),
+        onClick: () => {
+          if (focusedSid) restartSession(focusedSid);
         },
-        {
-          label: t("tabmenu.split_right"),
-          onClick: () => splitFocusedPane(wsId, "row"),
-          disabled: !hasPanes,
+        disabled: !focused || focused.session.status === "connecting",
+      },
+      {
+        label: t("tabmenu.split_right"),
+        onClick: () => splitFocusedPane(wsId, "row"),
+        disabled: !hasPanes,
+      },
+      {
+        label: t("tabmenu.split_down"),
+        onClick: () => splitFocusedPane(wsId, "col"),
+        disabled: !hasPanes,
+      },
+      {
+        label: t("sidebar.menu_sftp"),
+        onClick: () => {
+          if (focusedHost) openSftp(focusedHost);
         },
-        {
-          label: t("tabmenu.split_down"),
-          onClick: () => splitFocusedPane(wsId, "col"),
-          disabled: !hasPanes,
-        },
-        {
-          label: t("sidebar.menu_sftp"),
-          onClick: () => {
-            if (focusedHost) openSftp(focusedHost);
-          },
-          disabled: !focusedHost,
-        },
-        { separator: true, label: "" },
-        {
-          label: t("tabmenu.close_pane"),
-          onClick: () => {
-            if (focused) closePane(wsId, focused.id);
-          },
-          disabled: !hasPanes,
-          destructive: true,
-        },
-        {
-          label: t("tabmenu.close_workspace"),
-          onClick: () => closeWorkspace(wsId),
-          destructive: true,
-        },
-        {
-          label: t("tabmenu.close_others"),
-          onClick: () => {
-            workspaces
-              .filter((w) => w.id !== wsId)
-              .forEach((w) => closeWorkspace(w.id));
-          },
-          disabled: workspaces.length <= 1,
-          destructive: true,
-        },
-      ],
+        disabled: !focusedHost,
+      },
+    ];
+    // Merge section — flat list of other workspaces under a header. Clicking
+    // one moves its panes into this workspace (next to the focused pane,
+    // wrapping the layout in a row-split).
+    if (others.length > 0) {
+      items.push({ separator: true, label: "" });
+      items.push({ sectionLabel: t("tabmenu.merge_with"), label: "" });
+      for (const w of others) {
+        const fp = w.panes.find((p) => p.id === w.focusedPaneId);
+        const title = w.title ?? fp?.session.host.name ?? "?";
+        const tag = w.panes.length > 1 ? ` · ${w.panes.length} ⊟` : "";
+        items.push({
+          label: title + tag,
+          onClick: () => mergeWorkspace(wsId, w.id),
+        });
+      }
+    }
+    items.push({ separator: true, label: "" });
+    items.push({
+      label: t("tabmenu.close_current_tab"),
+      onClick: () => {
+        if (focused) closePane(wsId, focused.id);
+      },
+      disabled: !hasPanes,
+      destructive: true,
     });
+    items.push({
+      label: t("tabmenu.close_others"),
+      onClick: () => closeOtherWorkspaces(wsId),
+      disabled: workspaces.length <= 1,
+      destructive: true,
+    });
+    setMenu({ x, y, items });
+  }
+
+  // Merge `fromWsId` INTO `intoWsId`: panes are appended and the layout is
+  // wrapped in a row-split with the existing layout on the left and the merged
+  // workspace's layout on the right. The source workspace is removed.
+  function mergeWorkspace(intoWsId: string, fromWsId: string) {
+    if (intoWsId === fromWsId) return;
+    setWorkspaces((wss) => {
+      const intoWs = wss.find((w) => w.id === intoWsId);
+      const fromWs = wss.find((w) => w.id === fromWsId);
+      if (!intoWs || !fromWs) return wss;
+      const mergedPanes = [...intoWs.panes, ...fromWs.panes];
+      const mergedLayout: LayoutNode =
+        intoWs.panes.length === 0
+          ? fromWs.layout
+          : fromWs.panes.length === 0
+            ? intoWs.layout
+            : {
+                kind: "split",
+                id: uid("s"),
+                dir: "row",
+                ratio: 0.5,
+                a: intoWs.layout,
+                b: fromWs.layout,
+              };
+      const newFocus = fromWs.focusedPaneId ?? intoWs.focusedPaneId;
+      return wss
+        .filter((w) => w.id !== fromWsId)
+        .map((w) =>
+          w.id === intoWsId
+            ? {
+                ...w,
+                panes: mergedPanes,
+                layout: mergedLayout,
+                focusedPaneId: newFocus,
+              }
+            : w,
+        );
+    });
+    setActiveWorkspaceId(intoWsId);
+  }
+
+  // "Close others" — confirm once with the total live-session count rather
+  // than firing N modal dialogs.
+  async function closeOtherWorkspaces(keepWsId: string) {
+    const others = workspaces.filter((w) => w.id !== keepWsId);
+    const liveTotal = others.reduce(
+      (n, w) =>
+        n +
+        w.panes.filter(
+          (p) =>
+            p.session.status === "connected" ||
+            p.session.status === "connecting",
+        ).length,
+      0,
+    );
+    if (settings.confirmClose && liveTotal > 0) {
+      const ok = await askConfirm(
+        t("app.confirm_close_workspace", { n: liveTotal }),
+        { destructive: true },
+      );
+      if (!ok) return;
+    }
+    for (const w of others) {
+      // Skip the per-workspace confirm — we already asked once above.
+      await closeWorkspaceSilent(w.id);
+    }
   }
 
   async function closeWorkspace(wsId: string) {
@@ -985,13 +1057,23 @@ function App() {
       (p) =>
         p.session.status === "connected" || p.session.status === "connecting",
     );
-    if (settings.confirmClose && live.length > 0) {
+    // Confirm only when closing a multi-pane workspace (single tab closes
+    // without nagging — that's just one session).
+    if (settings.confirmClose && ws.panes.length > 1 && live.length > 0) {
       const ok = await askConfirm(
         t("app.confirm_close_workspace", { n: live.length }),
         { destructive: true },
       );
       if (!ok) return;
     }
+    await closeWorkspaceSilent(wsId);
+  }
+
+  // Internal: closeWorkspace without the confirm prompt. Used by closeWorkspace
+  // (after it asked) and by closeOtherWorkspaces (which asks once for the batch).
+  async function closeWorkspaceSilent(wsId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
     for (const p of ws.panes) {
       if (p.session.status === "connected") {
         sshDisconnect(p.session.id).catch(() => {});
@@ -1014,16 +1096,8 @@ function App() {
     if (!ws) return;
     const pane = ws.panes.find((p) => p.id === paneId);
     if (!pane) return;
-    const live =
-      pane.session.status === "connected" ||
-      pane.session.status === "connecting";
-    if (settings.confirmClose && live) {
-      const ok = await askConfirm(
-        t("app.confirm_close_tab", { name: pane.session.host.name }),
-        { destructive: true },
-      );
-      if (!ok) return;
-    }
+    // No confirm here — single pane = single tab, user closes it; for the
+    // whole multi-pane workspace the confirm fires in closeWorkspace.
     if (pane.session.status === "connected") {
       sshDisconnect(pane.session.id).catch(() => {});
     }
@@ -1235,7 +1309,7 @@ function App() {
           disabled: !canExtract,
         },
         {
-          label: t("tabmenu.close_pane"),
+          label: t("tabmenu.close_current_tab"),
           onClick: () => closePane(wsId, paneId),
           destructive: true,
         },

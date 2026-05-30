@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   Terminal as TerminalIcon,
   Globe,
+  Info,
 } from "lucide-react";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { useSettings } from "./settings/settings-store";
@@ -21,6 +22,7 @@ import { AppearanceSection } from "./settings/AppearanceSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { BehaviorSection } from "./settings/BehaviorSection";
 import { VpnSection } from "./settings/VpnSection";
+import { AboutSection } from "./settings/AboutSection";
 import { getVersion } from "@tauri-apps/api/app";
 
 interface Props {
@@ -33,6 +35,7 @@ const SECTIONS = [
   { id: "updates", key: "updates", Icon: Download },
   { id: "behavior", key: "behavior", Icon: SlidersHorizontal },
   { id: "vpn", key: "vpn", Icon: Globe },
+  { id: "about", key: "about", Icon: Info },
 ] as const;
 
 export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
@@ -317,6 +320,7 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
               <UpdatesSection s={settings} set={set} t={t} />
               <BehaviorSection s={settings} set={set} t={t} />
               <VpnSection t={t} />
+              <AboutSection t={t} />
 
               <div
                 className="border-t pt-6 mt-12 font-mono text-[11px] flex items-center justify-between flex-wrap gap-2"

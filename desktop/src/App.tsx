@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, Fragment, Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Lock,
@@ -12,22 +12,37 @@ import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { DialogHost } from "./DialogHost";
-import { askConfirm } from "./dialogs";
+import { askConfirm, askPrompt } from "./dialogs";
 import { LanguageSwitcher } from "./LanguageSwitcher";
-import { VaultPanel } from "./VaultPanel";
-import { SyncPanel } from "./SyncPanel";
-import { HistoryPanel } from "./HistoryPanel";
-import { SFTPPanel } from "./SFTPPanel";
+// Heavy panels are conditionally rendered — code-split them so the initial
+// bundle drops from ~775KB to ~500KB. React.lazy + Suspense unloads them
+// until first use.
+const VaultPanel = lazy(() =>
+  import("./VaultPanel").then((m) => ({ default: m.VaultPanel })),
+);
+const SyncPanel = lazy(() =>
+  import("./SyncPanel").then((m) => ({ default: m.SyncPanel })),
+);
+const HistoryPanel = lazy(() =>
+  import("./HistoryPanel").then((m) => ({ default: m.HistoryPanel })),
+);
+const SFTPPanel = lazy(() =>
+  import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
+);
 import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
-import { UpdatePanel } from "./UpdatePanel";
+const UpdatePanel = lazy(() =>
+  import("./UpdatePanel").then((m) => ({ default: m.UpdatePanel })),
+);
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { PasswordPrompt } from "./PasswordPrompt";
-import { SettingsScreen } from "./SettingsScreen";
+const SettingsScreen = lazy(() =>
+  import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
+);
 import { TranscriptOverlay } from "./TranscriptOverlay";
 import { PaneHeader } from "./PaneHeader";
 import { useSettings } from "./settings/settings-store";
@@ -156,6 +171,40 @@ function setNodeRatio(
     a: setNodeRatio(node.a, nodeId, ratio),
     b: setNodeRatio(node.b, nodeId, ratio),
   };
+}
+
+// --- Persistence shape (localStorage `nexussh.workspaces`) ----------------
+// PTY sessions don't survive restarts, so only the layout skeleton + which
+// hosts went into which panes is saved. `kickoffConnect` resurrects the
+// sessions on restore.
+interface PersistedPane {
+  id: string;
+  hostId: string;
+}
+interface PersistedWorkspace {
+  id: string;
+  title?: string;
+  focusedPaneId: string;
+  layout: LayoutNode;
+  panes: PersistedPane[];
+}
+interface PersistedRoot {
+  v: 1;
+  activeWorkspaceId: string | null;
+  workspaces: PersistedWorkspace[];
+}
+// Drop layout leaves whose pane id isn't in `live` (host deleted since save).
+// Collapses parent splits whose children both vanished.
+function pruneLayoutToPanes(
+  node: LayoutNode,
+  live: Set<string>,
+): LayoutNode | null {
+  if (node.kind === "leaf") return live.has(node.paneId) ? node : null;
+  const a = pruneLayoutToPanes(node.a, live);
+  const b = pruneLayoutToPanes(node.b, live);
+  if (a === null) return b;
+  if (b === null) return a;
+  return { ...node, a, b };
 }
 
 // Pane geometry, in percentages of the main area. Computed from the layout so
@@ -444,6 +493,14 @@ function App() {
   // Ref mirror — pointer handlers run outside React state propagation.
   const paneDragRef = useRef<typeof paneDragState>(null);
   paneDragRef.current = paneDragState;
+  // During pane drag, when the cursor sits on a different pane's edge zone, we
+  // preview where the dragged pane will land if released.
+  type PaneEdge = "left" | "right" | "top" | "bottom";
+  const [paneEdgeHint, setPaneEdgeHint] = useState<
+    { paneId: string; edge: PaneEdge } | null
+  >(null);
+  const paneEdgeHintRef = useRef<typeof paneEdgeHint>(null);
+  paneEdgeHintRef.current = paneEdgeHint;
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
@@ -563,44 +620,154 @@ function App() {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
   }, []);
 
-  // restoreSession — on first mount, if enabled, reopen the hosts that were
-  // open last time. We persist host IDs (not session IDs, since the live
-  // PTY dies with the process). Each host becomes its own workspace.
+  // restoreSession — on first mount, if enabled, rebuild last launch's
+  // workspaces in full (panes, layout tree, focused pane, active workspace),
+  // and kick off SSH for each pane. Falls back to the old host-id-only format
+  // if that's all we have in localStorage. PTY sessions don't survive a
+  // process exit, so only host references are persisted.
   const restoredRef = useRef(false);
   useEffect(() => {
     if (restoredRef.current) return;
     restoredRef.current = true;
     if (!settings.restoreSession) return;
+    // Read localStorage SYNCHRONOUSLY before the persist effect (which fires
+    // right after this one with workspaces=[]) wipes it.
+    let rawV1: string | null = null;
+    let rawV0: string | null = null;
     try {
-      const raw = localStorage.getItem("nexussh.lastTabs");
-      if (!raw) return;
-      const ids: string[] = JSON.parse(raw);
-      if (!Array.isArray(ids) || ids.length === 0) return;
-      (async () => {
+      rawV1 = localStorage.getItem("nexussh.workspaces");
+      rawV0 = localStorage.getItem("nexussh.lastTabs");
+    } catch {
+      /* private mode etc. */
+    }
+    if (!rawV1 && !rawV0) return;
+    (async () => {
+      try {
         const { listHosts } = await import("./hosts");
         const all = await listHosts();
-        for (const id of ids) {
-          const h = all.find((x) => x.id === id);
-          if (h) {
-            // openHost is async but we don't await — let them connect in
-            // parallel after we've kicked them all off
-            openHost(h);
+        if (rawV1) {
+          const data = JSON.parse(rawV1) as PersistedRoot | null;
+          if (data && Array.isArray(data.workspaces) && data.workspaces.length > 0) {
+            restoreFromPersistedV1(data, all);
+            return;
           }
         }
-      })();
-    } catch {
-      /* ignore — restoreSession is best-effort */
-    }
+        // Fallback: old "lastTabs" array of host ids → each becomes its own ws.
+        if (!rawV0) return;
+        const ids = JSON.parse(rawV0);
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        for (const id of ids) {
+          const h = all.find((x) => x.id === id);
+          if (h) openHost(h);
+        }
+      } catch {
+        /* best-effort */
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Keep localStorage in sync with the open-tab host ids so the next launch
-  // can restore them.
+  // Persist the full workspace shape (layout tree + pane → host ids + focus +
+  // active workspace). Survives across restarts.
   useEffect(() => {
     if (!settings.restoreSession) return;
-    const ids = allSessions.map((s) => s.host.id);
-    localStorage.setItem("nexussh.lastTabs", JSON.stringify(ids));
-  }, [allSessions, settings.restoreSession]);
+    if (!restoredRef.current) return; // don't overwrite before restore ran
+    const data: PersistedRoot = {
+      v: 1,
+      activeWorkspaceId,
+      workspaces: workspaces.map((w) => ({
+        id: w.id,
+        title: w.title,
+        focusedPaneId: w.focusedPaneId,
+        layout: w.layout,
+        panes: w.panes.map((p) => ({ id: p.id, hostId: p.session.host.id })),
+      })),
+    };
+    if (data.workspaces.length === 0) {
+      localStorage.removeItem("nexussh.workspaces");
+    } else {
+      localStorage.setItem("nexussh.workspaces", JSON.stringify(data));
+    }
+  }, [workspaces, activeWorkspaceId, settings.restoreSession]);
+
+  function restoreFromPersistedV1(data: PersistedRoot, all: HostRecord[]) {
+    const restored: Workspace[] = [];
+    for (const pw of data.workspaces) {
+      const panes: Pane[] = [];
+      for (const pp of pw.panes) {
+        const host = all.find((h) => h.id === pp.hostId);
+        if (!host) continue; // host deleted since save
+        const pendingId = "pending-" + crypto.randomUUID();
+        panes.push({
+          id: pp.id,
+          session: { id: pendingId, host, status: "connecting" },
+        });
+      }
+      if (panes.length === 0) continue;
+      const livePaneIds = new Set(panes.map((p) => p.id));
+      let layout = pruneLayoutToPanes(pw.layout, livePaneIds);
+      if (!layout) layout = { kind: "leaf", paneId: panes[0].id };
+      const focusedPaneId = panes.some((p) => p.id === pw.focusedPaneId)
+        ? pw.focusedPaneId
+        : panes[panes.length - 1].id;
+      restored.push({
+        id: pw.id,
+        title: pw.title,
+        panes,
+        layout,
+        focusedPaneId,
+      });
+    }
+    if (restored.length === 0) return;
+    setWorkspaces(restored);
+    const activeId = data.activeWorkspaceId &&
+      restored.some((w) => w.id === data.activeWorkspaceId)
+      ? data.activeWorkspaceId
+      : restored[0].id;
+    setActiveWorkspaceId(activeId);
+    // Kick off connections in parallel.
+    for (const w of restored) {
+      for (const p of w.panes) {
+        kickoffConnect(p.session.id, p.session.host);
+      }
+    }
+  }
+
+  // Drive an SSH connection for an already-mounted pending pane (used by
+  // restore). Mirrors openHost's success/error handling but doesn't add a
+  // tab, since the pane is already there.
+  async function kickoffConnect(pendingId: string, h: HostRecord) {
+    let auth = h.auth;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const entered = await askPassword(h);
+      if (entered === null) {
+        updateSession(pendingId, (s) => ({
+          ...s,
+          status: "closed",
+          error: t("app.password_required"),
+        }));
+        return;
+      }
+      auth = { kind: "password", password: entered };
+    }
+    try {
+      const sid = await sshConnect({
+        host: h.host,
+        port: h.port,
+        user: h.user,
+        auth,
+        vpn: resolveHostVpn(h),
+      });
+      bumpLastUsed(h.id).catch(() => {});
+      promoteSession(pendingId, sid, "connected");
+    } catch (e) {
+      updateSession(pendingId, (s) => ({
+        ...s,
+        status: "closed",
+        error: String(e),
+      }));
+    }
+  }
 
   // Reorder workspaces in the top strip (analogous to old reorderTabs but
   // operating on whole workspaces, not individual sessions).
@@ -635,11 +802,22 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
-      if (meta && e.key.toLowerCase() === "t") {
+      const k = e.key.toLowerCase();
+      // Helpers — both are workspace-scoped no-ops when no active workspace.
+      const inActiveWs = (fn: (wsId: string) => void) => {
+        if (activeWorkspaceId) {
+          e.preventDefault();
+          e.stopPropagation();
+          fn(activeWorkspaceId);
+        }
+      };
+      if (meta && !e.shiftKey && k === "t") {
+        // Ctrl/Cmd+T — new tab via picker (workspace).
         e.preventDefault();
         e.stopPropagation();
         openSshPicker();
-      } else if (meta && e.key === ",") {
+      } else if (meta && k === ",") {
+        // Ctrl/Cmd+, — toggle Settings.
         e.preventDefault();
         e.stopPropagation();
         setSettingsOpen((v) => !v);
@@ -648,26 +826,63 @@ function App() {
         e.shiftKey &&
         (e.key === "ArrowUp" || e.key === "Up")
       ) {
+        // Ctrl+Shift+↑ — transcript overlay for focused session.
         if (activeId) {
           e.preventDefault();
           e.stopPropagation();
           toggleTranscript(activeId);
+        }
+      } else if (meta && !e.shiftKey && k === "w") {
+        // Ctrl/Cmd+W — close focused tab (single pane = whole workspace).
+        inActiveWs((wsId) => {
+          const ws = workspaces.find((w) => w.id === wsId);
+          if (ws && ws.focusedPaneId) closePane(wsId, ws.focusedPaneId);
+        });
+      } else if (meta && e.shiftKey && k === "d") {
+        // Ctrl/Cmd+Shift+D — split focused pane right.
+        inActiveWs((wsId) => splitFocusedPane(wsId, "row"));
+      } else if (meta && e.shiftKey && k === "e") {
+        // Ctrl/Cmd+Shift+E — split focused pane down.
+        inActiveWs((wsId) => splitFocusedPane(wsId, "col"));
+      } else if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === "Tab") {
+        // Ctrl+Tab / Ctrl+Shift+Tab — cycle workspaces.
+        if (workspaces.length > 1 && activeWorkspaceId) {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+          const next = e.shiftKey
+            ? (idx - 1 + workspaces.length) % workspaces.length
+            : (idx + 1) % workspaces.length;
+          setActiveWorkspaceId(workspaces[next].id);
+        }
+      } else if (
+        meta &&
+        !e.shiftKey &&
+        !e.altKey &&
+        /^[1-9]$/.test(e.key)
+      ) {
+        // Ctrl/Cmd+1..9 — jump to workspace at that index.
+        const n = parseInt(e.key, 10) - 1;
+        if (workspaces[n]) {
+          e.preventDefault();
+          e.stopPropagation();
+          setActiveWorkspaceId(workspaces[n].id);
         }
       } else if (
         e.ctrlKey &&
         e.shiftKey &&
         !e.altKey &&
         !e.metaKey &&
-        (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "i" || e.key === "J")
+        (k === "c" || k === "i" || e.key === "J")
       ) {
-        // Block WebView's "Inspect Element" / DevTools shortcuts so they
-        // don't shadow our Ctrl+Shift+C copy.
+        // Block WebView's DevTools / Inspect shortcuts so Ctrl+Shift+C stays
+        // ours for copy.
         e.preventDefault();
       }
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [activeId]);
+  }, [activeId, activeWorkspaceId, workspaces]);
 
   // Suppress the WebView's native context menu and replace it with our own.
   useEffect(() => {
@@ -948,6 +1163,10 @@ function App() {
         },
         disabled: !focusedHost,
       },
+      {
+        label: t("tabmenu.rename_tab"),
+        onClick: () => renameWorkspace(wsId),
+      },
     ];
     // Merge section — flat list of other workspaces under a header. Clicking
     // one moves its panes into this workspace (next to the focused pane,
@@ -981,6 +1200,25 @@ function App() {
       destructive: true,
     });
     setMenu({ x, y, items });
+  }
+
+  // Prompt to rename the workspace tab title. Empty string clears it (back to
+  // auto-derived from focused pane's host).
+  async function renameWorkspace(wsId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const fp = ws.panes.find((p) => p.id === ws.focusedPaneId);
+    const current = ws.title ?? fp?.session.host.name ?? "";
+    const next = await askPrompt(t("tabmenu.rename_tab_prompt"), {
+      defaultValue: current,
+    });
+    if (next === null) return;
+    const trimmed = next.trim();
+    setWorkspaces((wss) =>
+      wss.map((w) =>
+        w.id === wsId ? { ...w, title: trimmed === "" ? undefined : trimmed } : w,
+      ),
+    );
   }
 
   // Merge `fromWsId` INTO `intoWsId`: panes are appended and the layout is
@@ -1143,6 +1381,87 @@ function App() {
   // single pane. The session is NOT touched — the TerminalView keeps running
   // because it lives in the flat layer keyed by session.id; only the
   // pane-tree / workspace bookkeeping changes around it.
+  // Drag-insert: rearrange a pane inside its workspace by dropping it on
+  // another pane's edge. The dragged leaf gets cut out of the current layout
+  // and the target leaf is wrapped in a split with the dragged leaf at the
+  // chosen edge. No new pane is created, no session touched — purely a layout
+  // reshape, so the terminal (flat layer, keyed by session.id) survives.
+  function insertPaneAtEdge(
+    wsId: string,
+    dragPaneId: string,
+    targetPaneId: string,
+    edge: PaneEdge,
+  ) {
+    if (dragPaneId === targetPaneId) return;
+    setWorkspaces((wss) =>
+      wss.map((w) => {
+        if (w.id !== wsId) return w;
+        const removed = removeLeaf(w.layout, dragPaneId);
+        if (!removed) return w; // would mean drag pane was the whole layout
+        const dragLeaf: LayoutNode = { kind: "leaf", paneId: dragPaneId };
+        const targetLeaf: LayoutNode = { kind: "leaf", paneId: targetPaneId };
+        const dir: "row" | "col" =
+          edge === "left" || edge === "right" ? "row" : "col";
+        const dragFirst = edge === "left" || edge === "top";
+        const newSplit: LayoutNode = {
+          kind: "split",
+          id: uid("s"),
+          dir,
+          ratio: 0.5,
+          a: dragFirst ? dragLeaf : targetLeaf,
+          b: dragFirst ? targetLeaf : dragLeaf,
+        };
+        const layout = replaceLeaf(removed, targetPaneId, newSplit);
+        return { ...w, layout, focusedPaneId: dragPaneId };
+      }),
+    );
+  }
+
+  // Compute which pane the cursor is hovering and which of its edges (within a
+  // 35% zone) is closest. Returns null when not over any other pane's edge.
+  function findPaneEdgeAt(
+    ws: Workspace,
+    cursorX: number,
+    cursorY: number,
+    mainRect: DOMRect,
+    excludePaneId: string,
+  ): { paneId: string; edge: PaneEdge } | null {
+    const rects = new Map<string, Rect>();
+    computeRects(ws.layout, { left: 0, top: 0, width: 100, height: 100 }, rects);
+    const EDGE_FRAC = 0.35;
+    for (const p of ws.panes) {
+      if (p.id === excludePaneId) continue;
+      const r = rects.get(p.id);
+      if (!r) continue;
+      const left = mainRect.left + (r.left / 100) * mainRect.width;
+      const top = mainRect.top + (r.top / 100) * mainRect.height;
+      const width = (r.width / 100) * mainRect.width;
+      const height = (r.height / 100) * mainRect.height;
+      if (
+        cursorX < left ||
+        cursorX > left + width ||
+        cursorY < top ||
+        cursorY > top + height
+      )
+        continue;
+      const fx = (cursorX - left) / width; // 0..1
+      const fy = (cursorY - top) / height;
+      const distLeft = fx;
+      const distRight = 1 - fx;
+      const distTop = fy;
+      const distBottom = 1 - fy;
+      const min = Math.min(distLeft, distRight, distTop, distBottom);
+      if (min > EDGE_FRAC) return null;
+      let edge: PaneEdge = "left";
+      if (min === distRight) edge = "right";
+      else if (min === distTop) edge = "top";
+      else if (min === distBottom) edge = "bottom";
+      else edge = "left";
+      return { paneId: p.id, edge };
+    }
+    return null;
+  }
+
   function extractPaneToNewWorkspace(wsId: string, paneId: string) {
     setWorkspaces((ws_) => {
       const source = ws_.find((w) => w.id === wsId);
@@ -1231,6 +1550,22 @@ function App() {
           y: ev.clientY,
           active: outside,
         });
+        // Inside the main area, look for another pane the cursor is hovering
+        // and compute an edge hint (insert here on release).
+        if (!outside && r) {
+          const ws2 = workspaces.find((w) => w.id === wsId);
+          const hint = ws2
+            ? findPaneEdgeAt(ws2, ev.clientX, ev.clientY, r, paneId)
+            : null;
+          if (
+            hint?.paneId !== paneEdgeHintRef.current?.paneId ||
+            hint?.edge !== paneEdgeHintRef.current?.edge
+          ) {
+            setPaneEdgeHint(hint);
+          }
+        } else if (paneEdgeHintRef.current) {
+          setPaneEdgeHint(null);
+        }
       }
     };
     const finish = (ev: PointerEvent | null) => {
@@ -1238,7 +1573,9 @@ function App() {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("blur", onCancel);
       const s = paneDragRef.current;
+      const hint = paneEdgeHintRef.current;
       setPaneDragState(null);
+      setPaneEdgeHint(null);
       if (!ev || !s) return;
       const main = mainAreaRef.current;
       const r = main?.getBoundingClientRect();
@@ -1248,7 +1585,11 @@ function App() {
         ev.clientX > r.right ||
         ev.clientY < r.top ||
         ev.clientY > r.bottom;
-      if (outside) extractPaneToNewWorkspace(s.wsId, s.paneId);
+      if (outside) {
+        extractPaneToNewWorkspace(s.wsId, s.paneId);
+      } else if (hint) {
+        insertPaneAtEdge(s.wsId, s.paneId, hint.paneId, hint.edge);
+      }
     };
     const onUp = (ev: PointerEvent) => finish(ev);
     const onCancel = () => finish(null);
@@ -1675,6 +2016,55 @@ function App() {
             );
           })}
 
+        {/* Drag-insert edge preview — the half of the hovered pane that the
+         *  dragged pane would occupy on release. */}
+        {paneEdgeHint &&
+          (() => {
+            const r = rects.get(paneEdgeHint.paneId);
+            if (!r) return null;
+            const e = paneEdgeHint.edge;
+            const baseStyle: React.CSSProperties = {
+              position: "absolute",
+              zIndex: 45,
+              background: "var(--nx-accent)",
+              opacity: 0.18,
+              border: "1px solid var(--nx-accent)",
+              pointerEvents: "none",
+            };
+            // Half of the target pane on the chosen edge.
+            const halfW = `${r.width / 2}%`;
+            const halfH = `${r.height / 2}%`;
+            const edgeStyle: React.CSSProperties =
+              e === "right"
+                ? {
+                    left: `${r.left + r.width / 2}%`,
+                    top: `${r.top}%`,
+                    width: halfW,
+                    height: `${r.height}%`,
+                  }
+                : e === "left"
+                  ? {
+                      left: `${r.left}%`,
+                      top: `${r.top}%`,
+                      width: halfW,
+                      height: `${r.height}%`,
+                    }
+                  : e === "top"
+                    ? {
+                        left: `${r.left}%`,
+                        top: `${r.top}%`,
+                        width: `${r.width}%`,
+                        height: halfH,
+                      }
+                    : {
+                        left: `${r.left}%`,
+                        top: `${r.top + r.height / 2}%`,
+                        width: `${r.width}%`,
+                        height: halfH,
+                      };
+            return <div style={{ ...baseStyle, ...edgeStyle }} />;
+          })()}
+
         {/* Split dividers. */}
         {dividers.map((d) => (
           <div
@@ -1857,28 +2247,33 @@ function App() {
         syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
       />
 
-      {vaultPanelOpen && (
-        <VaultPanel
-          onClose={() => setVaultPanelOpen(false)}
-          onChange={setVault}
-        />
-      )}
-      {syncPanelOpen && (
-        <SyncPanel
-          onClose={() => setSyncPanelOpen(false)}
-          onChange={setSync}
-        />
-      )}
-      {historyPanelOpen && (
-        <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
-      )}
-      {sftpTarget && (
-        <SFTPPanel
-          connectArgs={sftpTarget.args}
-          title={sftpTarget.title}
-          onClose={() => setSftpTarget(null)}
-        />
-      )}
+      {/* Lazy-loaded panels: rendered only when the user opens them. Bundle
+       *  splitting keeps the initial JS chunk small. Suspense fallback is null
+       *  — the brief load gap on first open is acceptable for a modal. */}
+      <Suspense fallback={null}>
+        {vaultPanelOpen && (
+          <VaultPanel
+            onClose={() => setVaultPanelOpen(false)}
+            onChange={setVault}
+          />
+        )}
+        {syncPanelOpen && (
+          <SyncPanel
+            onClose={() => setSyncPanelOpen(false)}
+            onChange={setSync}
+          />
+        )}
+        {historyPanelOpen && (
+          <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
+        )}
+        {sftpTarget && (
+          <SFTPPanel
+            connectArgs={sftpTarget.args}
+            title={sftpTarget.title}
+            onClose={() => setSftpTarget(null)}
+          />
+        )}
+      </Suspense>
       {pickerOpen && (
         <TabPicker
           onPick={(h) => {
@@ -1898,12 +2293,14 @@ function App() {
           }}
         />
       )}
-      {updatePanel !== null && (
-        <UpdatePanel
-          initial={updatePanel.initial}
-          onClose={() => setUpdatePanel(null)}
-        />
-      )}
+      <Suspense fallback={null}>
+        {updatePanel !== null && (
+          <UpdatePanel
+            initial={updatePanel.initial}
+            onClose={() => setUpdatePanel(null)}
+          />
+        )}
+      </Suspense>
       {menu && (
         <ContextMenu
           x={menu.x}
@@ -1929,10 +2326,12 @@ function App() {
        *  the active SSH session. */}
       {settingsOpen && (
         <div className="fixed inset-0 z-40">
-          <SettingsScreen
-            onClose={() => setSettingsOpen(false)}
-            sessionCount={allSessions.length}
-          />
+          <Suspense fallback={null}>
+            <SettingsScreen
+              onClose={() => setSettingsOpen(false)}
+              sessionCount={allSessions.length}
+            />
+          </Suspense>
         </div>
       )}
 

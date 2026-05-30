@@ -726,15 +726,33 @@ export function Sidebar({
         }}
       >
         {isEmpty && (
-          <div className="text-center text-[var(--nx-text-muted)] font-mono text-xs p-6">
-            {t("sidebar.empty_state")}
-            <br />
+          <div className="px-4 py-8 text-center font-mono">
+            <div className="text-[10px] uppercase tracking-[0.3em] text-[var(--nx-text-muted)] mb-1">
+              // {t("sidebar.empty_kicker")}
+            </div>
+            <div className="text-meta text-[var(--nx-text-soft)] mb-5 leading-relaxed">
+              {t("sidebar.empty_state")}
+            </div>
             <button
               onClick={() => setDialog({ kind: "add" })}
-              className="mt-2 text-[var(--nx-accent)] hover:text-[var(--nx-accent)] underline"
+              className="block w-full px-3 py-2 mb-3 rounded-nx border font-mono text-meta cursor-pointer transition-colors"
+              style={{
+                borderColor: "var(--nx-accent)",
+                color: "var(--nx-accent)",
+                background: "transparent",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = "var(--nx-elevated)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.background = "transparent")
+              }
             >
-              {t("sidebar.add_first")}
+              {t("sidebar.empty_add")}
             </button>
+            <div className="text-micro text-[var(--nx-text-muted)] leading-relaxed">
+              {t("sidebar.empty_import_hint")}
+            </div>
           </div>
         )}
 

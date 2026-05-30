@@ -45,22 +45,140 @@ export async function historyReadEvents(
   return await invoke<CastEvent[]>("history_read_events", { sessionId });
 }
 
-/** Sanitize a recorded chunk for REPLAY (History viewer / Transcript overlay)
- *  so the whole session stays as scrollable history. Runs only on replay —
- *  the live terminal writes raw bytes and is unaffected. */
+/** Sanitize a recorded chunk for REPLAY (History viewer / Transcript overlay).
+ *
+ *  Goal: bytes that were authored against a 2D screen (cursor positioning,
+ *  alt-screen redraws, line erases) become a LINEAR scrollable text stream
+ *  in xterm's main buffer. The user can wheel up and read everything that
+ *  ever streamed through the session, without text scribbling over itself.
+ *
+ *  Strategy: pass through SGR (colors), OSC (titles, hyperlinks), and
+ *  private-mode toggles like cursor visibility. Strip everything that
+ *  moves the cursor or erases parts of the screen — including the
+ *  alt-screen entry/exit toggles themselves (so TUI content flattens into
+ *  main rather than vanishing on exit).
+ *
+ *  Earlier versions kept positioning bytes; that left ESC[H / ESC[2J / ESC[K
+ *  scribbling over already-written content in the replay's main buffer,
+ *  which is what users perceived as "съехало и почти нечитаемо".
+ */
 export function filterAltBuffer(s: string): string {
-  return (
-    s
-      // 1. Alt-screen toggles (ESC[?1049/1048/1047/47 h|l) — flatten TUI
-      //    redraws (Claude Code / vim / htop) into the main buffer instead of
-      //    vanishing when the app exits alt-screen.
-      .replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "")
-      // 2. ESC[3J — erase scrollback. `clear` / `tput clear` emit it (usually
-      //    as ESC[H ESC[2J ESC[3J). Honoring it during replay wipes the entire
-      //    recorded history, leaving only post-clear output — the user sees
-      //    "only the tail". Strip it so the full session remains scrollable.
-      .replace(/\x1b\[3J/g, "")
-  );
+  let out = "";
+  let i = 0;
+  const len = s.length;
+
+  while (i < len) {
+    const c = s.charCodeAt(i);
+
+    // Plain byte (not ESC) → copy as-is.
+    if (c !== 0x1b) {
+      out += s[i];
+      i++;
+      continue;
+    }
+
+    // Need at least one byte after ESC to dispatch.
+    if (i + 1 >= len) {
+      i++;
+      continue;
+    }
+
+    const next = s[i + 1];
+
+    // ── CSI: ESC [ params final ────────────────────────────────────────
+    if (next === "[") {
+      const start = i;
+      let j = i + 2;
+      // Scan until final byte (0x40–0x7E).
+      while (j < len) {
+        const cc = s.charCodeAt(j);
+        if (cc >= 0x40 && cc <= 0x7e) break;
+        j++;
+      }
+      if (j >= len) {
+        // Truncated CSI — drop it.
+        i = len;
+        continue;
+      }
+      const final = s[j];
+      const params = s.slice(i + 2, j);
+      const seqEnd = j + 1;
+
+      // SGR (colors / bold / underline) — preserve, critical for readability.
+      if (final === "m") {
+        out += s.slice(start, seqEnd);
+        i = seqEnd;
+        continue;
+      }
+
+      // Alt-screen toggles: drop the toggle itself, insert a newline so
+      // the flattened TUI content visually separates from prior output.
+      if (/^\?(1049|1048|1047|47)$/.test(params) && (final === "h" || final === "l")) {
+        out += "\r\n";
+        i = seqEnd;
+        continue;
+      }
+
+      // Cursor positioning / movement: H f A B C D E F G d ` → strip.
+      // Erase: J K → strip (otherwise wipes already-written content).
+      // Insert/delete/scroll: L M P X @ S T → strip.
+      // Save/restore cursor, set scroll region: s u r → strip.
+      if (/^[HfABCDEFGd`JKLMPX@STsur]$/.test(final)) {
+        i = seqEnd;
+        continue;
+      }
+
+      // Anything else (private modes ?25h/?7h/?2004h, DSR, etc.) — keep.
+      out += s.slice(start, seqEnd);
+      i = seqEnd;
+      continue;
+    }
+
+    // ── OSC: ESC ] … ST/BEL ────────────────────────────────────────────
+    if (next === "]") {
+      const start = i;
+      let j = i + 2;
+      while (j < len) {
+        const cc = s.charCodeAt(j);
+        if (cc === 0x07) {
+          j++;
+          break;
+        }
+        if (cc === 0x1b && j + 1 < len && s[j + 1] === "\\") {
+          j += 2;
+          break;
+        }
+        j++;
+      }
+      out += s.slice(start, j);
+      i = j;
+      continue;
+    }
+
+    // ── Single-byte ESC commands that move/save cursor: skip.
+    //   ESC c  (RIS, full reset)
+    //   ESC 7  (DECSC, save cursor)   ESC 8  (DECRC, restore cursor)
+    //   ESC D  (IND)  ESC E  (NEL)   ESC H  (HTS)   ESC M  (RI)
+    if (
+      next === "c" ||
+      next === "7" ||
+      next === "8" ||
+      next === "D" ||
+      next === "E" ||
+      next === "H" ||
+      next === "M"
+    ) {
+      i += 2;
+      continue;
+    }
+
+    // Other 2-byte ESC sequences — keep.
+    out += s[i];
+    out += s[i + 1];
+    i += 2;
+  }
+
+  return out;
 }
 
 export async function historyDelete(sessionId: string): Promise<void> {

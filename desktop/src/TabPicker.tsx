@@ -1,5 +1,5 @@
 // TabPicker — compact host quick-picker shown when user clicks `+` in TabBar
-// or hits Ctrl+T. Keyboard-driven: type to filter, Up/Down to move, Enter to open.
+// or hits Ctrl+N. Keyboard-driven: type to filter, Up/Down to move, Enter to open.
 // Shares its visual surface with ContextMenu via Popover.tsx.
 
 import { useState, useEffect, useRef, useMemo } from "react";

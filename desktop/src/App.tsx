@@ -811,8 +811,11 @@ function App() {
           fn(activeWorkspaceId);
         }
       };
-      if (meta && !e.shiftKey && k === "t") {
-        // Ctrl/Cmd+T — new tab via picker (workspace).
+      if (meta && !e.shiftKey && k === "n") {
+        // Ctrl/Cmd+N — new tab via picker (workspace). Moved from Ctrl+T
+        // to free Ctrl+T for pass-through into the focused SSH session
+        // (e.g. claude-code uses Ctrl+T to toggle its task panel —
+        // hiding that panel cuts most TUI-overdraw noise in long streams).
         e.preventDefault();
         e.stopPropagation();
         openSshPicker();

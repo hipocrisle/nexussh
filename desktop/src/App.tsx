@@ -182,12 +182,22 @@ interface DividerInfo {
   at: number; // % position of the split line along the split axis
   cross: number; // % start along the cross axis
   len: number; // % length along the cross axis
+  /** Region the OWNING split node occupies — used to convert the cursor's
+   *  pixel position into a sub-region ratio when nested splits exist. */
+  region: Rect;
 }
 function collectDividers(node: LayoutNode, rect: Rect, out: DividerInfo[]) {
   if (node.kind === "leaf") return;
   if (node.dir === "row") {
     const aw = rect.width * node.ratio;
-    out.push({ id: node.id, isRow: true, at: rect.left + aw, cross: rect.top, len: rect.height });
+    out.push({
+      id: node.id,
+      isRow: true,
+      at: rect.left + aw,
+      cross: rect.top,
+      len: rect.height,
+      region: rect,
+    });
     collectDividers(node.a, { ...rect, width: aw }, out);
     collectDividers(
       node.b,
@@ -196,7 +206,14 @@ function collectDividers(node: LayoutNode, rect: Rect, out: DividerInfo[]) {
     );
   } else {
     const ah = rect.height * node.ratio;
-    out.push({ id: node.id, isRow: false, at: rect.top + ah, cross: rect.left, len: rect.width });
+    out.push({
+      id: node.id,
+      isRow: false,
+      at: rect.top + ah,
+      cross: rect.left,
+      len: rect.width,
+      region: rect,
+    });
     collectDividers(node.a, { ...rect, height: ah }, out);
     collectDividers(
       node.b,
@@ -830,11 +847,16 @@ function App() {
         },
         { separator: true, label: "" },
         {
-          // Stage A: only one split allowed → enabled when there's a single
-          // group with ≥2 tabs (so both panes end up with content).
+          // Stage C: arbitrary nesting allowed; only constraint is that the
+          // source pane must keep ≥1 tab after the move.
           label: t("tabmenu.split_right"),
-          onClick: () => splitRight(tabId),
-          disabled: groups.length > 1 || groupTabCount < 2,
+          onClick: () => splitFromPane(tabId, "row"),
+          disabled: groupTabCount < 2,
+        },
+        {
+          label: t("tabmenu.split_down"),
+          onClick: () => splitFromPane(tabId, "col"),
+          disabled: groupTabCount < 2,
         },
         { separator: true, label: "" },
         {
@@ -858,9 +880,13 @@ function App() {
 
   // Move a tab out into a new group on the right, turning its pane into a
   // vertical split. Stage A: only from a single, multi-tab group.
-  function splitRight(tabId: string) {
+  // Split the tab's current pane locally — row→side by side, col→stacked. Used
+  // by both "Split right" and "Split down". Nestable: replaces the leaf for the
+  // source group, so an already-split layout just gets deeper. Requires the
+  // source group to keep ≥1 tab after the move (so neither pane ends up empty).
+  function splitFromPane(tabId: string, dir: "row" | "col") {
     const g = groupOfTab(tabId);
-    if (!g) return;
+    if (!g || g.tabs.length < 2) return;
     const movedTab = g.tabs.find((x) => x.id === tabId);
     if (!movedTab) return;
     const newGroupId = uid("g");
@@ -873,9 +899,7 @@ function App() {
           tabs: remaining,
           activeId:
             x.activeId === tabId
-              ? remaining.length
-                ? remaining[remaining.length - 1].id
-                : null
+              ? remaining[remaining.length - 1]?.id ?? null
               : x.activeId,
         };
       });
@@ -885,7 +909,7 @@ function App() {
       replaceLeaf(lay, g.id, {
         kind: "split",
         id: uid("s"),
-        dir: "row",
+        dir,
         ratio: 0.5,
         a: { kind: "leaf", groupId: g.id },
         b: { kind: "leaf", groupId: newGroupId },
@@ -1018,12 +1042,15 @@ function App() {
   // host additionally gets the blinking caret.
   const openHostIds = new Set(allTabs.map((x) => x.host.id));
 
-  // Drag-tab-to-edge split (Stage B). Kept to the 2-pane model: only offered
-  // from a single pane with ≥2 tabs (nested grids are Stage C).
+  // Drag-tab-to-edge split (Stage C). Works for any pane count — the new pane
+  // wraps the WHOLE existing layout from the chosen edge, nesting if needed.
+  // Eligibility: either the source has ≥2 tabs (it stays non-empty), or there
+  // are other groups (so the source can collapse out and the rest survives).
   const EDGE_PX = 48;
   function edgeSplitEligible(tabId: string): boolean {
     const g = groupOfTab(tabId);
-    return groups.length === 1 && !!g && g.tabs.length >= 2;
+    if (!g) return false;
+    return g.tabs.length >= 2 || groups.length > 1;
   }
   function onTabDragMove(tabId: string, x: number, y: number) {
     if (!edgeSplitEligible(tabId)) {
@@ -1047,58 +1074,69 @@ function App() {
   }
   function splitToEdge(tabId: string, edge: Edge) {
     const g = groupOfTab(tabId);
-    if (groups.length !== 1 || !g || g.tabs.length < 2) return;
+    if (!g || !edgeSplitEligible(tabId)) return;
     const moved = g.tabs.find((x) => x.id === tabId);
     if (!moved) return;
-    const newGroupId = uid("g");
     const remaining = g.tabs.filter((x) => x.id !== tabId);
-    setGroups((gs) =>
-      gs
-        .map((x) =>
-          x.id === g.id
-            ? {
-                ...x,
-                tabs: remaining,
-                activeId:
-                  x.activeId === tabId
-                    ? remaining[remaining.length - 1]?.id ?? null
-                    : x.activeId,
-              }
-            : x,
-        )
-        .concat({ id: newGroupId, tabs: [moved], activeId: tabId }),
-    );
-    const dir: "row" | "col" =
-      edge === "left" || edge === "right" ? "row" : "col";
-    const newLeaf: LayoutNode = { kind: "leaf", groupId: newGroupId };
-    const baseLeaf: LayoutNode = { kind: "leaf", groupId: g.id };
-    const newFirst = edge === "left" || edge === "top";
-    setLayout({
-      kind: "split",
-      id: uid("s"),
-      dir,
-      ratio: 0.5,
-      a: newFirst ? newLeaf : baseLeaf,
-      b: newFirst ? baseLeaf : newLeaf,
+    // Collapse the source group out of the layout if it ends up empty (only
+    // when there are other groups to keep the layout non-degenerate).
+    const collapse = remaining.length === 0 && groups.length > 1;
+    const newGroupId = uid("g");
+    setGroups((gs) => {
+      let next = gs.map((x) =>
+        x.id === g.id
+          ? {
+              ...x,
+              tabs: remaining,
+              activeId:
+                x.activeId === tabId
+                  ? remaining[remaining.length - 1]?.id ?? null
+                  : x.activeId,
+            }
+          : x,
+      );
+      if (collapse) next = next.filter((x) => x.id !== g.id);
+      return [...next, { id: newGroupId, tabs: [moved], activeId: tabId }];
+    });
+    setLayout((prev) => {
+      const base = collapse ? removeLeaf(prev, g.id) ?? prev : prev;
+      const newLeaf: LayoutNode = { kind: "leaf", groupId: newGroupId };
+      const dir: "row" | "col" =
+        edge === "left" || edge === "right" ? "row" : "col";
+      const newFirst = edge === "left" || edge === "top";
+      return {
+        kind: "split",
+        id: uid("s"),
+        dir,
+        ratio: 0.5,
+        a: newFirst ? newLeaf : base,
+        b: newFirst ? base : newLeaf,
+      };
     });
     setFocusedGroupId(newGroupId);
   }
 
-  // Drag a split divider: adjust the owning node's ratio live. rect is captured
-  // at pointer-down (the split container doesn't move mid-drag).
+  // Drag a split divider: adjust the owning node's ratio live. The split's
+  // region (in %) lets us compute ratio against the correct sub-rectangle even
+  // when this split is nested inside other splits.
   function startPaneResize(
     e: React.PointerEvent,
     nodeId: string,
     isRow: boolean,
+    region: Rect,
   ) {
     e.preventDefault();
-    const container = (e.currentTarget as HTMLElement).parentElement;
-    if (!container) return;
-    const rect = container.getBoundingClientRect();
+    const main = mainAreaRef.current;
+    if (!main) return;
+    const mr = main.getBoundingClientRect();
+    const regionLeft = mr.left + (region.left / 100) * mr.width;
+    const regionTop = mr.top + (region.top / 100) * mr.height;
+    const regionW = (region.width / 100) * mr.width;
+    const regionH = (region.height / 100) * mr.height;
     const onMove = (ev: PointerEvent) => {
       const frac = isRow
-        ? (ev.clientX - rect.left) / rect.width
-        : (ev.clientY - rect.top) / rect.height;
+        ? (ev.clientX - regionLeft) / regionW
+        : (ev.clientY - regionTop) / regionH;
       const ratio = Math.min(0.85, Math.max(0.15, frac));
       setLayout((lay) => setNodeRatio(lay, nodeId, ratio));
     };
@@ -1326,7 +1364,7 @@ function App() {
         {dividers.map((d) => (
           <div
             key={d.id}
-            onPointerDown={(e) => startPaneResize(e, d.id, d.isRow)}
+            onPointerDown={(e) => startPaneResize(e, d.id, d.isRow, d.region)}
             className={
               (d.isRow ? "cursor-col-resize" : "cursor-row-resize") +
               " bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"

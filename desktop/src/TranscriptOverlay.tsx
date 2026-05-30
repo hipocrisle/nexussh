@@ -208,14 +208,22 @@ export function TranscriptOverlay({
         .replace(/\x1b./g, "");
 
     // Split by linefeed. \r without \n is a redraw artifact — collapse runs
-    // by keeping the LAST segment after the last \r on a logical line.
+    // by keeping the last NON-EMPTY segment after \r-splits on a logical
+    // line. (v1.0.9 had a bug here: a trailing \r before \n made the last
+    // segment empty, so EVERY line came out empty and the transcript was
+    // blank.)
     const lines: string[] = []; // ANSI-preserving lines
     const plain: string[] = []; // stripped for matching
     for (const rawLine of allText.split("\n")) {
-      // Take final segment after any \r — that's the last "frame" of a
-      // line that got redrawn in place (status bar / spinner updates).
-      const segments = rawLine.split("\r");
-      const finalAnsi = segments[segments.length - 1];
+      const clean = rawLine.replace(/\r+$/, "");
+      const segments = clean.split("\r");
+      let finalAnsi = "";
+      for (let j = segments.length - 1; j >= 0; j--) {
+        if (segments[j] !== "") {
+          finalAnsi = segments[j];
+          break;
+        }
+      }
       lines.push(finalAnsi);
       plain.push(stripAnsi(finalAnsi));
     }

@@ -210,8 +210,15 @@ export function HistoryPanel({ onClose }: Props) {
     const lines: string[] = [];
     const plain: string[] = [];
     for (const rawLine of allText.split("\n")) {
-      const segments = rawLine.split("\r");
-      const finalAnsi = segments[segments.length - 1];
+      const clean = rawLine.replace(/\r+$/, "");
+      const segments = clean.split("\r");
+      let finalAnsi = "";
+      for (let j = segments.length - 1; j >= 0; j--) {
+        if (segments[j] !== "") {
+          finalAnsi = segments[j];
+          break;
+        }
+      }
       lines.push(finalAnsi);
       plain.push(stripAnsi(finalAnsi));
     }

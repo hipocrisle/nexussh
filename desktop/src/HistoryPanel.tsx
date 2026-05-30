@@ -38,7 +38,7 @@ import {
   fmtTs,
   fmtBytes,
   filterAltBuffer,
-  CastEvent,
+  CastReplay,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
@@ -82,7 +82,7 @@ export function HistoryPanel({ onClose }: Props) {
   }
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [events, setEvents] = useState<CastEvent[] | null>(null);
+  const [replay, setReplay] = useState<CastReplay | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -109,16 +109,16 @@ export function HistoryPanel({ onClose }: Props) {
     refresh();
   }, []);
 
-  // Load selected session events
+  // Load selected session events + original dims
   useEffect(() => {
     if (!selectedId) {
-      setEvents(null);
+      setReplay(null);
       return;
     }
     setLoading(true);
     setError(null);
     historyReadEvents(selectedId)
-      .then(setEvents)
+      .then(setReplay)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [selectedId]);
@@ -190,41 +190,28 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm
+  // Replay events into xterm.
+  // Resize to the ORIGINAL session dims (from cast header) BEFORE writing
+  // so the program's absolute positioning + scroll region lines up with
+  // the same grid it was authored for. Without this, fit's container size
+  // is wrong and the layout collapses — status bars land mid-screen,
+  // content wraps at the wrong column.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
-    if (!events) return;
+    if (!replay) return;
 
-    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
-
-    // Replay with a simple consecutive-line dedup: Claude Code's streaming
-    // responses often emit the same paragraph multiple times as the model
-    // re-flows text. We accumulate output into a buffer and skip lines that
-    // are byte-identical to the immediately preceding one.
-    let prevLine = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prevLine) {
-          // skip the duplicate line + its newline
-          continue;
-        }
-        term.write(line + sep);
-        if (sep) prevLine = line;
-      }
-    };
-    for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+    if (replay.cols > 0 && replay.rows > 0) {
+      const rows = Math.max(replay.rows, term.rows);
+      term.resize(replay.cols, rows);
     }
-
+    for (const ev of replay.events) {
+      term.write(filterAltBuffer(ev.d));
+    }
     term.scrollToTop();
-    requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events]);
+  }, [replay]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -284,12 +271,12 @@ export function HistoryPanel({ onClose }: Props) {
 
   const selectedMeta = entries.find((e) => e.session_id === selectedId);
   const durationLabel = useMemo(() => {
-    if (!events || events.length === 0) return null;
-    const lastT = events[events.length - 1].t;
+    if (!replay || replay.events.length === 0) return null;
+    const lastT = replay.events[replay.events.length - 1].t;
     if (lastT < 60) return `${lastT.toFixed(1)}s`;
     if (lastT < 3600) return `${(lastT / 60).toFixed(1)}m`;
     return `${(lastT / 3600).toFixed(1)}h`;
-  }, [events]);
+  }, [replay]);
 
   // Match counts per session from the cross-session search hits (real data).
   const matchCounts = useMemo(() => {
@@ -451,7 +438,7 @@ export function HistoryPanel({ onClose }: Props) {
                       )}
                       {" · "}
                       <span>
-                        {events?.length ?? 0} {t("history.chunks")}
+                        {replay?.events.length ?? 0} {t("history.chunks")}
                       </span>
                     </span>
                   )}

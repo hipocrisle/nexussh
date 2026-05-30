@@ -22,7 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   historyReadEvents,
   filterAltBuffer,
-  CastEvent,
+  CastReplay,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
@@ -64,13 +64,13 @@ export function TranscriptOverlay({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const [events, setEvents] = useState<CastEvent[] | null>(null);
+  const [replay, setReplay] = useState<CastReplay | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Load events for this session
+  // Load events + original session dims for this session
   useEffect(() => {
     historyReadEvents(sessionId)
-      .then(setEvents)
+      .then(setReplay)
       .catch((e) => setError(String(e)));
   }, [sessionId]);
 
@@ -174,32 +174,31 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change
+  // Replay events into hidden xterm whenever the payload changes.
+  // Crucial: resize the terminal to the ORIGINAL session's cols/rows
+  // BEFORE writing so the program's absolute positioning (status bars at
+  // row=originalRows, scroll region setup) lands on the same grid it was
+  // authored for. Without this, fit.fit()'s container-derived cols/rows
+  // make the layout collapse — TUI rows land mid-screen and content
+  // wraps at the wrong column.
   useEffect(() => {
     const term = termRef.current;
-    if (!term || !events) return;
+    if (!term || !replay) return;
     term.reset();
     fitRef.current?.fit();
-    let prev = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prev) continue;
-        term.write(line + sep);
-        if (sep) prev = line;
-      }
-    };
-    for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+    if (replay.cols > 0 && replay.rows > 0) {
+      const rows = Math.max(replay.rows, term.rows);
+      term.resize(replay.cols, rows);
     }
-    // Scroll to BOTTOM so user sees the latest output first; they can wheel
-    // up to inspect older content. Same UX as terminal scrollback.
+    for (const ev of replay.events) {
+      term.write(filterAltBuffer(ev.d));
+    }
+    // Scroll to bottom — user sees the latest output first, wheels up
+    // to inspect older content. Same UX as terminal scrollback.
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });
-  }, [events]);
+  }, [replay]);
 
   // Apply theme/font changes live
   useEffect(() => {

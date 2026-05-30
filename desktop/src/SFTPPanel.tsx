@@ -34,6 +34,7 @@ import {
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton, Checkbox } from "./components/primitives";
+import { askPrompt, askConfirm } from "./dialogs";
 
 interface Props {
   connectArgs: ConnectArgs;
@@ -258,7 +259,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
   async function onMkdir() {
     if (!sftpId) return;
-    const name = window.prompt(t("sftp.new_folder_prompt"));
+    const name = await askPrompt(t("sftp.new_folder_prompt"));
     if (!name || !name.trim()) return;
     setError(null);
     try {
@@ -325,7 +326,9 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
   async function onRename(entry: SftpEntry) {
     if (!sftpId) return;
-    const next = window.prompt(t("sftp.rename_prompt"), entry.name);
+    const next = await askPrompt(t("sftp.rename_prompt"), {
+      defaultValue: entry.name,
+    });
     if (!next || !next.trim() || next === entry.name) return;
     setError(null);
     try {
@@ -338,7 +341,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
   async function onDelete(entry: SftpEntry) {
     if (!sftpId) return;
-    if (!window.confirm(t("sftp.delete_confirm", { name: entry.name }))) return;
+    if (!(await askConfirm(t("sftp.delete_confirm", { name: entry.name }), { destructive: true }))) return;
     setError(null);
     try {
       await sftpRemove(sftpId, joinPath(cwd, entry.name), entry.is_dir);

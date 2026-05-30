@@ -42,6 +42,7 @@ import {
 } from "./hosts";
 import { HostDialog } from "./HostDialog";
 import { MenuItem } from "./ContextMenu";
+import { askPrompt } from "./dialogs";
 
 // Folders form a tree via "/"-separated group paths ("Work/Office-A/Switches").
 interface FolderNode {
@@ -281,7 +282,7 @@ export function Sidebar({
       label: t("sidebar.move_new_folder"),
       icon: <FolderPlus size={13} />,
       onClick: async () => {
-        const name = window.prompt(t("sidebar.new_folder_prompt"));
+        const name = await askPrompt(t("sidebar.new_folder_prompt"));
         if (name && name.trim()) {
           await moveHostToFolder(h.id, name.trim());
           reload();
@@ -362,7 +363,9 @@ export function Sidebar({
           label: t("sidebar.menu_rename_folder"),
           icon: <Edit2 size={13} />,
           onClick: async () => {
-            const name = window.prompt(t("sidebar.rename_folder_prompt"), leaf);
+            const name = await askPrompt(t("sidebar.rename_folder_prompt"), {
+              defaultValue: leaf,
+            });
             const next = name?.trim();
             if (!next || next === leaf || next.includes("/")) return;
             const newPath = parent ? `${parent}/${next}` : next;
@@ -375,8 +378,10 @@ export function Sidebar({
         {
           label: t("sidebar.menu_new_subfolder"),
           icon: <FolderPlus size={13} />,
-          onClick: () => {
-            const name = window.prompt(t("sidebar.new_subfolder_prompt", { parent: leaf }));
+          onClick: async () => {
+            const name = await askPrompt(
+              t("sidebar.new_subfolder_prompt", { parent: leaf }),
+            );
             const sub = name?.trim();
             if (!sub) return;
             addKnownFolder(`${path}/${sub}`);
@@ -522,8 +527,8 @@ export function Sidebar({
       },
       {
         label: t("sidebar.menu_new_folder"),
-        onClick: () => {
-          const name = window.prompt(t("sidebar.new_folder_prompt"));
+        onClick: async () => {
+          const name = await askPrompt(t("sidebar.new_folder_prompt"));
           if (name && name.trim()) {
             addKnownFolder(name.trim());
             refreshFolders();

@@ -1,8 +1,8 @@
 // Add/edit host modal.
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Lock, KeyRound, Shield } from "lucide-react";
+import { X, Lock, KeyRound, Shield, ChevronDown } from "lucide-react";
 import { HostRecord, saveHost, newHostId } from "./hosts";
 import { vaultKeys } from "./vault";
 import { useSettings } from "./settings/settings-store";
@@ -221,17 +221,12 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
             />
 
             <RowLabel className="mt-4">{t("dialog.group")}</RowLabel>
-            <Input
+            <GroupCombobox
               value={group}
               onChange={setGroup}
+              options={knownGroups}
               placeholder={t("dialog.group_ph")}
-              list="nexussh-known-groups"
             />
-            <datalist id="nexussh-known-groups">
-              {knownGroups.map((g) => (
-                <option key={g} value={g} />
-              ))}
-            </datalist>
 
             <RowLabel className="mt-4">{t("dialog.note")}</RowLabel>
             <textarea
@@ -378,6 +373,88 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
           </div>
         </div>
       </form>
+    </div>
+  );
+}
+
+// GroupCombobox — themed input + dropdown of existing groups. Replaces the
+// browser's native <input list=…> + <datalist> popup, which renders as a
+// white WebView2 system menu with no theme support.
+function GroupCombobox({
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const filter = value.trim().toLowerCase();
+  const filtered = filter
+    ? options.filter((g) => g.toLowerCase().includes(filter))
+    : options;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <Input
+        value={value}
+        onChange={(v) => {
+          onChange(v);
+          if (!open) setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder={placeholder}
+      />
+      {options.length > 0 && (
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={() => setOpen((o) => !o)}
+          className="absolute right-1.5 top-1/2 mt-[3px] -translate-y-1/2 p-1 text-nx-muted hover:text-nx-text"
+        >
+          <ChevronDown size={14} />
+        </button>
+      )}
+      {open && filtered.length > 0 && (
+        <div
+          className="absolute top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal z-30 font-mono text-sm"
+        >
+          {filtered.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(opt);
+                setOpen(false);
+              }}
+              className="w-full text-left px-3 py-1.5 hover:bg-nx-elevated text-nx-text"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

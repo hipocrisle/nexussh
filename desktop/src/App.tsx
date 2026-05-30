@@ -11,7 +11,8 @@ import {
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
-import { ConfirmDialog } from "./ConfirmDialog";
+import { DialogHost } from "./DialogHost";
+import { askConfirm } from "./dialogs";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { VaultPanel } from "./VaultPanel";
 import { SyncPanel } from "./SyncPanel";
@@ -416,29 +417,6 @@ function App() {
   function askPassword(h: HostRecord): Promise<string | null> {
     return new Promise((resolve) =>
       setPwPrompt({ user: h.user, host: h.host, resolve }),
-    );
-  }
-
-  // Promise-based themed confirm dialog (replaces window.confirm + Tauri ask()).
-  const [confirmState, setConfirmState] = useState<{
-    message: string;
-    title?: string;
-    confirmLabel?: string;
-    cancelLabel?: string;
-    destructive?: boolean;
-    resolve: (v: boolean) => void;
-  } | null>(null);
-  function askConfirm(
-    message: string,
-    opts: {
-      title?: string;
-      confirmLabel?: string;
-      cancelLabel?: string;
-      destructive?: boolean;
-    } = {},
-  ): Promise<boolean> {
-    return new Promise((resolve) =>
-      setConfirmState({ message, ...opts, resolve }),
     );
   }
 
@@ -1549,7 +1527,7 @@ function App() {
               /* nothing to clear — no edge-band in the workspace model */
             }}
           />
-          <div className="flex-1 min-h-0 relative">
+          <div className="flex-1 min-h-0 flex flex-col">
             {renderActiveLayoutArea()}
           </div>
         </div>
@@ -1657,23 +1635,7 @@ function App() {
         />
       )}
 
-      {confirmState && (
-        <ConfirmDialog
-          message={confirmState.message}
-          title={confirmState.title}
-          confirmLabel={confirmState.confirmLabel}
-          cancelLabel={confirmState.cancelLabel}
-          destructive={confirmState.destructive}
-          onConfirm={() => {
-            confirmState.resolve(true);
-            setConfirmState(null);
-          }}
-          onCancel={() => {
-            confirmState.resolve(false);
-            setConfirmState(null);
-          }}
-        />
-      )}
+      <DialogHost />
     </main>
   );
 }

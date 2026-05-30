@@ -37,8 +37,8 @@ import {
   historyExport,
   fmtTs,
   fmtBytes,
-  sanitizeReplayChunk,
-  CastReplay,
+  filterAltBuffer,
+  CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
@@ -82,7 +82,7 @@ export function HistoryPanel({ onClose }: Props) {
   }
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [replay, setReplay] = useState<CastReplay | null>(null);
+  const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -95,9 +95,6 @@ export function HistoryPanel({ onClose }: Props) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const searchRef = useRef<SearchAddon | null>(null);
-  // Pinned to the original session's cols so window/fullscreen resize never
-  // shifts the recorded bytes — they wrap exactly where the program intended.
-  const replayColsRef = useRef<number>(0);
 
   const refresh = async () => {
     try {
@@ -112,16 +109,16 @@ export function HistoryPanel({ onClose }: Props) {
     refresh();
   }, []);
 
-  // Load selected session events + original dims
+  // Load selected session events
   useEffect(() => {
     if (!selectedId) {
-      setReplay(null);
+      setEvents(null);
       return;
     }
     setLoading(true);
     setError(null);
     historyReadEvents(selectedId)
-      .then(setReplay)
+      .then(setEvents)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [selectedId]);
@@ -162,16 +159,7 @@ export function HistoryPanel({ onClose }: Props) {
       passive: false,
     });
 
-    // On window resize: re-fit but pin cols to the original replay width so
-    // the recorded bytes keep their original line-wrap layout. fit.fit() alone
-    // would re-pick cols from the new container width and shift the text.
-    const onWinResize = () => {
-      fit.fit();
-      const pinned = replayColsRef.current;
-      if (pinned > 0 && term.cols !== pinned) {
-        term.resize(pinned, term.rows);
-      }
-    };
+    const onWinResize = () => fit.fit();
     window.addEventListener("resize", onWinResize);
     return () => {
       window.removeEventListener("resize", onWinResize);
@@ -193,46 +181,50 @@ export function HistoryPanel({ onClose }: Props) {
   }, [settings.theme, settings.font, palette]);
 
   // Re-fit when fullscreen toggle changes the container size, otherwise the
-  // xterm canvas stays at its prior cols/rows in the giant new modal. Cols
-  // stays pinned to the original replay width afterwards.
+  // xterm canvas stays at its prior cols/rows in the giant new modal.
   useEffect(() => {
+    if (!fitRef.current) return;
+    // Two frames: one for the layout to settle, one for fit to take effect.
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const term = termRef.current;
-        if (!fitRef.current || !term) return;
-        fitRef.current.fit();
-        const pinned = replayColsRef.current;
-        if (pinned > 0 && term.cols !== pinned) {
-          term.resize(pinned, term.rows);
-        }
-      });
+      requestAnimationFrame(() => fitRef.current?.fit());
     });
   }, [fullscreen]);
 
-  // Replay events into xterm.
-  // Resize to the ORIGINAL session dims (from cast header) before writing so
-  // ESC sequences (clear-to-EOL, absolute positioning, line wrap) operate
-  // against the same column count the bytes were authored for. fit.fit()
-  // would otherwise pick whatever the container size is and shift the text.
+  // Replay events into xterm
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
-    if (!replay) return;
+    if (!events) return;
 
+    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
-    if (replay.cols > 0 && replay.rows > 0) {
-      const rows = Math.max(replay.rows, term.rows);
-      term.resize(replay.cols, rows);
-      replayColsRef.current = replay.cols;
-    } else {
-      replayColsRef.current = 0;
+
+    // Replay with a simple consecutive-line dedup: Claude Code's streaming
+    // responses often emit the same paragraph multiple times as the model
+    // re-flows text. We accumulate output into a buffer and skip lines that
+    // are byte-identical to the immediately preceding one.
+    let prevLine = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        if (line && sep && line === prevLine) {
+          // skip the duplicate line + its newline
+          continue;
+        }
+        term.write(line + sep);
+        if (sep) prevLine = line;
+      }
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
     }
-    for (const ev of replay.events) {
-      term.write(sanitizeReplayChunk(ev.d));
-    }
+
     term.scrollToTop();
-  }, [replay]);
+    requestAnimationFrame(() => fitRef.current?.fit());
+  }, [events]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -292,12 +284,12 @@ export function HistoryPanel({ onClose }: Props) {
 
   const selectedMeta = entries.find((e) => e.session_id === selectedId);
   const durationLabel = useMemo(() => {
-    if (!replay || replay.events.length === 0) return null;
-    const lastT = replay.events[replay.events.length - 1].t;
+    if (!events || events.length === 0) return null;
+    const lastT = events[events.length - 1].t;
     if (lastT < 60) return `${lastT.toFixed(1)}s`;
     if (lastT < 3600) return `${(lastT / 60).toFixed(1)}m`;
     return `${(lastT / 3600).toFixed(1)}h`;
-  }, [replay]);
+  }, [events]);
 
   // Match counts per session from the cross-session search hits (real data).
   const matchCounts = useMemo(() => {
@@ -459,7 +451,7 @@ export function HistoryPanel({ onClose }: Props) {
                       )}
                       {" · "}
                       <span>
-                        {replay?.events.length ?? 0} {t("history.chunks")}
+                        {events?.length ?? 0} {t("history.chunks")}
                       </span>
                     </span>
                   )}
@@ -546,7 +538,7 @@ export function HistoryPanel({ onClose }: Props) {
                 e.stopPropagation();
                 setCtxMenu({ x: e.clientX, y: e.clientY });
               }}
-              className="flex-1 min-h-0 bg-nx-bg p-1 overflow-x-auto"
+              className="flex-1 min-h-0 bg-nx-bg p-1"
             />
             {ctxMenu && (() => {
               const term = termRef.current;

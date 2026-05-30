@@ -1,19 +1,15 @@
 // TranscriptOverlay — read-only scrollback view that overlays an active SSH
-// tab when the user wants to scroll through history of the session.
+// tab when the user wants to scroll through history that xterm.js can't show
+// in alt-screen mode (Claude Code / vim / htop / less / tmux).
 //
 // How it works:
 //   * Live TerminalView keeps running underneath (its SSH session is alive
 //     in the backend, bytes still flowing into the .cast file).
 //   * On open we call historyReadEvents(sessionId) to fetch every chunk
-//     the backend has logged so far for THIS session, plus the original
-//     cols/rows the session was authored at.
-//   * We resize the replay xterm to those exact cols so ESC[K, absolute
-//     positioning and line wrap compute against the SAME column count the
-//     bytes were emitted for — otherwise text "shifts".
-//   * Bytes are written raw (only ESC[3J scrollback-wipe is stripped) so
-//     xterm.js handles alt-screen natively: vim/htop episodes live in the
-//     alt buffer; main-buffer scrollback shows the rest of the session
-//     cleanly without corruption from interleaved alt-screen positioning.
+//     the backend has logged so far for THIS session.
+//   * We feed those bytes through filterAltBuffer (strips ESC[?1049h/l etc.)
+//     into a hidden xterm.js instance, so all redraws accumulate in main
+//     buffer scrollback — wheel scroll works there.
 //   * Esc / Ctrl-Shift-Down dismisses the overlay; the live terminal is
 //     immediately visible again with its current state intact.
 
@@ -25,8 +21,8 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   historyReadEvents,
-  sanitizeReplayChunk,
-  CastReplay,
+  filterAltBuffer,
+  CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
@@ -68,14 +64,13 @@ export function TranscriptOverlay({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const replayColsRef = useRef<number>(0);
-  const [replay, setReplay] = useState<CastReplay | null>(null);
+  const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Load events + original session dims for this session
+  // Load events for this session
   useEffect(() => {
     historyReadEvents(sessionId)
-      .then(setReplay)
+      .then(setEvents)
       .catch((e) => setError(String(e)));
   }, [sessionId]);
 
@@ -166,16 +161,7 @@ export function TranscriptOverlay({
       return true;
     });
 
-    // On window resize: re-fit but pin cols to the original replay width so
-    // recorded bytes keep wrapping where they were authored. fit.fit() would
-    // otherwise re-pick cols from the new container width and shift the text.
-    const onWin = () => {
-      fit.fit();
-      const pinned = replayColsRef.current;
-      if (pinned > 0 && term.cols !== pinned) {
-        term.resize(pinned, term.rows);
-      }
-    };
+    const onWin = () => fit.fit();
     window.addEventListener("resize", onWin);
 
     return () => {
@@ -188,32 +174,32 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change.
-  // Key: resize the terminal to the ORIGINAL session's cols (and at least
-  // its rows) BEFORE writing so all ESC sequences operate against the same
-  // column count the bytes were authored for. Otherwise text shifts and
-  // wraps at the wrong points.
+  // Replay events into hidden xterm whenever events change
   useEffect(() => {
     const term = termRef.current;
-    if (!term || !replay) return;
+    if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
-    if (replay.cols > 0 && replay.rows > 0) {
-      const rows = Math.max(replay.rows, term.rows);
-      term.resize(replay.cols, rows);
-      replayColsRef.current = replay.cols;
-    } else {
-      replayColsRef.current = 0;
-    }
-    for (const ev of replay.events) {
-      term.write(sanitizeReplayChunk(ev.d));
+    let prev = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        if (line && sep && line === prev) continue;
+        term.write(line + sep);
+        if (sep) prev = line;
+      }
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
     }
     // Scroll to BOTTOM so user sees the latest output first; they can wheel
     // up to inspect older content. Same UX as terminal scrollback.
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });
-  }, [replay]);
+  }, [events]);
 
   // Apply theme/font changes live
   useEffect(() => {
@@ -281,10 +267,7 @@ export function TranscriptOverlay({
           <X size={14} />
         </button>
       </div>
-      {/* overflow-x: auto so a session wider than the overlay (rare —
-       *  mostly happens in split-view panes) gets a horizontal scrollbar
-       *  instead of clipping. xterm.js handles vertical scrollback itself. */}
-      <div ref={containerRef} className="flex-1 min-h-0 p-1 overflow-x-auto" />
+      <div ref={containerRef} className="flex-1 min-h-0 p-1" />
       {error && (
         <div className="px-3 py-1 text-xs font-mono text-[var(--nx-error)]">
           ✗ {error}

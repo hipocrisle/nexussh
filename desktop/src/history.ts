@@ -39,46 +39,28 @@ export interface CastEvent {
   d: string;
 }
 
-/** Replay payload — events + ORIGINAL session dimensions so the consumer
- *  can size its replay xterm to match. Programs wrote absolute positioning
- *  and scroll regions against a specific grid; without matching the
- *  replay xterm to it, TUI lays out wrong rows of the visible area. */
-export interface CastReplay {
-  cols: number;
-  rows: number;
-  events: CastEvent[];
-}
-
 export async function historyReadEvents(
   sessionId: string,
-): Promise<CastReplay> {
-  return await invoke<CastReplay>("history_read_events", { sessionId });
+): Promise<CastEvent[]> {
+  return await invoke<CastEvent[]>("history_read_events", { sessionId });
 }
 
-/** Sanitize a recorded chunk for REPLAY.
- *
- *  Two surgical strips, nothing else:
- *  1. Alt-screen toggles (ESC[?1049/1048/1047/47 h|l) — drop so all TUI
- *     redraws flatten into main buffer where scrollback lives. Without
- *     this xterm enters alt-screen and wheel becomes a no-op (task 204),
- *     i.e. content not scrollable.
- *  2. ESC[3J (erase scrollback) — `clear` emits this; honoring it during
- *     replay wipes the entire recorded history, leaving "only the tail".
- *
- *  Everything else (positioning, colors, OSC) passes through unchanged.
- *  The replay xterm is sized to the ORIGINAL session's cols×rows so the
- *  program's absolute positioning (status bars, scroll region) lines up
- *  with the same screen layout it was authored for. Content that streams
- *  through the scroll region scrolls naturally into the replay's
- *  scrollback; the fixed TUI rows (status bars, etc.) stay at the bottom
- *  and don't pollute the scrollback. That's the v1.0.0 design with the
- *  v1.0.1 sizing fix — minus the v1.0.1 mistake of also stripping the
- *  alt-screen toggle (which sent content into alt-buffer where wheel is
- *  disabled). */
+/** Sanitize a recorded chunk for REPLAY (History viewer / Transcript overlay)
+ *  so the whole session stays as scrollable history. Runs only on replay —
+ *  the live terminal writes raw bytes and is unaffected. */
 export function filterAltBuffer(s: string): string {
-  return s
-    .replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "")
-    .replace(/\x1b\[3J/g, "");
+  return (
+    s
+      // 1. Alt-screen toggles (ESC[?1049/1048/1047/47 h|l) — flatten TUI
+      //    redraws (Claude Code / vim / htop) into the main buffer instead of
+      //    vanishing when the app exits alt-screen.
+      .replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "")
+      // 2. ESC[3J — erase scrollback. `clear` / `tput clear` emit it (usually
+      //    as ESC[H ESC[2J ESC[3J). Honoring it during replay wipes the entire
+      //    recorded history, leaving only post-clear output — the user sees
+      //    "only the tail". Strip it so the full session remains scrollable.
+      .replace(/\x1b\[3J/g, "")
+  );
 }
 
 export async function historyDelete(sessionId: string): Promise<void> {

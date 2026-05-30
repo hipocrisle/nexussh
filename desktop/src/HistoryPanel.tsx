@@ -38,7 +38,7 @@ import {
   fmtTs,
   fmtBytes,
   filterAltBuffer,
-  CastReplay,
+  CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
@@ -82,7 +82,7 @@ export function HistoryPanel({ onClose }: Props) {
   }
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [replay, setReplay] = useState<CastReplay | null>(null);
+  const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -109,16 +109,16 @@ export function HistoryPanel({ onClose }: Props) {
     refresh();
   }, []);
 
-  // Load selected session events + original dims
+  // Load selected session events
   useEffect(() => {
     if (!selectedId) {
-      setReplay(null);
+      setEvents(null);
       return;
     }
     setLoading(true);
     setError(null);
     historyReadEvents(selectedId)
-      .then(setReplay)
+      .then(setEvents)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
   }, [selectedId]);
@@ -190,46 +190,41 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm with near-dedup. claude-code (Ink) and tmux
-  // redraw their TUI panels every few hundred ms without scroll regions,
-  // so each frame's bottom rows end up duplicated in scrollback. Pass 1
-  // processes bytes at the original session grid; pass 2 reads back the
-  // rendered scrollback lines, drops near-duplicates within a small
-  // window, and rewrites — what remains is mostly the user's content.
+  // Replay events into xterm
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
-    if (!replay) return;
+    if (!events) return;
 
+    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
-    if (replay.cols > 0 && replay.rows > 0) {
-      const rows = Math.max(replay.rows, term.rows);
-      term.resize(replay.cols, rows);
-    }
-    for (const ev of replay.events) {
-      term.write(filterAltBuffer(ev.d));
-    }
-    requestAnimationFrame(() => {
-      const buf = term.buffer.normal;
-      const total = buf.length;
-      const lines: string[] = [];
-      const recent: string[] = [];
-      const WINDOW = 8;
-      for (let y = 0; y < total; y++) {
-        const raw = buf.getLine(y)?.translateToString(true) ?? "";
-        const line = raw.trimEnd();
-        if (line === "" && recent[recent.length - 1] === "") continue;
-        if (line !== "" && recent.includes(line)) continue;
-        lines.push(line);
-        recent.push(line);
-        if (recent.length > WINDOW) recent.shift();
+
+    // Replay with a simple consecutive-line dedup: Claude Code's streaming
+    // responses often emit the same paragraph multiple times as the model
+    // re-flows text. We accumulate output into a buffer and skip lines that
+    // are byte-identical to the immediately preceding one.
+    let prevLine = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        if (line && sep && line === prevLine) {
+          // skip the duplicate line + its newline
+          continue;
+        }
+        term.write(line + sep);
+        if (sep) prevLine = line;
       }
-      term.reset();
-      term.write(lines.join("\r\n") + "\r\n");
-      term.scrollToTop();
-    });
-  }, [replay]);
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
+    }
+
+    term.scrollToTop();
+    requestAnimationFrame(() => fitRef.current?.fit());
+  }, [events]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -289,12 +284,12 @@ export function HistoryPanel({ onClose }: Props) {
 
   const selectedMeta = entries.find((e) => e.session_id === selectedId);
   const durationLabel = useMemo(() => {
-    if (!replay || replay.events.length === 0) return null;
-    const lastT = replay.events[replay.events.length - 1].t;
+    if (!events || events.length === 0) return null;
+    const lastT = events[events.length - 1].t;
     if (lastT < 60) return `${lastT.toFixed(1)}s`;
     if (lastT < 3600) return `${(lastT / 60).toFixed(1)}m`;
     return `${(lastT / 3600).toFixed(1)}h`;
-  }, [replay]);
+  }, [events]);
 
   // Match counts per session from the cross-session search hits (real data).
   const matchCounts = useMemo(() => {
@@ -456,7 +451,7 @@ export function HistoryPanel({ onClose }: Props) {
                       )}
                       {" · "}
                       <span>
-                        {replay?.events.length ?? 0} {t("history.chunks")}
+                        {events?.length ?? 0} {t("history.chunks")}
                       </span>
                     </span>
                   )}

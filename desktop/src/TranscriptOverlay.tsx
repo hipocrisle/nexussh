@@ -22,7 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   historyReadEvents,
   filterAltBuffer,
-  CastReplay,
+  CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
@@ -64,13 +64,13 @@ export function TranscriptOverlay({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const [replay, setReplay] = useState<CastReplay | null>(null);
+  const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Load events + original session dims for this session
+  // Load events for this session
   useEffect(() => {
     historyReadEvents(sessionId)
-      .then(setReplay)
+      .then(setEvents)
       .catch((e) => setError(String(e)));
   }, [sessionId]);
 
@@ -174,60 +174,32 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever the payload changes.
-  // Crucial: resize the terminal to the ORIGINAL session's cols/rows
-  // BEFORE writing so the program's absolute positioning (status bars at
-  // row=originalRows, scroll region setup) lands on the same grid it was
-  // authored for. Without this, fit.fit()'s container-derived cols/rows
-  // make the layout collapse — TUI rows land mid-screen and content
-  // wraps at the wrong column.
+  // Replay events into hidden xterm whenever events change
   useEffect(() => {
     const term = termRef.current;
-    if (!term || !replay) return;
+    if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
-    if (replay.cols > 0 && replay.rows > 0) {
-      const rows = Math.max(replay.rows, term.rows);
-      term.resize(replay.cols, rows);
-    }
-    // Pass 1: process bytes through a hidden terminal at the original
-    // session dimensions so absolute positioning lands on the right grid.
-    // We then read the rendered cells back, near-dedup, and rewrite —
-    // this is what kills the TUI/tmux-status pile-up in scrollback.
-    // claude-code (Ink) and tmux don't use scroll regions, so every TUI
-    // redraw scrolls into scrollback as a fresh copy. Without dedup,
-    // hundreds of "[claude] 0:claude*" and "105 tasks" rows bury the
-    // actual content.
-    for (const ev of replay.events) {
-      term.write(filterAltBuffer(ev.d));
-    }
-    // Pass 2: extract lines, near-dedup, rewrite. The dedup window of 8
-    // lines kills tmux/claude TUI redraws (typically 1–4 lines tall)
-    // while preserving legitimate adjacent content (e.g. list items that
-    // happen to repeat are kept unless they're identical AND within the
-    // window).
-    requestAnimationFrame(() => {
-      const buf = term.buffer.normal;
-      const total = buf.length;
-      const lines: string[] = [];
-      const recent: string[] = [];
-      const WINDOW = 8;
-      for (let y = 0; y < total; y++) {
-        const raw = buf.getLine(y)?.translateToString(true) ?? "";
-        const line = raw.trimEnd();
-        // Skip empty consecutive runs > 1 line and dedup against recent.
-        if (line === "" && recent[recent.length - 1] === "") continue;
-        if (line !== "" && recent.includes(line)) continue;
-        lines.push(line);
-        recent.push(line);
-        if (recent.length > WINDOW) recent.shift();
+    let prev = "";
+    const writeChunk = (s: string) => {
+      const parts = s.split(/(\r\n|\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        const line = parts[i];
+        const sep = parts[i + 1] ?? "";
+        if (line && sep && line === prev) continue;
+        term.write(line + sep);
+        if (sep) prev = line;
       }
-      term.reset();
-      // term.write is async over a parser; chunk in big batches.
-      term.write(lines.join("\r\n") + "\r\n");
-      requestAnimationFrame(() => term.scrollToBottom());
+    };
+    for (const ev of events) {
+      writeChunk(filterAltBuffer(ev.d));
+    }
+    // Scroll to BOTTOM so user sees the latest output first; they can wheel
+    // up to inspect older content. Same UX as terminal scrollback.
+    requestAnimationFrame(() => {
+      term.scrollToBottom();
     });
-  }, [replay]);
+  }, [events]);
 
   // Apply theme/font changes live
   useEffect(() => {

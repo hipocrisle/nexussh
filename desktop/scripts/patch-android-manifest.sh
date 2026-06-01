@@ -50,4 +50,40 @@ if ! grep -q 'androidx.core.content.FileProvider' "$MANIFEST"; then
   sed -i "s|</application>|${PROVIDER_XML}\n    </application>|" "$MANIFEST"
 fi
 
+# 3. Force AGP to sign debug builds with the keystore we placed in
+#    `gen/android/debug.keystore`. By default AGP looks at
+#    `~/.android/debug.keystore`, but on the CI runner something between
+#    Tauri's gradle invocation and AGP keeps regenerating its own per-run
+#    debug key — we have not been able to make it honour the pinned
+#    home-dir keystore. Wiring `signingConfigs.debug` explicitly removes
+#    that whole guessing game: AGP signs with exactly the file we point
+#    at, every time.
+GRADLE_KTS="$ANDROID_DIR/app/build.gradle.kts"
+if [ -f "$GRADLE_KTS" ] && ! grep -q 'signingConfigs *{ *getByName("debug")' "$GRADLE_KTS"; then
+  python3 - "$GRADLE_KTS" <<'PY'
+import sys, re
+path = sys.argv[1]
+src = open(path).read()
+# Inject a signingConfigs { getByName("debug") { ... } } block as the
+# first statement inside the top-level `android { ... }`.
+inject = (
+    "\n    signingConfigs {\n"
+    "        getByName(\"debug\") {\n"
+    "            storeFile = rootProject.file(\"debug.keystore\")\n"
+    "            storePassword = \"android\"\n"
+    "            keyAlias = \"androiddebugkey\"\n"
+    "            keyPassword = \"android\"\n"
+    "        }\n"
+    "    }\n"
+)
+m = re.search(r"^android\s*\{", src, re.M)
+if not m:
+    sys.stderr.write("android { ... } block not found in build.gradle.kts\n")
+    sys.exit(1)
+i = m.end()
+src = src[:i] + inject + src[i:]
+open(path, "w").write(src)
+PY
+fi
+
 echo "patch-android-manifest: ok"

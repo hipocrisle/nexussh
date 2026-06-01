@@ -111,10 +111,29 @@ jobs:
           cp -r src-tauri/icons/android/* \
             src-tauri/gen/android/app/src/main/res/
 
-      - name: Patch AndroidManifest for in-app updater
+      - name: Drop keystore into gen/android (for explicit signingConfig)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        # We've watched AGP repeatedly ignore ~/.android/debug.keystore on
+        # this runner (regenerates its own per-run). Park the keystore
+        # inside the project tree where the explicit signingConfig in
+        # build.gradle.kts (added by the next step) will pick it up.
+        working-directory: desktop
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > src-tauri/gen/android/debug.keystore
+            chmod 600 src-tauri/gen/android/debug.keystore
+            echo "Dropped gen/android/debug.keystore ($(stat -c%s src-tauri/gen/android/debug.keystore) bytes)"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 not set — debug.keystore in project tree won't exist, AGP will fall back."
+          fi
+
+      - name: Patch AndroidManifest + signingConfig
         working-directory: desktop
         # Adds REQUEST_INSTALL_PACKAGES + FileProvider so the app can hand
-        # the freshly-downloaded update APK to Android's PackageInstaller.
+        # the freshly-downloaded update APK to Android's PackageInstaller,
+        # AND wires signingConfigs.debug to gen/android/debug.keystore
+        # explicitly. AGP defaults silently fail on this runner.
         run: ./scripts/patch-android-manifest.sh src-tauri/gen/android
 
       - name: Build Android APK (debug, arm64 only)

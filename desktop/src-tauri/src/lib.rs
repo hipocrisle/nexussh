@@ -53,6 +53,7 @@ pub fn run() {
             history::history_read,
             history::history_read_events,
             history::history_delete,
+            history::history_prune,
             history::history_search,
             history::history_export,
             updater::check_for_update,

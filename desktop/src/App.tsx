@@ -54,9 +54,10 @@ import { sshConnect, sshDisconnect } from "./ssh";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
-import { VaultStatus, vaultStatus } from "./vault";
+import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Minus,
@@ -532,6 +533,9 @@ function App() {
   // crashes the form's auth.kind probe). null editHost + this true =
   // create mode.
   const [createHostOpen, setCreateHostOpen] = useState(false);
+  // Stack of recently-closed hosts. Ctrl+Shift+T pops one and re-opens it.
+  // Bounded to last 20 entries by the push site in closePane.
+  const closedStackRef = useRef<HostRecord[]>([]);
 
   // Per-session scrollback overlay state. When a session id is in this set,
   // the active TerminalView is hidden behind a TranscriptOverlay that lets the
@@ -879,6 +883,42 @@ function App() {
           e.stopPropagation();
           setActiveWorkspaceId(workspaces[n].id);
         }
+      } else if (meta && !e.shiftKey && k === "f") {
+        // Ctrl/Cmd+F — open host search picker (faster than reaching for +).
+        e.preventDefault();
+        e.stopPropagation();
+        openSshPicker();
+      } else if (meta && e.shiftKey && k === "t") {
+        // Ctrl/Cmd+Shift+T — restore last closed tab (browser-style).
+        const last = closedStackRef.current.pop();
+        if (last) {
+          e.preventDefault();
+          e.stopPropagation();
+          openHost(last);
+        }
+      } else if (
+        e.ctrlKey &&
+        e.shiftKey &&
+        !e.altKey &&
+        (e.key === "PageUp" || e.key === "PageDown")
+      ) {
+        // Ctrl+Shift+PgUp/PgDn — move the active workspace tab left/right
+        // in the workspace list.
+        if (activeWorkspaceId && workspaces.length > 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
+          if (idx >= 0) {
+            const delta = e.key === "PageUp" ? -1 : 1;
+            const dst = idx + delta;
+            if (dst >= 0 && dst < workspaces.length) {
+              const next = [...workspaces];
+              const [moved] = next.splice(idx, 1);
+              next.splice(dst, 0, moved);
+              setWorkspaces(next);
+            }
+          }
+        }
       } else if (
         e.ctrlKey &&
         e.shiftKey &&
@@ -914,10 +954,46 @@ function App() {
     return () => window.removeEventListener("contextmenu", onContextMenu);
   }, [t]);
 
-  // Poll vault + sync status on mount
+  // Poll vault + sync status on mount; also kick off session-history GC.
   useEffect(() => {
     vaultStatus().then(setVault).catch(() => {});
     syncStatus().then(setSync).catch(() => {});
+    // Auto-delete cast/log/meta triples older than 30 days. Active sessions
+    // are never pruned (their meta mtime keeps moving).
+    invoke<number>("history_prune", { maxAgeDays: 30 }).catch(() => {});
+  }, []);
+
+  // Vault auto-lock: after VAULT_IDLE_LOCK_MS of no user input (mouse/key),
+  // call vault_lock so any cached master key is wiped from memory. Active
+  // SSH sessions are NOT affected — only the vault.
+  useEffect(() => {
+    const IDLE_LOCK_MS = 15 * 60 * 1000;
+    let timer: number | null = null;
+    const reset = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        try {
+          const st = await vaultStatus();
+          if (st.unlocked) {
+            await vaultLock();
+            vaultStatus().then(setVault).catch(() => {});
+          }
+        } catch {}
+      }, IDLE_LOCK_MS);
+    };
+    const events: (keyof WindowEventMap)[] = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "wheel",
+      "touchstart",
+    ];
+    for (const ev of events) window.addEventListener(ev, reset, { passive: true });
+    reset();
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      for (const ev of events) window.removeEventListener(ev, reset);
+    };
   }, []);
 
   // ---------------------------------------------------------------------------
@@ -1360,6 +1436,9 @@ function App() {
       sshDisconnect(pane.session.id).catch(() => {});
     }
     clearReconnect(pane.session.id);
+    // Stash for Ctrl+Shift+T (restore last closed). Keep last 20 hosts only.
+    closedStackRef.current.push(pane.session.host);
+    if (closedStackRef.current.length > 20) closedStackRef.current.shift();
     // Last pane in the workspace → close the workspace too (no extra prompt,
     // user already confirmed).
     if (ws.panes.length <= 1) {

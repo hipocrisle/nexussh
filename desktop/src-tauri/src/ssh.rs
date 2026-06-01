@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
@@ -126,14 +126,63 @@ impl SessionManager {
     }
 }
 
-/// Trust all server keys for now. TODO: TOFU with persistent known_hosts.
-struct AcceptAllHandler;
+/// Trust-on-first-use host-key handler.
+///
+/// On first connect to a given `host:port` the SHA-256 fingerprint is recorded
+/// in `known_hosts.json` under the app data dir. Subsequent connects accept the
+/// key only if it still matches; a mismatch returns `false` so russh aborts the
+/// handshake (the user sees a connection error rather than transparently
+/// talking to a possibly-MITM'd peer).
+struct TofuHandler {
+    host: String,
+    port: u16,
+    store_path: std::path::PathBuf,
+}
 
-impl Handler for AcceptAllHandler {
-    type Error = russh::Error;
-    async fn check_server_key(&mut self, _key: &PublicKey) -> Result<bool, Self::Error> {
-        Ok(true)
+fn fingerprint_sha256(key: &PublicKey) -> String {
+    key.fingerprint(russh::keys::HashAlg::Sha256).to_string()
+}
+
+fn read_known_hosts(path: &std::path::Path) -> HashMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn write_known_hosts(path: &std::path::Path, map: &HashMap<String, String>) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".into());
+    std::fs::write(path, json)
+}
+
+impl Handler for TofuHandler {
+    type Error = russh::Error;
+    async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
+        let id = format!("{}:{}", self.host, self.port);
+        let fp = fingerprint_sha256(key);
+        let mut map = read_known_hosts(&self.store_path);
+        match map.get(&id) {
+            Some(known) if known == &fp => Ok(true),
+            Some(_) => Ok(false), // key changed — refuse
+            None => {
+                map.insert(id, fp);
+                let _ = write_known_hosts(&self.store_path, &map);
+                Ok(true)
+            }
+        }
+    }
+}
+
+fn known_hosts_path(app: &AppHandle) -> std::path::PathBuf {
+    let mut p = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    p.push("known_hosts.json");
+    p
 }
 
 /// Grab an ephemeral free localhost port for the xray SOCKS inbound.
@@ -260,6 +309,11 @@ pub async fn ssh_connect(
     // Establish the transport stream: either a direct TCP connect, or — when
     // the host is flagged "via built-in VPN" — through a local xray SOCKS5
     // proxy that egresses via the chosen node (userspace, no TUN/admin).
+    let handler = TofuHandler {
+        host: args.host.clone(),
+        port: args.port,
+        store_path: known_hosts_path(&app),
+    };
     let (mut session, xray_child) = if let Some(node) = &args.vpn {
         let socks_port = free_local_port()?;
         let child = crate::vpn::spawn_xray(node, socks_port)
@@ -270,11 +324,11 @@ pub async fn ssh_connect(
             .await
             .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
         let session =
-            client::connect_stream(config, stream.into_inner(), AcceptAllHandler).await?;
+            client::connect_stream(config, stream.into_inner(), handler).await?;
         (session, Some(child))
     } else {
         let addr = format!("{}:{}", args.host, args.port);
-        let session = client::connect(config, addr.as_str(), AcceptAllHandler).await?;
+        let session = client::connect(config, addr.as_str(), handler).await?;
         (session, None)
     };
 
@@ -391,7 +445,7 @@ async fn run_session_loop(
     sid: &str,
     channel: &mut russh::Channel<client::Msg>,
     rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
-    session: client::Handle<AcceptAllHandler>,
+    session: client::Handle<TofuHandler>,
     logger: Option<&SessionLogger>,
     gate: Arc<Mutex<OutputGate>>,
 ) -> String {

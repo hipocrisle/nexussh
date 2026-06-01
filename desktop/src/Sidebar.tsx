@@ -25,6 +25,8 @@ import {
   ArrowDownAZ,
   Clock,
   GripVertical,
+  FoldVertical,
+  UnfoldVertical,
 } from "lucide-react";
 import {
   HostRecord,
@@ -221,6 +223,40 @@ export function Sidebar({
   }, [filtered, knownFolders, sortMode]);
 
   const isEmpty = root.children.size === 0 && ungrouped.length === 0;
+
+  // Collect every folder path that exists in the tree, recursively. Used by
+  // collapse-all to seed the collapsed set.
+  const allFolderPaths = useMemo(() => {
+    const acc = new Set<string>();
+    const walk = (n: FolderNode) => {
+      n.children.forEach((c) => {
+        acc.add(c.path);
+        walk(c);
+      });
+    };
+    walk(root);
+    return acc;
+  }, [root]);
+
+  // For the toolbar toggle button. "All collapsed" only when EVERY folder
+  // path is in collapsedGroups. Otherwise treat as "some open".
+  const allCollapsed =
+    allFolderPaths.size > 0 &&
+    Array.from(allFolderPaths).every((p) => collapsedGroups.has(p));
+
+  function toggleAllFolders() {
+    if (allCollapsed) {
+      // Expand all: empty the collapsed set.
+      const next = new Set<string>();
+      setCollapsedGroups(next);
+      writeCollapsedGroups(next);
+    } else {
+      // Collapse all: every known folder path collapsed.
+      const next = new Set(allFolderPaths);
+      setCollapsedGroups(next);
+      writeCollapsedGroups(next);
+    }
+  }
 
   const knownGroups = useMemo(
     () =>
@@ -699,6 +735,23 @@ export function Sidebar({
             <Clock size={16} />
           )}
         </button>
+        {allFolderPaths.size > 0 && (
+          <button
+            onClick={toggleAllFolders}
+            title={
+              allCollapsed
+                ? t("sidebar.expand_all")
+                : t("sidebar.collapse_all")
+            }
+            className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
+          >
+            {allCollapsed ? (
+              <UnfoldVertical size={16} />
+            ) : (
+              <FoldVertical size={16} />
+            )}
+          </button>
+        )}
         <button
           onClick={() => setDialog({ kind: "add" })}
           title={t("sidebar.add_host")}

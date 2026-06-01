@@ -101,9 +101,13 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
     if (!host.trim()) return setError(t("dialog.err_host_required"));
     if (!user.trim()) return setError(t("dialog.err_user_required"));
     try {
+      // If "save password" is OFF, do NOT persist the password — even if
+      // the user previously had it saved. Otherwise the stale value
+      // sticks around in the sync file even though the UI says
+      // "ask each time".
       const auth: HostRecord["auth"] =
         authKind === "password"
-          ? { kind: "password", password }
+          ? { kind: "password", password: alwaysAskPassword ? "" : password }
           : authKind === "key"
             ? { kind: "key", path: keyPath, passphrase: keyPass || undefined }
             : { kind: "vault", key: vaultKey };

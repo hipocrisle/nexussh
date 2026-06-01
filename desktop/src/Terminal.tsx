@@ -86,12 +86,21 @@ export function TerminalView({
     if (!containerRef.current) return;
     const initialTheme = THEMES[settings.theme];
 
+    // Adapt scrollback to device memory. xterm allocates per-line state for
+    // every entry in scrollback. On low-RAM devices (mobile, older laptops)
+    // 100k lines × N sessions blows the heap.
+    // navigator.deviceMemory is in GB; Chromium-based WebView2/Android
+    // WebView exposes it. Older WebKitGTK returns undefined → assume desktop.
+    const mem = (navigator as { deviceMemory?: number }).deviceMemory;
+    const scrollbackLines =
+      mem !== undefined && mem < 4 ? 30_000 : 100_000;
+
     const term = new Terminal({
       theme: xtermThemeOf(initialTheme),
       fontFamily: fontStackOf(settings.font),
       fontSize: settings.fontSize,
       cursorBlink: true,
-      scrollback: 100_000,
+      scrollback: scrollbackLines,
       allowProposedApi: true,
     });
     const fit = new FitAddon();

@@ -324,6 +324,53 @@ pub async fn history_delete(
     Ok(())
 }
 
+/// Auto-prune cast/log/meta files older than `max_age_days`. Called on
+/// startup so disk usage doesn't grow forever (especially with verbose
+/// claude-code-style sessions). Returns the count of session triples
+/// removed.
+#[tauri::command]
+pub async fn history_prune(
+    app: AppHandle,
+    max_age_days: u32,
+) -> Result<u32, HistoryError> {
+    let dir = sessions_dir(&app)?;
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            (max_age_days as u64).saturating_mul(86_400),
+        ))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let mut removed: u32 = 0;
+    let mut victims: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        // Use meta file's mtime as the session's "age" anchor — it's
+        // updated on finalize, so an active session is never aged out.
+        let m = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if m.modified().map(|t| t < cutoff).unwrap_or(false) {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                victims.push(stem.to_string());
+            }
+        }
+    }
+    for sid in victims {
+        for ext in ["cast", "log", "json"] {
+            let p = dir.join(format!("{}.{}", sid, ext));
+            if p.exists() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+        removed += 1;
+    }
+    Ok(removed)
+}
+
 #[tauri::command]
 pub async fn history_search(
     app: AppHandle,

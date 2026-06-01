@@ -1,9 +1,8 @@
 // Behavior section — defaults, sessions, advanced toggle, about.
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, FileText } from "lucide-react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { FileText } from "lucide-react";
 import { ThemePalette } from "./themes";
 import {
   Section,
@@ -14,7 +13,6 @@ import {
   TextField,
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
-import { getVersion } from "@tauri-apps/api/app";
 import { ImportHostsPanel } from "../ImportHostsPanel";
 
 interface Props {
@@ -23,34 +21,9 @@ interface Props {
   t: ThemePalette;
 }
 
-const REPO_URL = "https://github.com/hipocrisle/nexussh";
-const RELEASES_URL = "https://github.com/hipocrisle/nexussh/releases";
-const ISSUES_URL = "https://github.com/hipocrisle/nexussh/issues/new";
-
 export function BehaviorSection({ s, set, t }: Props) {
   const { t: tr } = useTranslation();
-  const [version, setVersion] = useState<string>("");
   const [importOpen, setImportOpen] = useState(false);
-
-  useEffect(() => {
-    getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
-  }, []);
-
-  function externalLink(href: string, label: string) {
-    return (
-      <a
-        href={href}
-        onClick={(e) => {
-          e.preventDefault();
-          openUrl(href).catch(() => {});
-        }}
-        className="inline-flex items-center gap-1 hover:underline cursor-pointer"
-        style={{ color: t.textSoft }}
-      >
-        {label} <ExternalLink size={11} />
-      </a>
-    );
-  }
 
   return (
     <Section
@@ -288,31 +261,6 @@ export function BehaviorSection({ s, set, t }: Props) {
         />
       </Row>
 
-      <div className="pt-4 mt-2 grid grid-cols-[200px_1fr] gap-6">
-        <div
-          className="font-mono text-xs uppercase tracking-wider"
-          style={{ color: t.textSoft }}
-        >
-          {tr("settings.behavior.about")}
-        </div>
-        <div
-          className="font-mono text-xs space-y-2"
-          style={{ color: t.textMuted }}
-        >
-          <div>
-            <span style={{ color: t.textPrimary }}>NexuSSH</span> v{version} —{" "}
-            {tr("settings.behavior.about_built", {
-              date: new Date().toISOString().slice(0, 10),
-            })}
-          </div>
-          <div>{tr("settings.behavior.about_license")}</div>
-          <div className="flex gap-4 pt-1 flex-wrap">
-            {externalLink(REPO_URL, tr("settings.behavior.about_github"))}
-            {externalLink(RELEASES_URL, tr("settings.behavior.about_release"))}
-            {externalLink(ISSUES_URL, tr("settings.behavior.about_bug"))}
-          </div>
-        </div>
-      </div>
     </Section>
   );
 }

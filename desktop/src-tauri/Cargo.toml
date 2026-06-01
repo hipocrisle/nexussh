@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "1.0.23"
+version = "1.0.24"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"
@@ -42,9 +42,10 @@ tokio-socks = "0.5.2"
 ureq = "2.12"
 
 # Android-only: JNI access to PackageInstaller for the in-app updater.
+# Access to the JNIEnv/Activity comes from Tauri 2's
+# `webview.jni_handle().exec(...)` (works on the WebView UI thread).
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
-ndk-context = "0.1"
 
 # Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
 [target.'cfg(windows)'.dependencies]

@@ -3326,12 +3326,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ndk-context"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
-
-[[package]]
 name = "ndk-sys"
 version = "0.6.0+11769913"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3348,7 +3342,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nexussh"
-version = "1.0.22"
+version = "1.0.23"
 dependencies = [
  "aes-gcm 0.10.3",
  "age",
@@ -3357,7 +3351,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "jni 0.21.1",
- "ndk-context",
  "russh",
  "russh-keys",
  "russh-sftp",

@@ -24,7 +24,6 @@ import {
   filterAltBuffer,
   isTmuxStatusLine,
   isClaudeChromeLine,
-  stripAnsiString,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -205,46 +204,73 @@ export function TranscriptOverlay({
     term.reset();
     fitRef.current?.fit();
     const full = events.map((e) => e.d).join("");
-    // Plain-text mode: drop ALL escapes (alt-screen content survives as
-    // visible characters) — best fallback when the colored replay shows a
-    // wall of overlapping cursor moves. Otherwise: drop the whole
-    // alt-screen window and let xterm render the rest with color.
-    let cleaned = plainText ? stripAnsiString(full) : filterAltBuffer(full);
+
     if (plainText) {
-      // Sliding-window dedup. Claude Code repaints the entire alt screen on
-      // every tick, so the same table / status row / task list re-appears
-      // many times with new content interleaved in between. Plain
-      // adjacent-dedup only catches back-to-back repeats; here we skip a
-      // line if it already appeared within the last WINDOW non-blank
-      // emitted lines. Blanks are exempt so we don't fuse unrelated blocks.
-      const WINDOW = 200;
-      const recentSet = new Set<string>();
-      const recentList: string[] = [];
-      const lines = cleaned.split(/\r\n|\n/);
-      const dedup: string[] = [];
-      for (const ln of lines) {
-        if (ln.trim() === "") {
-          // Collapse consecutive blanks.
-          if (dedup.length === 0 || dedup[dedup.length - 1] !== "") dedup.push("");
-          continue;
+      // Plain mode = REAL replay through an offscreen xterm.
+      //
+      // Why this beats regex stripping: Claude Code (and similar TUIs)
+      // animate the spinner character-by-character with cursor jumps
+      // between non-adjacent columns and colour escapes per cell. Any
+      // line-by-line stripper turns that into "lesенka / single-char
+      // fragments / weird columns of letters". A real terminal emulator
+      // just overwrites the same cells frame after frame, so the final
+      // buffer state is exactly what a human would see if they scrolled
+      // back in the live session.
+      //
+      // We strip the alt-screen toggles so the TUI paints into main
+      // buffer (with scrollback) instead of the small alt buffer that
+      // gets thrown away on exit.
+      const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+      const off = new Terminal({
+        cols: 120,
+        rows: 40,
+        scrollback: 100000,
+        allowProposedApi: true,
+        convertEol: false,
+      });
+      off.write(noAlt, () => {
+        const buf = off.buffer.active;
+        const rawLines: string[] = [];
+        for (let i = 0; i < buf.length; i++) {
+          const ln = buf.getLine(i);
+          if (ln) rawLines.push(ln.translateToString(true));
         }
-        if (recentSet.has(ln)) continue;
-        dedup.push(ln);
-        recentSet.add(ln);
-        recentList.push(ln);
-        if (recentList.length > WINDOW) {
-          const evict = recentList.shift()!;
-          recentSet.delete(evict);
+        off.dispose();
+        // Sliding-window dedup + Claude Code chrome filter on top.
+        const WINDOW = 200;
+        const recentSet = new Set<string>();
+        const recentList: string[] = [];
+        const out: string[] = [];
+        for (const ln of rawLines) {
+          if (isClaudeChromeLine(ln)) continue;
+          if (ln.trim() === "") {
+            if (out.length === 0 || out[out.length - 1] !== "") out.push("");
+            continue;
+          }
+          if (recentSet.has(ln)) continue;
+          out.push(ln);
+          recentSet.add(ln);
+          recentList.push(ln);
+          if (recentList.length > WINDOW) {
+            const ev = recentList.shift()!;
+            recentSet.delete(ev);
+          }
         }
-      }
-      cleaned = dedup.join("\r\n");
+        while (out.length && !out[out.length - 1]) out.pop();
+        term.write(out.join("\r\n"));
+        requestAnimationFrame(() => term.scrollToBottom());
+      });
+      return;
     }
+
+    // Color mode: drop the whole alt-screen window and let xterm render
+    // the rest with color.
+    const cleaned = filterAltBuffer(full);
     const parts = cleaned.split(/(\r\n|\n)/);
     for (let i = 0; i < parts.length; i += 2) {
       const line = parts[i];
       const sep = parts[i + 1] ?? "";
       if (line && sep && isTmuxStatusLine(line)) continue;
-      if (plainText && line && sep && isClaudeChromeLine(line)) continue;
       term.write(line + sep);
     }
     // Scroll to BOTTOM so user sees the latest output first; they can wheel

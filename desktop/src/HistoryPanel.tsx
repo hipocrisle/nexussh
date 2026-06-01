@@ -40,7 +40,6 @@ import {
   filterAltBuffer,
   isTmuxStatusLine,
   isClaudeChromeLine,
-  stripAnsiString,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -227,42 +226,69 @@ export function HistoryPanel({ onClose }: Props) {
     fitRef.current?.fit();
 
     const full = events.map((e) => e.d).join("");
-    let cleaned = plainText ? stripAnsiString(full) : filterAltBuffer(full);
+    const meta = entries.find((e) => e.session_id === selectedId);
+    const sessionCols = meta?.cols && meta.cols > 0 ? meta.cols : 120;
+    const sessionRows = meta?.rows && meta.rows > 0 ? meta.rows : 40;
+
     if (plainText) {
-      // Sliding-window dedup — see TranscriptOverlay for full rationale.
-      const WINDOW = 200;
-      const recentSet = new Set<string>();
-      const recentList: string[] = [];
-      const lines = cleaned.split(/\r\n|\n/);
-      const dedup: string[] = [];
-      for (const ln of lines) {
-        if (ln.trim() === "") {
-          if (dedup.length === 0 || dedup[dedup.length - 1] !== "") dedup.push("");
-          continue;
+      // Headless replay — see TranscriptOverlay for rationale. The
+      // recording's original cols matter because text wraps at the same
+      // boundary as the session saw, so output lines up correctly.
+      const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+      const off = new Terminal({
+        cols: sessionCols,
+        rows: sessionRows,
+        scrollback: 100000,
+        allowProposedApi: true,
+        convertEol: false,
+      });
+      off.write(noAlt, () => {
+        const buf = off.buffer.active;
+        const rawLines: string[] = [];
+        for (let i = 0; i < buf.length; i++) {
+          const ln = buf.getLine(i);
+          if (ln) rawLines.push(ln.translateToString(true));
         }
-        if (recentSet.has(ln)) continue;
-        dedup.push(ln);
-        recentSet.add(ln);
-        recentList.push(ln);
-        if (recentList.length > WINDOW) {
-          const evict = recentList.shift()!;
-          recentSet.delete(evict);
+        off.dispose();
+        const WINDOW = 200;
+        const recentSet = new Set<string>();
+        const recentList: string[] = [];
+        const out: string[] = [];
+        for (const ln of rawLines) {
+          if (isClaudeChromeLine(ln)) continue;
+          if (ln.trim() === "") {
+            if (out.length === 0 || out[out.length - 1] !== "") out.push("");
+            continue;
+          }
+          if (recentSet.has(ln)) continue;
+          out.push(ln);
+          recentSet.add(ln);
+          recentList.push(ln);
+          if (recentList.length > WINDOW) {
+            const ev = recentList.shift()!;
+            recentSet.delete(ev);
+          }
         }
-      }
-      cleaned = dedup.join("\r\n");
+        while (out.length && !out[out.length - 1]) out.pop();
+        term.write(out.join("\r\n"));
+        term.scrollToTop();
+        requestAnimationFrame(() => fitRef.current?.fit());
+      });
+      return;
     }
+
+    // Color mode
+    const cleaned = filterAltBuffer(full);
     const parts = cleaned.split(/(\r\n|\n)/);
     for (let i = 0; i < parts.length; i += 2) {
       const line = parts[i];
       const sep = parts[i + 1] ?? "";
       if (line && sep && isTmuxStatusLine(line)) continue;
-      if (plainText && line && sep && isClaudeChromeLine(line)) continue;
       term.write(line + sep);
     }
-
     term.scrollToTop();
     requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events, plainText]);
+  }, [events, plainText, selectedId, entries]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {

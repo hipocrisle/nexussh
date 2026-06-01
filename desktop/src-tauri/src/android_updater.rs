@@ -77,11 +77,15 @@ pub async fn android_install_apk(
     args: InstallApkArgs,
 ) -> Result<(), String> {
     use std::fs::{create_dir_all, File};
-    use std::io::Write;
-    use tauri::Manager;
+    use std::io::{Read, Write};
+    use tauri::{Emitter, Manager};
 
-    // 1) Download the APK to cacheDir/updates/nexussh.apk. Blocking I/O on
-    //    the Tokio blocking pool.
+    // 1) Download the APK to cacheDir/updates/nexussh.apk.
+    //
+    // Emit `update-progress` events so the JS side can show a download
+    // bar instead of an opaque spinner. Verify the result on disk before
+    // handing it to PackageInstaller — half-downloaded APKs silently
+    // fail to install, which is what users were hitting.
     let cache_dir = app
         .path()
         .app_cache_dir()
@@ -89,6 +93,7 @@ pub async fn android_install_apk(
     let apk_path: std::path::PathBuf = cache_dir.join("updates").join("nexussh.apk");
     let url = args.url.clone();
     let apk_path_for_dl = apk_path.clone();
+    let app_for_dl = app.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         if let Some(parent) = apk_path_for_dl.parent() {
             create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
@@ -96,28 +101,78 @@ pub async fn android_install_apk(
         let resp = ureq::get(&url)
             .call()
             .map_err(|e| format!("download: {e}"))?;
+        let total: u64 = resp
+            .header("Content-Length")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let _ = app_for_dl.emit(
+            "update-progress",
+            serde_json::json!({"phase": "download", "downloaded": 0u64, "total": total}),
+        );
         let mut reader = resp.into_reader();
         let mut file =
             File::create(&apk_path_for_dl).map_err(|e| format!("create apk: {e}"))?;
         let mut buf = [0u8; 64 * 1024];
+        let mut downloaded: u64 = 0;
+        let mut last_emit: u64 = 0;
         loop {
-            let n = std::io::Read::read(&mut reader, &mut buf)
+            let n = Read::read(&mut reader, &mut buf)
                 .map_err(|e| format!("read: {e}"))?;
             if n == 0 {
                 break;
             }
             file.write_all(&buf[..n]).map_err(|e| format!("write: {e}"))?;
+            downloaded += n as u64;
+            // Throttle emits to ~once per MiB so the channel doesn't drown.
+            if downloaded - last_emit >= 1_048_576 {
+                last_emit = downloaded;
+                let _ = app_for_dl.emit(
+                    "update-progress",
+                    serde_json::json!({
+                        "phase": "download",
+                        "downloaded": downloaded,
+                        "total": total
+                    }),
+                );
+            }
+        }
+        let _ = app_for_dl.emit(
+            "update-progress",
+            serde_json::json!({"phase": "download", "downloaded": downloaded, "total": total}),
+        );
+
+        // Sanity-check the on-disk file.
+        let meta = std::fs::metadata(&apk_path_for_dl)
+            .map_err(|e| format!("stat apk: {e}"))?;
+        if meta.len() < 1024 * 1024 {
+            return Err(format!("downloaded APK is only {} bytes", meta.len()));
+        }
+        if total > 0 && meta.len() != total {
+            return Err(format!(
+                "downloaded {} bytes but Content-Length was {}",
+                meta.len(),
+                total
+            ));
+        }
+        let mut magic = [0u8; 4];
+        let mut f = File::open(&apk_path_for_dl).map_err(|e| format!("reopen: {e}"))?;
+        Read::read(&mut f, &mut magic).map_err(|e| format!("read magic: {e}"))?;
+        if &magic != b"PK\x03\x04" {
+            return Err(format!(
+                "downloaded file isn't a ZIP (magic bytes: {:?})",
+                magic
+            ));
         }
         Ok(())
     })
     .await
     .map_err(|e| format!("join: {e}"))??;
 
-    // 2) Hand the file to Android's PackageInstaller through a FileProvider
-    //    URI + Intent.ACTION_VIEW. Runs on the WebView's UI thread.
-    //
-    // `webview.jni_handle()` lives on `PlatformWebview`, which we reach via
-    // `Webview::with_webview(|pw| ...)`. The closure runs on the UI thread.
+    // 2) Hand the verified APK to Android's PackageInstaller.
+    let _ = app.emit(
+        "update-progress",
+        serde_json::json!({"phase": "install"}),
+    );
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let apk_path_str = apk_path.to_string_lossy().into_owned();
     webview

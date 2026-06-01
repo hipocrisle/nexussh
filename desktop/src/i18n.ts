@@ -401,6 +401,8 @@ const ru = {
     hint_move: "выбор",
     hint_open: "открыть",
     hint_close: "закрыть",
+    hint_fold: "свернуть/развернуть",
+    create_new: "+ Новое подключение",
   },
   tabnew: {
     ssh: "SSH-сессия",
@@ -871,6 +873,8 @@ const en = {
     hint_move: "move",
     hint_open: "open",
     hint_close: "close",
+    hint_fold: "fold/unfold",
+    create_new: "+ New connection",
   },
   tabnew: {
     ssh: "SSH session",

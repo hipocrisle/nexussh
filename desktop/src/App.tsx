@@ -527,6 +527,11 @@ function App() {
   } | null>(null);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
+  // Separate flag for "create new host" — picker's + button needs a
+  // fresh HostDialog with no `initial` prop (passing an empty object
+  // crashes the form's auth.kind probe). null editHost + this true =
+  // create mode.
+  const [createHostOpen, setCreateHostOpen] = useState(false);
 
   // Per-session scrollback overlay state. When a session id is in this set,
   // the active TerminalView is hidden behind a TranscriptOverlay that lets the
@@ -2301,6 +2306,11 @@ function App() {
             }
             setPickerOpen(false);
           }}
+          onCreateNew={() => {
+            // Open HostDialog in CREATE mode. TabPicker closes itself
+            // after invoking the callback.
+            setCreateHostOpen(true);
+          }}
           onClose={() => {
             setPickerOpen(false);
             setPendingSplit(null);
@@ -2331,6 +2341,15 @@ function App() {
           onSaved={(saved) => {
             setSelectedHost(saved);
             setEditHost(null);
+          }}
+        />
+      )}
+      {createHostOpen && (
+        <HostDialog
+          onClose={() => setCreateHostOpen(false)}
+          onSaved={(saved) => {
+            setSelectedHost(saved);
+            setCreateHostOpen(false);
           }}
         />
       )}

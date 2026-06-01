@@ -83,6 +83,15 @@ jobs:
         # CI run. `init` is idempotent and fast (no Gradle/Kotlin work).
         run: npm run tauri android init
 
+      - name: Apply NexuSSH app icons
+        working-directory: desktop
+        # `tauri android init` overwrites the launcher icons in gen/android
+        # with Tauri's default squiggle every run. Copy our matrix-themed
+        # icons back over them.
+        run: |
+          cp -r src-tauri/icons/android/* \
+            src-tauri/gen/android/app/src/main/res/
+
       - name: Build Android APK (debug, arm64 only)
         working-directory: desktop
         env:

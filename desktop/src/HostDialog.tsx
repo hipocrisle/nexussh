@@ -207,7 +207,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         </div>
 
         {/* Two-column form */}
-        <div className="grid grid-cols-2 gap-8">
+        <div className="grid grid-cols-2 gap-8 max-md:grid-cols-1 max-md:gap-5">
           {/* Identity */}
           <div>
             <div className={kicker + " mb-3 block"}>// {t("dialog.col_identity")}</div>

@@ -91,7 +91,7 @@ export const Input = forwardRef<HTMLInputElement, InputBaseProps>(function Input
       ref={ref}
       onChange={(e) => onChange?.(e.target.value)}
       className={
-        "nx-focus block w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border rounded-nx font-mono text-body text-nx-text placeholder-nx-muted " +
+        "nx-focus block w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border rounded-nx font-mono text-body text-nx-text placeholder-nx-muted max-md:py-3 max-md:text-[15px] " +
         (invalid
           ? "border-nx-error shadow-[0_0_0_3px_rgba(255,107,107,0.18)] text-nx-error"
           : "border-nx-border") +

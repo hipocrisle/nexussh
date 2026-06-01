@@ -14,6 +14,7 @@ import {
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
 import { ImportHostsPanel } from "../ImportHostsPanel";
+import { useIsMobile } from "../useIsMobile";
 
 interface Props {
   s: NexuSettings;
@@ -24,6 +25,7 @@ interface Props {
 export function BehaviorSection({ s, set, t }: Props) {
   const { t: tr } = useTranslation();
   const [importOpen, setImportOpen] = useState(false);
+  const isMobile = useIsMobile();
 
   return (
     <Section
@@ -95,6 +97,7 @@ export function BehaviorSection({ s, set, t }: Props) {
         />
       </Row>
 
+      {!isMobile && (
       <Row
         label={tr("settings.behavior.click")}
         hint={tr("settings.behavior.click_hint")}
@@ -149,6 +152,7 @@ export function BehaviorSection({ s, set, t }: Props) {
           ))}
         </div>
       </Row>
+      )}
 
       <Row
         label={tr("settings.behavior.restore")}
@@ -184,6 +188,7 @@ export function BehaviorSection({ s, set, t }: Props) {
         />
       </Row>
 
+      {!isMobile && (
       <Row
         label={tr("settings.behavior.confirm")}
         hint={tr("settings.behavior.confirm_hint")}
@@ -200,7 +205,9 @@ export function BehaviorSection({ s, set, t }: Props) {
           disabledLabel={tr("settings.toggle.disabled")}
         />
       </Row>
+      )}
 
+      {!isMobile && (
       <Row
         label={tr("settings.behavior.ssh_config_import")}
         hint={tr("settings.behavior.ssh_config_import_hint")}
@@ -226,7 +233,9 @@ export function BehaviorSection({ s, set, t }: Props) {
           />
         )}
       </Row>
+      )}
 
+      {!isMobile && (
       <Row
         label={tr("settings.behavior.putty_mouse")}
         hint={tr("settings.behavior.putty_mouse_hint")}
@@ -243,6 +252,7 @@ export function BehaviorSection({ s, set, t }: Props) {
           disabledLabel={tr("settings.toggle.disabled")}
         />
       </Row>
+      )}
 
       <Row
         label={tr("settings.behavior.advanced")}

@@ -8,6 +8,7 @@ import {
   History,
   Settings as SettingsIcon,
   Menu as MenuIcon,
+  HelpCircle,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -54,6 +55,7 @@ import { UpdateInfo, startupCheck } from "./updater";
 import { sshConnect, sshDisconnect, sshSend } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
+import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
@@ -543,6 +545,15 @@ function App() {
   // SmartKeyBar above the on-screen keyboard. Toggled via media query.
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Transient tab-switch flash (Ctrl+Tab): tab id to pulse on. Cleared by
+  // CSS animation completion via this state being reset after the animation.
+  const [switchPulseId, setSwitchPulseId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!switchPulseId) return;
+    const t = window.setTimeout(() => setSwitchPulseId(null), 400);
+    return () => window.clearTimeout(t);
+  }, [switchPulseId]);
   // When the viewport flips between mobile and desktop, make sure the drawer
   // doesn't get stuck open across the transition.
   useEffect(() => {
@@ -891,8 +902,33 @@ function App() {
           const next = e.shiftKey
             ? (idx - 1 + workspaces.length) % workspaces.length
             : (idx + 1) % workspaces.length;
-          setActiveWorkspaceId(workspaces[next].id);
+          const nextId = workspaces[next].id;
+          setActiveWorkspaceId(nextId);
+          // Flash the newly-activated tab so the user can see WHICH tab the
+          // shortcut took them to (regular active styling doesn't move).
+          setSwitchPulseId(nextId);
         }
+      } else if (
+        !meta && !e.altKey && !e.shiftKey && e.key === "?"
+      ) {
+        // `?` — open keyboard-shortcuts cheat-sheet. Skip when typing in an
+        // input/textarea/contenteditable so it doesn't fire while editing.
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (
+          tag !== "INPUT" &&
+          tag !== "TEXTAREA" &&
+          !t?.isContentEditable
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShortcutsOpen((v) => !v);
+        }
+      } else if (meta && !e.shiftKey && !e.altKey && e.key === "/") {
+        // Ctrl+/ — same cheat-sheet (works even while typing).
+        e.preventDefault();
+        e.stopPropagation();
+        setShortcutsOpen((v) => !v);
       } else if (
         meta &&
         !e.shiftKey &&
@@ -1442,6 +1478,10 @@ function App() {
         sshDisconnect(p.session.id).catch(() => {});
       }
       clearReconnect(p.session.id);
+      // Stash for Ctrl+Shift+T (restore last closed). closePane does this for
+      // intra-workspace splits; here we cover whole-tab closes (TabBar X).
+      closedStackRef.current.push(p.session.host);
+      if (closedStackRef.current.length > 20) closedStackRef.current.shift();
     }
     // Pick a sensible successor before mutating state — same index, else last.
     const idx = workspaces.findIndex((w) => w.id === wsId);
@@ -2317,6 +2357,11 @@ function App() {
             </HeaderButton>
           )}
           <HeaderButton
+            icon={<HelpCircle size={12} />}
+            onClick={() => setShortcutsOpen(true)}
+            title={t("shortcuts.open_title") + " (?)"}
+          />
+          <HeaderButton
             icon={<SettingsIcon size={12} />}
             onClick={() => setSettingsOpen(true)}
             title={t("settings.open") + " (Ctrl ,)"}
@@ -2393,6 +2438,7 @@ function App() {
         )}
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
+            pulseId={switchPulseId}
             tabs={workspaces.map((w) => {
               const fp = w.panes.find((p) => p.id === w.focusedPaneId);
               return {
@@ -2524,6 +2570,10 @@ function App() {
             setCreateHostOpen(false);
           }}
         />
+      )}
+
+      {shortcutsOpen && (
+        <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}
 
       {/* Settings as an OVERLAY (not a return-replacement) so TerminalView

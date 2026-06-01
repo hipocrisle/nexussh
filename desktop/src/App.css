@@ -310,6 +310,20 @@ textarea {
     50%      { opacity: 0.55; box-shadow: 0 0 8px currentColor; }
   }
 
+  /* Tab-switch flash — one-shot glow on the just-activated tab, so a
+     keyboard switch (Ctrl+Tab) is visually obvious without re-skinning the
+     long-lived "active" state. */
+  .nx-tab-pulse {
+    animation: nxTabPulse 380ms var(--nx-ease) 1;
+  }
+  @keyframes nxTabPulse {
+    0% {
+      background: var(--nx-accent-glow);
+      box-shadow: inset 0 -2px 0 0 var(--nx-accent), 0 0 14px var(--nx-accent-glow);
+    }
+    100% { background: var(--nx-panel); box-shadow: none; }
+  }
+
   /* Modal entry */
   .nx-modal-enter { animation: nxModalEnter var(--nx-d-mid) var(--nx-ease) both; }
   @keyframes nxModalEnter {

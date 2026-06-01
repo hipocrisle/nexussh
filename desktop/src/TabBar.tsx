@@ -15,6 +15,10 @@ export interface TabInfo {
 interface Props {
   tabs: TabInfo[];
   activeId: string | null;
+  /** Transient highlight target — tab gets a brief glow pulse. Cleared by
+   *  the parent after the animation. Used to surface keyboard-driven tab
+   *  switches (Ctrl+Tab) so the user sees WHERE focus moved. */
+  pulseId?: string | null;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
@@ -51,6 +55,7 @@ function StatusDot({ status }: { status: TabInfo["status"] }) {
 export function TabBar({
   tabs,
   activeId,
+  pulseId,
   onSelect,
   onClose,
   onNewTab,
@@ -175,7 +180,8 @@ export function TabBar({
                 "nx-tab h-full px-3 flex items-center gap-2 cursor-pointer border-r border-nx-border min-w-0 shrink-0 " +
                 (active
                   ? "bg-nx-panel text-nx-text"
-                  : "text-nx-muted hover:bg-nx-elevated hover:text-nx-text")
+                  : "text-nx-muted hover:bg-nx-elevated hover:text-nx-text") +
+                (pulseId === t.id ? " nx-tab-pulse" : "")
               }
             >
               <StatusDot status={t.status} />

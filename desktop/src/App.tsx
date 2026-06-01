@@ -7,6 +7,7 @@ import {
   RefreshCw,
   History,
   Settings as SettingsIcon,
+  Menu as MenuIcon,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -50,7 +51,9 @@ import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, startupCheck } from "./updater";
-import { sshConnect, sshDisconnect } from "./ssh";
+import { sshConnect, sshDisconnect, sshSend } from "./ssh";
+import { useIsMobile } from "./useIsMobile";
+import { SmartKeyBar } from "./SmartKeyBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
@@ -59,6 +62,15 @@ import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
+// `getCurrentWindow()` and the window plugin only exist inside a Tauri webview;
+// in a plain dev browser they throw and unmount the whole React tree. Gate any
+// caller behind this flag and degrade gracefully (no titlebar controls, no
+// "intercept close" listener — the browser doesn't have those concepts).
+const HAS_TAURI =
+  typeof window !== "undefined" &&
+  // @ts-expect-error — Tauri marker, not in DOM lib types
+  typeof window.__TAURI_INTERNALS__ !== "undefined";
 import {
   Minus,
   Square,
@@ -321,6 +333,7 @@ function HeaderButton({
 // Custom window controls (native decorations are off — see tauri.conf.json).
 // Lives flush in the top-right of the header titlebar.
 function WindowControls() {
+  if (!HAS_TAURI) return null;
   const win = getCurrentWindow();
   const [maxed, setMaxed] = useState(false);
   useEffect(() => {
@@ -526,6 +539,15 @@ function App() {
     items: MenuItem[];
     title?: { kicker?: string; main?: string };
   } | null>(null);
+  // Mobile shell: collapse sidebar into a drawer + adapt header + show
+  // SmartKeyBar above the on-screen keyboard. Toggled via media query.
+  const isMobile = useIsMobile();
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // When the viewport flips between mobile and desktop, make sure the drawer
+  // doesn't get stuck open across the transition.
+  useEffect(() => {
+    if (!isMobile) setMobileDrawerOpen(false);
+  }, [isMobile]);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
   // Separate flag for "create new host" — picker's + button needs a
@@ -604,6 +626,7 @@ function App() {
   const sessionsRef = useRef(allSessions);
   sessionsRef.current = allSessions;
   useEffect(() => {
+    if (!HAS_TAURI) return;
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
@@ -616,7 +639,7 @@ function App() {
           t("app.confirm_quit", { n: live.length }),
           { destructive: true },
         );
-        if (ok) getCurrentWindow().destroy();
+        if (ok) getCurrentWindow().destroy().catch(() => {});
       })
       .then((fn) => {
         unlisten = fn;
@@ -1242,16 +1265,22 @@ function App() {
         },
         disabled: !focused || focused.session.status === "connecting",
       },
-      {
-        label: t("tabmenu.split_right"),
-        onClick: () => splitFocusedPane(wsId, "row"),
-        disabled: !hasPanes,
-      },
-      {
-        label: t("tabmenu.split_down"),
-        onClick: () => splitFocusedPane(wsId, "col"),
-        disabled: !hasPanes,
-      },
+      // Splits aren't usable on phone-sized viewports (terminal becomes
+      // unreadable), so the items are hidden there.
+      ...(!isMobile
+        ? [
+            {
+              label: t("tabmenu.split_right"),
+              onClick: () => splitFocusedPane(wsId, "row"),
+              disabled: !hasPanes,
+            },
+            {
+              label: t("tabmenu.split_down"),
+              onClick: () => splitFocusedPane(wsId, "col"),
+              disabled: !hasPanes,
+            },
+          ]
+        : []),
       {
         label: t("sidebar.menu_sftp"),
         onClick: () => {
@@ -2207,6 +2236,16 @@ function App() {
         data-tauri-drag-region
         className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0"
       >
+        {/* Hamburger — only on mobile (drawer toggle for sidebar). */}
+        {isMobile && (
+          <button
+            onClick={() => setMobileDrawerOpen((v) => !v)}
+            aria-label={t("sidebar.toggle")}
+            className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
+          >
+            <MenuIcon size={14} />
+          </button>
+        )}
         {/* Brand mark — framed > glyph nodding to the app icon */}
         <div className="flex items-center gap-2" data-tauri-drag-region>
           <span className="inline-flex w-[18px] h-[18px] items-center justify-center border border-nx-accent rounded-nx-sm shadow-glow-sm">
@@ -2228,7 +2267,7 @@ function App() {
         </span>
 
         {/* Prompt-style breadcrumb of the focused pane's session */}
-        {activeSession && (
+        {activeSession && !isMobile && (
           <div className="ml-1 flex items-center gap-1.5 px-2.5 py-0.5 border border-nx-border rounded-nx bg-nx-panel text-meta font-mono min-w-0">
             <span className="text-nx-accent mr-0.5 shrink-0">&gt;</span>
             <span className="text-nx-soft truncate">
@@ -2290,25 +2329,67 @@ function App() {
       </header>
 
       <div className="relative z-10 flex-1 min-h-0 flex">
-        <Sidebar
-          onConnect={openHost}
-          onSftp={openSftp}
-          onSelect={setSelectedHost}
-          activeHostId={activeSession?.id ?? null}
-          openHostIds={openHostIds}
-          selectedId={selectedHost?.id ?? null}
-          collapsed={sidebarCollapsed}
-          onToggleCollapsed={toggleSidebar}
-          width={sidebarWidth}
-          onContextMenu={(x, y, items, title) => setMenu({ x, y, items, title })}
-          clickMode={settings.clickMode}
-        />
-        {!sidebarCollapsed && (
-          <div
-            onPointerDown={startSidebarResize}
-            title={t("sidebar.resize")}
-            className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
-          />
+        {/* Desktop: inline sidebar + drag-divider. Mobile: drawer overlay
+         *  triggered by the hamburger; no inline space taken. */}
+        {!isMobile && (
+          <>
+            <Sidebar
+              onConnect={openHost}
+              onSftp={openSftp}
+              onSelect={setSelectedHost}
+              activeHostId={activeSession?.id ?? null}
+              openHostIds={openHostIds}
+              selectedId={selectedHost?.id ?? null}
+              collapsed={sidebarCollapsed}
+              onToggleCollapsed={toggleSidebar}
+              width={sidebarWidth}
+              onContextMenu={(x, y, items, title) =>
+                setMenu({ x, y, items, title })
+              }
+              clickMode={settings.clickMode}
+            />
+            {!sidebarCollapsed && (
+              <div
+                onPointerDown={startSidebarResize}
+                title={t("sidebar.resize")}
+                className="shrink-0 w-1 cursor-col-resize bg-transparent hover:bg-[var(--nx-accent)]/40 active:bg-[var(--nx-accent)]/60 transition-colors"
+              />
+            )}
+          </>
+        )}
+        {isMobile && mobileDrawerOpen && (
+          <>
+            <div
+              className="fixed inset-0 z-30 bg-black/50"
+              onClick={() => setMobileDrawerOpen(false)}
+            />
+            <aside
+              className="fixed top-9 left-0 bottom-0 z-40 w-[82vw] max-w-[320px] bg-nx-bg shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Sidebar
+                onConnect={(h) => {
+                  setMobileDrawerOpen(false);
+                  openHost(h);
+                }}
+                onSftp={(h) => {
+                  setMobileDrawerOpen(false);
+                  openSftp(h);
+                }}
+                onSelect={setSelectedHost}
+                activeHostId={activeSession?.id ?? null}
+                openHostIds={openHostIds}
+                selectedId={selectedHost?.id ?? null}
+                collapsed={false}
+                onToggleCollapsed={() => setMobileDrawerOpen(false)}
+                width={320}
+                onContextMenu={(x, y, items, title) =>
+                  setMenu({ x, y, items, title })
+                }
+                clickMode={settings.clickMode}
+              />
+            </aside>
+          </>
         )}
         <div className="flex-1 min-w-0 flex flex-col">
           <TabBar
@@ -2335,6 +2416,17 @@ function App() {
           <div className="flex-1 min-h-0 flex flex-col">
             {renderActiveLayoutArea()}
           </div>
+          {/* Soft-keyboard helper strip on mobile when a session is live. */}
+          {isMobile && (
+            <SmartKeyBar
+              visible={!!focusedSession && focusedSession.status === "connected"}
+              onSend={(s) => {
+                if (!focusedSession) return;
+                const bytes = new TextEncoder().encode(s);
+                sshSend(focusedSession.id, bytes).catch(() => {});
+              }}
+            />
+          )}
         </div>
       </div>
 

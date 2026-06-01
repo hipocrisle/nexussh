@@ -20,6 +20,7 @@ const ru = {
     password_required: "Пароль не введён",
   },
   sidebar: {
+    toggle: "Меню",
     filter_placeholder: "поиск...",
     add_host: "добавить хост",
     empty_state: "пока нет хостов",
@@ -497,6 +498,7 @@ const en = {
     password_required: "Password not entered",
   },
   sidebar: {
+    toggle: "Menu",
     filter_placeholder: "filter...",
     add_host: "add host",
     empty_state: "no hosts yet",

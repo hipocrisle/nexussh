@@ -665,45 +665,55 @@ function App() {
   backRef.current.createHostOpen = createHostOpen;
   backRef.current.settingsOpen = settingsOpen;
   backRef.current.shortcutsOpen = shortcutsOpen;
+  // Mobile back-button: Tauri's onCloseRequested doesn't fire reliably for
+  // the Android hardware back press, so use the standard popstate trick —
+  // push a synthetic history entry whenever any overlay opens and pop it
+  // when the user navigates back. The popstate handler closes the topmost
+  // overlay; only when the in-app stack is empty does back actually
+  // collapse/minimize the activity (as Android expects).
+  useEffect(() => {
+    if (!isMobile) return;
+    const anyOpen =
+      mobileDrawerOpen ||
+      pickerOpen ||
+      !!editHost ||
+      createHostOpen ||
+      settingsOpen ||
+      shortcutsOpen;
+    if (anyOpen) {
+      // Push only once per "open" — subsequent renders shouldn't stack.
+      if (history.state?.nxOverlay !== true) {
+        history.pushState({ nxOverlay: true }, "");
+      }
+    }
+  }, [
+    isMobile,
+    mobileDrawerOpen,
+    pickerOpen,
+    editHost,
+    createHostOpen,
+    settingsOpen,
+    shortcutsOpen,
+  ]);
+  useEffect(() => {
+    if (!isMobile) return;
+    const onPop = () => {
+      const b = backRef.current;
+      if (b.settingsOpen) setSettingsOpen(false);
+      else if (b.shortcutsOpen) setShortcutsOpen(false);
+      else if (b.editHost) setEditHost(null);
+      else if (b.createHostOpen) setCreateHostOpen(false);
+      else if (b.pickerOpen) setPickerOpen(false);
+      else if (b.mobileDrawerOpen) setMobileDrawerOpen(false);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [isMobile]);
   useEffect(() => {
     if (!HAS_TAURI) return;
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
-        const b = backRef.current;
-        // Mobile back-button: close topmost overlay first.
-        if (b.isMobile) {
-          if (b.settingsOpen) {
-            event.preventDefault();
-            setSettingsOpen(false);
-            return;
-          }
-          if (b.shortcutsOpen) {
-            event.preventDefault();
-            setShortcutsOpen(false);
-            return;
-          }
-          if (b.editHost) {
-            event.preventDefault();
-            setEditHost(null);
-            return;
-          }
-          if (b.createHostOpen) {
-            event.preventDefault();
-            setCreateHostOpen(false);
-            return;
-          }
-          if (b.pickerOpen) {
-            event.preventDefault();
-            setPickerOpen(false);
-            return;
-          }
-          if (b.mobileDrawerOpen) {
-            event.preventDefault();
-            setMobileDrawerOpen(false);
-            return;
-          }
-        }
         const live = sessionsRef.current.filter(
           (s) => s.status === "connected" || s.status === "connecting",
         );
@@ -2363,6 +2373,15 @@ function App() {
             {
               label: t("settings.open"),
               onClick: () => setSettingsOpen(true),
+            },
+            {
+              label: t("topbar.check_update"),
+              onClick: () => {
+                setUpdatePanel({ initial: undefined });
+                startupCheck()
+                  .then((info) => setUpdatePanel({ initial: info }))
+                  .catch(() => {});
+              },
             },
           ]}
         />

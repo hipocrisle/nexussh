@@ -14,6 +14,7 @@ import {
   Info,
 } from "lucide-react";
 import { LanguageSwitcher } from "./LanguageSwitcher";
+import { useIsMobile } from "./useIsMobile";
 import { useSettings } from "./settings/settings-store";
 import { THEMES } from "./settings/themes";
 import { FONTS, fontStackOf } from "./settings/fonts";
@@ -41,6 +42,7 @@ const SECTIONS = [
 export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
   const { t: tr } = useTranslation();
   const [settings, set] = useSettings();
+  const isMobile = useIsMobile();
   const [active, setActive] = useState<string>("appearance");
   const [version, setVersion] = useState<string>("");
   const scrollRef = useRef<HTMLElement | null>(null);
@@ -133,42 +135,69 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
       </div>
 
       <div className="relative z-10 flex flex-col h-full">
-        {/* Header — drag region so the window stays movable while Settings
-            covers the main titlebar. */}
-        <header
-          data-tauri-drag-region
-          className="nx-safe-top h-9 border-b flex items-center px-4 select-none shrink-0 font-mono text-sm tracking-wider"
-          style={{ background: t.bgSecondary, borderColor: t.border }}
-        >
-          <span style={{ color: t.accent }}>NexuSSH</span>
-          <span className="ml-2 text-xs" style={{ color: t.textMuted }}>
-            v{version}
-          </span>
-          <span
-            className="ml-3 text-xs italic"
-            style={{ color: t.textMuted }}
+        {/* Header. Desktop: full chrome with brand mark, tagline, session
+            counter, language switcher. Mobile: 56dp Material-style bar
+            with back button + title — same as the rest of the app's
+            overlay headers. */}
+        {isMobile ? (
+          <header
+            className="nx-safe-top shrink-0 border-b flex items-center px-2 h-14 select-none"
+            style={{ background: t.bgSecondary, borderColor: t.border }}
           >
-            — {tr("settings.app.brand_tagline")}
-          </span>
-          <span className="ml-4 text-xs" style={{ color: t.textMuted }}>
-            <span style={{ color: t.textSoft }}>/</span>{" "}
-            {tr("settings.app.settings")}
-          </span>
-          <div
-            className="ml-auto flex items-center gap-3 text-xs"
-            style={{ color: t.textMuted }}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label={tr("settings.app.back")}
+              className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:opacity-70"
+              style={{ color: t.textPrimary }}
+            >
+              <ArrowLeft size={22} />
+            </button>
+            <div
+              className="ml-1 font-mono text-lead"
+              style={{ color: t.textPrimary }}
+            >
+              {tr("settings.app.settings")}
+            </div>
+          </header>
+        ) : (
+          <header
+            data-tauri-drag-region
+            className="nx-safe-top h-9 border-b flex items-center px-4 select-none shrink-0 font-mono text-sm tracking-wider"
+            style={{ background: t.bgSecondary, borderColor: t.border }}
           >
-            <span className="flex items-center gap-1.5">
-              <TerminalIcon size={11} />{" "}
-              {tr("settings.app.sessions", { n: sessionCount })}
+            <span style={{ color: t.accent }}>NexuSSH</span>
+            <span className="ml-2 text-xs" style={{ color: t.textMuted }}>
+              v{version}
             </span>
-            <span style={{ color: t.border }}>|</span>
-            <LanguageSwitcher />
-          </div>
-        </header>
+            <span
+              className="ml-3 text-xs italic"
+              style={{ color: t.textMuted }}
+            >
+              — {tr("settings.app.brand_tagline")}
+            </span>
+            <span className="ml-4 text-xs" style={{ color: t.textMuted }}>
+              <span style={{ color: t.textSoft }}>/</span>{" "}
+              {tr("settings.app.settings")}
+            </span>
+            <div
+              className="ml-auto flex items-center gap-3 text-xs"
+              style={{ color: t.textMuted }}
+            >
+              <span className="flex items-center gap-1.5">
+                <TerminalIcon size={11} />{" "}
+                {tr("settings.app.sessions", { n: sessionCount })}
+              </span>
+              <span style={{ color: t.border }}>|</span>
+              <LanguageSwitcher />
+            </div>
+          </header>
+        )}
 
         <div className="flex-1 min-h-0 flex">
-          {/* Nav rail */}
+          {/* Nav rail — desktop only. On phones we drop the rail entirely
+              and let the user scroll through the section list. */}
+          {!isMobile && (
           <aside
             className="shrink-0 flex flex-col border-r"
             style={{
@@ -281,6 +310,7 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
               </div>
             </div>
           </aside>
+          )}
 
           <main
             ref={(el) => {
@@ -289,37 +319,49 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
             className="flex-1 min-w-0 overflow-y-auto"
             style={{ scrollBehavior: "smooth" }}
           >
-            <div className="max-w-3xl mx-auto px-10 py-10">
-              <div className="mb-10">
-                <div
-                  className="font-mono text-[10px] uppercase tracking-[0.3em] mb-2"
-                  style={{ color: t.textMuted }}
-                >
-                  ~/.config/nexussh/settings.toml
+            <div
+              className={
+                isMobile
+                  ? "px-4 py-5"
+                  : "max-w-3xl mx-auto px-10 py-10"
+              }
+            >
+              {/* Desktop intro banner. Mobile gets a slim title only. */}
+              {!isMobile && (
+                <div className="mb-10">
+                  <div
+                    className="font-mono text-[10px] uppercase tracking-[0.3em] mb-2"
+                    style={{ color: t.textMuted }}
+                  >
+                    ~/.config/nexussh/settings.toml
+                  </div>
+                  <h1
+                    className="font-mono text-4xl mb-2"
+                    style={{ color: t.textPrimary }}
+                  >
+                    <span style={{ color: t.accent }}>&gt;</span>{" "}
+                    {tr("settings.app.title")}
+                  </h1>
+                  <p
+                    className="font-mono text-sm leading-relaxed max-w-xl"
+                    style={{ color: t.textMuted }}
+                  >
+                    {tr("settings.app.subtitle_a")}{" "}
+                    <span style={{ color: t.textSoft }}>
+                      ~/.config/nexussh/
+                    </span>{" "}
+                    {tr("settings.app.subtitle_b")}
+                  </p>
                 </div>
-                <h1
-                  className="font-mono text-4xl mb-2"
-                  style={{ color: t.textPrimary }}
-                >
-                  <span style={{ color: t.accent }}>&gt;</span>{" "}
-                  {tr("settings.app.title")}
-                </h1>
-                <p
-                  className="font-mono text-sm leading-relaxed max-w-xl"
-                  style={{ color: t.textMuted }}
-                >
-                  {tr("settings.app.subtitle_a")}{" "}
-                  <span style={{ color: t.textSoft }}>
-                    ~/.config/nexussh/
-                  </span>{" "}
-                  {tr("settings.app.subtitle_b")}
-                </p>
-              </div>
+              )}
 
               <AppearanceSection s={settings} set={set} t={t} />
               <UpdatesSection s={settings} set={set} t={t} />
               <BehaviorSection s={settings} set={set} t={t} />
-              <VpnSection t={t} />
+              {/* VPN: hidden on mobile — Android APK doesn't ship the xray
+                  sidecar. Will come back when we wire VPN through Android's
+                  VPN service. */}
+              {!isMobile && <VpnSection t={t} />}
               <AboutSection t={t} />
 
               <div

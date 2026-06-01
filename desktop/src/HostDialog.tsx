@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, Shield, ChevronDown, Folder } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { FolderPicker } from "./FolderPicker";
+import { useIsMobile } from "./useIsMobile";
 import { vaultKeys } from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
@@ -32,6 +33,7 @@ interface Props {
 }
 
 export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
+  const isMobile = useIsMobile();
   // When caller didn't pre-compute group suggestions (e.g. opened from
   // TabPicker's "+ Новое подключение"), pull them ourselves so the folder
   // dropdown is never empty in CREATE mode.
@@ -351,7 +353,12 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               </div>
             )}
 
-            {/* Transport — built-in VPN */}
+            {/* Transport — built-in VPN.
+             * Hidden on mobile: the Android APK doesn't ship the xray
+             * sidecar (per-host VPN is desktop-only for now), and there's
+             * a VPN section in Settings anyway. */}
+            {!isMobile && (
+              <>
             <div className={kicker + " mt-6 mb-3 block"}>// {t("dialog.col_transport")}</div>
             <ToggleRow label={t("dialog.use_vpn")} value={useVpn} onChange={setUseVpn} />
             {useVpn &&
@@ -398,6 +405,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                   )}
                 </div>
               ))}
+              </>
+            )}
           </div>
         </div>
 

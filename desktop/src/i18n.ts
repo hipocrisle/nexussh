@@ -415,6 +415,7 @@ const ru = {
   },
   topbar: {
     more: "Меню",
+    check_update: "Проверить обновление",
   },
   folderpicker: {
     placeholder: "поиск папки...",
@@ -935,6 +936,7 @@ const en = {
   },
   topbar: {
     more: "More",
+    check_update: "Check for updates",
   },
   folderpicker: {
     placeholder: "search folder...",

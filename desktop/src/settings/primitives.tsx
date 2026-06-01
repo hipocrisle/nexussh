@@ -43,19 +43,19 @@ interface RowProps {
 export function Row({ label, hint, children, t }: RowProps) {
   return (
     <div
-      className="grid grid-cols-[200px_1fr] gap-6 items-start pb-5 border-b"
+      className="grid grid-cols-[200px_1fr] gap-6 items-start pb-5 border-b max-md:grid-cols-1 max-md:gap-2 max-md:pb-4"
       style={{ borderColor: t.border + "99" }}
     >
       <div>
         <div
-          className="font-mono text-xs uppercase tracking-wider"
+          className="font-mono text-xs uppercase tracking-wider max-md:text-[13px] max-md:normal-case max-md:tracking-normal"
           style={{ color: t.textSoft }}
         >
           {label}
         </div>
         {hint && (
           <div
-            className="font-mono text-[11px] mt-1 leading-relaxed"
+            className="font-mono text-[11px] mt-1 leading-relaxed max-md:text-[12px]"
             style={{ color: t.textMuted }}
           >
             {hint}

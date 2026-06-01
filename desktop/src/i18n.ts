@@ -106,6 +106,8 @@ const ru = {
     err_user_required: "Укажите пользователя",
     always_ask_password: "Спрашивать пароль каждый раз",
     always_ask_password_hint: "Безопаснее: пароль не сохраняется на диск и не уходит в sync. При подключении появится prompt.",
+    save_password: "Сохранить пароль",
+    save_password_hint: "Менее безопасно: пароль сохраняется в зашифрованный sync-файл. По умолчанию спрашиваем каждый раз.",
     password_ask_each_time_ph: "(пароль не сохраняется)",
   },
   terminal: {
@@ -574,6 +576,8 @@ const en = {
     err_user_required: "User is required",
     always_ask_password: "Ask for password every time",
     always_ask_password_hint: "More secure: password isn't saved to disk or pushed via sync. You'll be prompted on each connect.",
+    save_password: "Save password",
+    save_password_hint: "Less secure: password is stored in the encrypted sync file. Default is to ask every time.",
     password_ask_each_time_ph: "(not saved)",
   },
   terminal: {

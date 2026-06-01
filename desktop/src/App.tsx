@@ -1018,6 +1018,15 @@ function App() {
     if (!found) return;
     const { pane } = found;
     const host = pane.session.host;
+    // Same "ask each time" logic as initial connect — without it, restart
+    // on a host that doesn't save its password retries with an empty string
+    // and fails authentication forever.
+    let auth = host.auth;
+    if (host.auth.kind === "password" && host.alwaysAskPassword) {
+      const entered = await askPassword(host);
+      if (entered === null) return;
+      auth = { kind: "password", password: entered };
+    }
     if (pane.session.status === "connected") {
       sshDisconnect(sessionId).catch(() => {});
     }
@@ -1031,7 +1040,7 @@ function App() {
         host: host.host,
         port: host.port,
         user: host.user,
-        auth: host.auth,
+        auth,
         vpn: resolveHostVpn(host),
       });
       bumpLastUsed(host.id).catch(() => {});

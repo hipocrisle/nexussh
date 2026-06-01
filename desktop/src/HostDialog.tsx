@@ -46,7 +46,8 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
   const [vaultKey, setVaultKey] = useState("");
   const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
   const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
-  const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(false);
+  // Default: ask every connect. Inverted in UI as "save password" opt-in.
+  const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(true);
   const [useVpn, setUseVpn] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
@@ -256,12 +257,15 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
                 ) : (
                   <PasswordInput value={password} onChange={setPassword} />
                 )}
+                {/* Inverted: stored as `alwaysAskPassword` (asks each time
+                 *  when true) but shown to the user as an opt-in "save
+                 *  password" toggle. Default is ask-every-time = safer. */}
                 <Checkbox
-                  checked={alwaysAskPassword}
-                  onChange={setAlwaysAskPassword}
+                  checked={!alwaysAskPassword}
+                  onChange={(v) => setAlwaysAskPassword(!v)}
                   className="mt-3.5"
-                  label={t("dialog.always_ask_password")}
-                  hint={t("dialog.always_ask_password_hint")}
+                  label={t("dialog.save_password")}
+                  hint={t("dialog.save_password_hint")}
                 />
               </div>
             )}

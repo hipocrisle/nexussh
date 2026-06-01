@@ -2274,7 +2274,7 @@ function App() {
 
       <header
         data-tauri-drag-region
-        className="relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0"
+        className="nx-safe-top relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0"
       >
         {/* Hamburger — only on mobile (drawer toggle for sidebar). */}
         {isMobile && (

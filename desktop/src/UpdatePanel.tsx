@@ -70,7 +70,7 @@ export function UpdatePanel({ initial, onClose }: Props) {
     >
       <div
         {...contentProps}
-        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:flex max-md:flex-col"
       >
         <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)]">
           <h2 className="text-lg font-mono text-[var(--nx-accent)]">

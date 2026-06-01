@@ -104,6 +104,42 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       <button className={baseBtn} onClick={() => emitRaw(ARROW_RIGHT)}>
         →
       </button>
+      <button
+        className={baseBtn}
+        onClick={() => onSend("\r")}
+        title="Enter"
+      >
+        ↵
+      </button>
+      <span className="shrink-0 mx-1 w-px h-5 bg-nx-border" />
+      <button
+        className={baseBtn}
+        onClick={() => emitRaw("\x1b[H")}
+        title="Home"
+      >
+        ⇱
+      </button>
+      <button
+        className={baseBtn}
+        onClick={() => emitRaw("\x1b[F")}
+        title="End"
+      >
+        ⇲
+      </button>
+      <button
+        className={baseBtn}
+        onClick={() => emitRaw("\x1b[5~")}
+        title="PgUp"
+      >
+        ⇞
+      </button>
+      <button
+        className={baseBtn}
+        onClick={() => emitRaw("\x1b[6~")}
+        title="PgDn"
+      >
+        ⇟
+      </button>
       <span className="shrink-0 mx-1 w-px h-5 bg-nx-border" />
       <button className={baseBtn} onClick={() => emit("|")}>
         |

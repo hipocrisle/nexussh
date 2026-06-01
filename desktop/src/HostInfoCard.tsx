@@ -35,8 +35,8 @@ export function HostInfoCard({ host, onConnect, onEdit }: Props) {
   const { t } = useTranslation();
   const auth = authBadge(host.auth);
   return (
-    <div className="h-full w-full flex items-center justify-center p-8 bg-[var(--nx-bg-base)]">
-      <div className="max-w-md w-full bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded-lg p-6 font-mono">
+    <div className="h-full w-full flex items-center justify-center p-8 bg-[var(--nx-bg-base)] max-md:p-3">
+      <div className="max-w-md w-full bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded-lg p-6 font-mono max-md:max-w-none">
         <div className="flex items-center gap-3 mb-4">
           <Server size={20} className="text-[var(--nx-accent)]" />
           <h2 className="text-xl text-[var(--nx-accent)]">{host.name}</h2>

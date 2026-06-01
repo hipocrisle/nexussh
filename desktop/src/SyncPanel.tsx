@@ -133,7 +133,7 @@ export function SyncPanel({ onClose, onChange }: Props) {
     >
       <div
         {...contentProps}
-        className="w-full max-w-lg bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-lg bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto max-md:max-w-none max-md:max-h-none max-md:h-full max-md:rounded-none max-md:border-0"
       >
         <h2 className="text-xl font-mono text-[var(--nx-accent)] mb-1">&gt; sync</h2>
         <p className="text-xs text-[var(--nx-text-muted)] font-mono mb-5">

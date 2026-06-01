@@ -25,7 +25,7 @@ export function StatusLine({
   }, []);
 
   return (
-    <div className="h-[22px] px-3 flex items-center gap-4 bg-nx-bg-2 border-t border-nx-border text-micro text-nx-muted uppercase tracking-[0.12em] shrink-0">
+    <div className="nx-safe-bottom h-[22px] px-3 flex items-center gap-4 bg-nx-bg-2 border-t border-nx-border text-micro text-nx-muted uppercase tracking-[0.12em] shrink-0">
       <span className="flex items-center gap-1.5 text-nx-accent">
         <span className="inline-block w-1.5 h-1.5 rounded-full bg-nx-accent shadow-[0_0_8px_var(--nx-accent-glow)]" />
         {t("status.mode_normal")}

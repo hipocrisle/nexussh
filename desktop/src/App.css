@@ -232,6 +232,20 @@ textarea {
    ============================================================ */
 @layer components {
 
+  /* Safe-area helpers — Android edge-to-edge WebView puts the system status
+     bar on top of our header until we pad for env(safe-area-inset-top).
+     The fixed h-9 / h-22 of header/StatusLine still drives the LOGICAL
+     toolbar height; box-sizing keeps the visual element the same size while
+     adding the inset above/below it. */
+  .nx-safe-top {
+    padding-top: env(safe-area-inset-top, 0);
+    box-sizing: content-box;
+  }
+  .nx-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    box-sizing: content-box;
+  }
+
   /* Ambient matrix-rain wash behind the whole app.
      <div className="nx-rain-ambient absolute inset-0 pointer-events-none" /> */
   .nx-rain-ambient::after {

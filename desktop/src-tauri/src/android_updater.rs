@@ -315,9 +315,39 @@ fn jni_install(
     let authorities_jstr = env
         .new_string(&authorities)
         .map_err(|e| check(env, "auth str", e))?;
-    let fp_class = env
-        .find_class("androidx/core/content/FileProvider")
-        .map_err(|e| check(env, "FileProvider class", e))?;
+    // `env.find_class` uses the system classloader, which doesn't see
+    // androidx.* — that's the FileProvider class not found / Java
+    // exception users were hitting. Go through the activity's
+    // ClassLoader so we resolve against the app's APK.
+    let activity_class = env
+        .call_method(activity, "getClass", "()Ljava/lang/Class;", &[])
+        .map_err(|e| check(env, "activity.getClass", e))?
+        .l()
+        .map_err(|e| check(env, "activity.getClass.l", e))?;
+    let cl_loader = env
+        .call_method(
+            &activity_class,
+            "getClassLoader",
+            "()Ljava/lang/ClassLoader;",
+            &[],
+        )
+        .map_err(|e| check(env, "getClassLoader", e))?
+        .l()
+        .map_err(|e| check(env, "getClassLoader.l", e))?;
+    let fp_name = env
+        .new_string("androidx.core.content.FileProvider")
+        .map_err(|e| check(env, "fp name str", e))?;
+    let fp_class_obj = env
+        .call_method(
+            &cl_loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[(&fp_name).into()],
+        )
+        .map_err(|e| check(env, "loadClass FileProvider", e))?
+        .l()
+        .map_err(|e| check(env, "loadClass FileProvider.l", e))?;
+    let fp_class = <jni::objects::JClass as From<jni::objects::JObject>>::from(fp_class_obj);
     let uri = env
         .call_static_method(
             fp_class,

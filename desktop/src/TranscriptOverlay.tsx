@@ -210,16 +210,33 @@ export function TranscriptOverlay({
     // alt-screen window and let xterm render the rest with color.
     let cleaned = plainText ? stripAnsiString(full) : filterAltBuffer(full);
     if (plainText) {
-      // Collapse consecutive identical lines — TUI redraws otherwise
-      // stack up as N copies of the same prompt.
-      const lines = cleaned.split("\n");
+      // Sliding-window dedup. Claude Code repaints the entire alt screen on
+      // every tick, so the same table / status row / task list re-appears
+      // many times with new content interleaved in between. Plain
+      // adjacent-dedup only catches back-to-back repeats; here we skip a
+      // line if it already appeared within the last WINDOW non-blank
+      // emitted lines. Blanks are exempt so we don't fuse unrelated blocks.
+      const WINDOW = 200;
+      const recentSet = new Set<string>();
+      const recentList: string[] = [];
+      const lines = cleaned.split(/\r\n|\n/);
       const dedup: string[] = [];
       for (const ln of lines) {
-        if (dedup.length === 0 || dedup[dedup.length - 1] !== ln) {
-          dedup.push(ln);
+        if (ln.trim() === "") {
+          // Collapse consecutive blanks.
+          if (dedup.length === 0 || dedup[dedup.length - 1] !== "") dedup.push("");
+          continue;
+        }
+        if (recentSet.has(ln)) continue;
+        dedup.push(ln);
+        recentSet.add(ln);
+        recentList.push(ln);
+        if (recentList.length > WINDOW) {
+          const evict = recentList.shift()!;
+          recentSet.delete(evict);
         }
       }
-      cleaned = dedup.join("\n");
+      cleaned = dedup.join("\r\n");
     }
     const parts = cleaned.split(/(\r\n|\n)/);
     for (let i = 0; i < parts.length; i += 2) {

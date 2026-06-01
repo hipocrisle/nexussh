@@ -83,23 +83,31 @@ jobs:
         # CI run. `init` is idempotent and fast (no Gradle/Kotlin work).
         run: npm run tauri android init
 
-      - name: Build Android APK (debug)
+      - name: Build Android APK (debug, arm64 only)
         working-directory: desktop
         env:
-          # tauri.android.conf.json strips externalBin (xray sidecar) — we don't
-          # ship the desktop VPN proxy in the APK; mobile will use direct
-          # russh-over-VPN-of-host or its own future transport.
+          # tauri.android.conf.json strips externalBin (xray sidecar) — we
+          # don't ship the desktop VPN proxy in the APK.
           NDK_HOME: ${{ env.NDK_HOME }}
-        run: npm run tauri android build -- --debug --apk
+        # `--target aarch64` builds just the arm64 native lib. The previous
+        # universal APK shipped four full copies of every dependency (arm64,
+        # armv7, x86, x86_64) and weighed 825 MB. arm64-only is ~200 MB and
+        # covers every Android phone shipped since ~2017. Release build
+        # would shrink further (~30–80 MB) but requires signing setup; we
+        # can ship that as a follow-up if 200 MB is still too painful.
+        run: |
+          npm run tauri android build -- --debug --apk \
+            --target aarch64
+          find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -print
 
-      - name: Upload APK artifact
+      - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nexussh-android-debug
+          name: nexussh-android-release
           path: desktop/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           retention-days: 14
 
-      - name: Attach APK to release (tag push only)
+      - name: Attach APKs to release (tag push only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:

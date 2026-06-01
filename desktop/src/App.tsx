@@ -2053,23 +2053,15 @@ function App() {
               fade={theme.bgBase}
             />
           </div>
-          {selectedHost ? (
-            <HostInfoCard
-              host={selectedHost}
-              onConnect={() => openHost(selectedHost)}
-              onEdit={() => setEditHost(selectedHost)}
-            />
-          ) : (
-            <div
-              className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
-              style={{ color: theme.textMuted }}
-            >
-              <span>
-                &gt;{" "}
-                {isMobile ? t("terminal.select_host_mobile") : t("terminal.select_host")}
-              </span>
-            </div>
-          )}
+          <div
+            className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
+            style={{ color: theme.textMuted }}
+          >
+            <span>
+              &gt;{" "}
+              {isMobile ? t("terminal.select_host_mobile") : t("terminal.select_host")}
+            </span>
+          </div>
         </div>
       );
     }
@@ -2707,6 +2699,22 @@ function App() {
 
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+      )}
+
+      {selectedHost && !editHost && !createHostOpen && (
+        <HostInfoCard
+          host={selectedHost}
+          onConnect={() => {
+            const h = selectedHost;
+            setSelectedHost(null);
+            openHost(h);
+          }}
+          onEdit={() => {
+            setEditHost(selectedHost);
+            setSelectedHost(null);
+          }}
+          onClose={() => setSelectedHost(null)}
+        />
       )}
 
       {/* Settings as an OVERLAY (not a return-replacement) so TerminalView

@@ -364,30 +364,32 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
               {!isMobile && <VpnSection t={t} />}
               <AboutSection t={t} />
 
-              <div
-                className="border-t pt-6 mt-12 font-mono text-[11px] flex items-center justify-between flex-wrap gap-2"
-                style={{ borderColor: t.border, color: t.textMuted }}
-              >
-                <span className="flex items-center gap-2">
-                  <CheckPulse t={t} /> {tr("settings.app.saved")}
-                </span>
-                <span>
-                  <kbd
-                    className="px-1.5 py-0.5 rounded border"
-                    style={{ borderColor: t.border, color: t.textSoft }}
-                  >
-                    Esc
-                  </kbd>
-                  <span className="ml-2">{tr("settings.app.esc_close")} · </span>
-                  <kbd
-                    className="px-1.5 py-0.5 rounded border"
-                    style={{ borderColor: t.border, color: t.textSoft }}
-                  >
-                    Ctrl ,
-                  </kbd>
-                  <span className="ml-2">{tr("settings.app.reopen")}</span>
-                </span>
-              </div>
+              {!isMobile && (
+                <div
+                  className="border-t pt-6 mt-12 font-mono text-[11px] flex items-center justify-between flex-wrap gap-2"
+                  style={{ borderColor: t.border, color: t.textMuted }}
+                >
+                  <span className="flex items-center gap-2">
+                    <CheckPulse t={t} /> {tr("settings.app.saved")}
+                  </span>
+                  <span>
+                    <kbd
+                      className="px-1.5 py-0.5 rounded border"
+                      style={{ borderColor: t.border, color: t.textSoft }}
+                    >
+                      Esc
+                    </kbd>
+                    <span className="ml-2">{tr("settings.app.esc_close")} · </span>
+                    <kbd
+                      className="px-1.5 py-0.5 rounded border"
+                      style={{ borderColor: t.border, color: t.textSoft }}
+                    >
+                      Ctrl ,
+                    </kbd>
+                    <span className="ml-2">{tr("settings.app.reopen")}</span>
+                  </span>
+                </div>
+              )}
             </div>
           </main>
         </div>

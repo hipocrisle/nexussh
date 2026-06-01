@@ -42,6 +42,7 @@ import {
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
+import { useIsMobile } from "./useIsMobile";
 import { THEMES, xtermThemeOf, ThemePalette } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { useBackdropClose } from "./useBackdropClose";
@@ -71,6 +72,8 @@ export function HistoryPanel({ onClose }: Props) {
   const { t } = useTranslation();
   const [settings] = useSettings();
   const palette = THEMES[settings.theme];
+  // Used implicitly via max-md: Tailwind classes; no JS branch needed yet.
+  useIsMobile();
   const [fullscreen, setFullscreen] = useState<boolean>(
     () => localStorage.getItem(FULLSCREEN_LS_KEY) === "1",
   );
@@ -316,7 +319,7 @@ export function HistoryPanel({ onClose }: Props) {
         }
       >
         {/* Header */}
-        <div className="flex items-center px-4 py-3 border-b border-nx-divider shrink-0">
+        <div className="nx-safe-top flex items-center px-4 py-3 border-b border-nx-divider shrink-0">
           <span className="text-h3 font-mono text-nx-accent">&gt;</span>
           <span className="ml-2 text-body font-mono text-nx-text">{t("history.title")}</span>
           <span className="ml-3 text-meta font-mono italic text-nx-muted">
@@ -378,10 +381,12 @@ export function HistoryPanel({ onClose }: Props) {
           </div>
         )}
 
-        {/* Two-pane */}
-        <div className="flex-1 min-h-0 flex">
+        {/* Two-pane. Mobile: stack vertically — sessions list on top with
+         *  capped height, content below. The 288px-wide rail only leaves
+         *  ~120px for content on a phone. */}
+        <div className="flex-1 min-h-0 flex max-md:flex-col">
           {/* Sessions list */}
-          <div className="w-72 shrink-0 border-r border-nx-border overflow-y-auto">
+          <div className="w-72 shrink-0 border-r border-nx-border overflow-y-auto max-md:w-full max-md:border-r-0 max-md:border-b max-md:max-h-[40vh]">
             {filteredEntries.length === 0 ? (
               <div className="p-4 text-meta text-nx-muted font-mono">
                 {hits !== null ? t("history.no_hits") : t("history.empty")}

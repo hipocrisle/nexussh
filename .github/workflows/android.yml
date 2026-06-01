@@ -72,6 +72,14 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Initialise Android project scaffolding
+        working-directory: desktop
+        env:
+          NDK_HOME: ${{ env.NDK_HOME }}
+        # gen/android is gitignored — recreate it from tauri.conf.json on every
+        # CI run. `init` is idempotent and fast (no Gradle/Kotlin work).
+        run: npm run tauri android init
+
       - name: Build Android APK (debug)
         working-directory: desktop
         env:

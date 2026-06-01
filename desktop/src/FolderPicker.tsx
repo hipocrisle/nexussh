@@ -192,7 +192,7 @@ export function FolderPicker({
         }
       >
         {/* Header */}
-        <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
+        <div className="nx-safe-top flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
           <Folder size={14} className="text-nx-accent shrink-0" />
           <input
             ref={inputRef}

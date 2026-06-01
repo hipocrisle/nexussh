@@ -116,6 +116,7 @@ const ru = {
   },
   terminal: {
     select_host: "выберите хост слева, чтобы подключиться",
+    select_host_mobile: "нажми ☰ и выбери хост",
     connecting_to: "подключение к {{user}}@{{host}}:{{port}}...",
     session_closed: "сессия закрыта: {{reason}}",
     enter_reconnect: "Enter — переподключиться",
@@ -412,6 +413,9 @@ const ru = {
     create_new: "+ Новое подключение",
     close: "Закрыть",
   },
+  topbar: {
+    more: "Меню",
+  },
   folderpicker: {
     placeholder: "поиск папки...",
     close: "Закрыть",
@@ -632,6 +636,7 @@ const en = {
   },
   terminal: {
     select_host: "select a host on the left to connect",
+    select_host_mobile: "tap ☰ and pick a host",
     connecting_to: "connecting to {{user}}@{{host}}:{{port}}...",
     session_closed: "session closed: {{reason}}",
     enter_reconnect: "Enter to reconnect",
@@ -927,6 +932,9 @@ const en = {
     hint_fold: "fold/unfold",
     create_new: "+ New connection",
     close: "Close",
+  },
+  topbar: {
+    more: "More",
   },
   folderpicker: {
     placeholder: "search folder...",

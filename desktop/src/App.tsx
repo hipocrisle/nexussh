@@ -7,7 +7,6 @@ import {
   RefreshCw,
   History,
   Settings as SettingsIcon,
-  Menu as MenuIcon,
   HelpCircle,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
@@ -56,6 +55,7 @@ import { sshConnect, sshDisconnect, sshSend } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
 import { ShortcutsOverlay } from "./ShortcutsOverlay";
+import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
@@ -631,16 +631,79 @@ function App() {
     return () => clearTimeout(id);
   }, [rainBurst]);
 
-  // Confirm-on-quit: if any session is live, intercept the window close and
-  // ask first via the themed ConfirmDialog. Listener reads a ref so it always
-  // sees the current session list without re-registering.
+  // Confirm-on-quit / back-button routing.
+  //
+  // On Android the hardware back-press fires window's onCloseRequested. We
+  // pop the topmost overlay/drawer first so back actually navigates within
+  // the app instead of dropping the user out of NexuSSH on every press.
+  // Only when nothing is open AND there are no live sessions do we let the
+  // event propagate (which closes the activity). With live sessions we still
+  // show the confirm dialog as on desktop.
   const sessionsRef = useRef(allSessions);
   sessionsRef.current = allSessions;
+  // Ref-stash everything that's "openable" so the close-requested handler
+  // can read the latest snapshot without re-registering on every render.
+  const backRef = useRef({
+    isMobile,
+    mobileDrawerOpen,
+    pickerOpen,
+    editHost,
+    createHostOpen,
+    settingsOpen,
+    shortcutsOpen,
+    syncPanelOpen: false as boolean,
+    vaultPanelOpen: false as boolean,
+    historyPanelOpen: false as boolean,
+    sftpTarget: null as unknown,
+    closers: {} as Record<string, () => void>,
+  });
+  // Keep refs current.
+  backRef.current.isMobile = isMobile;
+  backRef.current.mobileDrawerOpen = mobileDrawerOpen;
+  backRef.current.pickerOpen = pickerOpen;
+  backRef.current.editHost = editHost;
+  backRef.current.createHostOpen = createHostOpen;
+  backRef.current.settingsOpen = settingsOpen;
+  backRef.current.shortcutsOpen = shortcutsOpen;
   useEffect(() => {
     if (!HAS_TAURI) return;
     let unlisten: (() => void) | undefined;
     getCurrentWindow()
       .onCloseRequested(async (event) => {
+        const b = backRef.current;
+        // Mobile back-button: close topmost overlay first.
+        if (b.isMobile) {
+          if (b.settingsOpen) {
+            event.preventDefault();
+            setSettingsOpen(false);
+            return;
+          }
+          if (b.shortcutsOpen) {
+            event.preventDefault();
+            setShortcutsOpen(false);
+            return;
+          }
+          if (b.editHost) {
+            event.preventDefault();
+            setEditHost(null);
+            return;
+          }
+          if (b.createHostOpen) {
+            event.preventDefault();
+            setCreateHostOpen(false);
+            return;
+          }
+          if (b.pickerOpen) {
+            event.preventDefault();
+            setPickerOpen(false);
+            return;
+          }
+          if (b.mobileDrawerOpen) {
+            event.preventDefault();
+            setMobileDrawerOpen(false);
+            return;
+          }
+        }
         const live = sessionsRef.current.filter(
           (s) => s.status === "connected" || s.status === "connecting",
         );
@@ -855,13 +918,8 @@ function App() {
           fn(activeWorkspaceId);
         }
       };
-      if (meta && !e.shiftKey && (k === "t" || k === "n")) {
-        // Ctrl/Cmd+T or Ctrl/Cmd+N — new tab via picker (workspace).
-        // Original binding has been Ctrl+T since v0.0.20; v1.0.8 briefly
-        // remapped to Ctrl+N to free Ctrl+T as a passthrough to
-        // claude-code's hide-tasks. That didn't work in users' setups —
-        // muscle memory broke for no gain. v1.0.10 restores Ctrl+T and
-        // keeps Ctrl+N as a synonym for anyone who got used to it.
+      if (meta && !e.shiftKey && k === "t") {
+        // Ctrl/Cmd+T — open host picker (new tab).
         e.preventDefault();
         e.stopPropagation();
         openSshPicker();
@@ -909,10 +967,12 @@ function App() {
           setSwitchPulseId(nextId);
         }
       } else if (
-        !meta && !e.altKey && !e.shiftKey && e.key === "?"
+        !isMobile && !meta && !e.altKey && !e.shiftKey && e.key === "?"
       ) {
         // `?` — open keyboard-shortcuts cheat-sheet. Skip when typing in an
         // input/textarea/contenteditable so it doesn't fire while editing.
+        // Mobile: there's no physical keyboard so the overlay is useless;
+        // gated out.
         const t = e.target as HTMLElement | null;
         const tag = t?.tagName;
         if (
@@ -924,7 +984,7 @@ function App() {
           e.stopPropagation();
           setShortcutsOpen((v) => !v);
         }
-      } else if (meta && !e.shiftKey && !e.altKey && e.key === "/") {
+      } else if (!isMobile && meta && !e.shiftKey && !e.altKey && e.key === "/") {
         // Ctrl+/ — same cheat-sheet (works even while typing).
         e.preventDefault();
         e.stopPropagation();
@@ -942,11 +1002,6 @@ function App() {
           e.stopPropagation();
           setActiveWorkspaceId(workspaces[n].id);
         }
-      } else if (meta && !e.shiftKey && k === "f") {
-        // Ctrl/Cmd+F — open host search picker (faster than reaching for +).
-        e.preventDefault();
-        e.stopPropagation();
-        openSshPicker();
       } else if (meta && e.shiftKey && k === "t") {
         // Ctrl/Cmd+Shift+T — restore last closed tab (browser-style).
         const last = closedStackRef.current.pop();
@@ -1974,7 +2029,10 @@ function App() {
               className="absolute inset-0 flex items-center justify-center font-mono text-sm pointer-events-none"
               style={{ color: theme.textMuted }}
             >
-              <span>&gt; {t("terminal.select_host")}</span>
+              <span>
+                &gt;{" "}
+                {isMobile ? t("terminal.select_host_mobile") : t("terminal.select_host")}
+              </span>
             </div>
           )}
         </div>
@@ -2272,20 +2330,47 @@ function App() {
       {/* Brief full-app matrix burst on connect (keyed so it replays). */}
       {rainBurst > 0 && <div key={rainBurst} className="nx-rain-burst" />}
 
+      {isMobile ? (
+        <MobileTopBar
+          title={activeSession?.name ?? `NexuSSH v${version}`}
+          subtitle={
+            activeSession
+              ? `${activeSession.user}@${activeSession.host}`
+              : undefined
+          }
+          onDrawer={() => setMobileDrawerOpen((v) => !v)}
+          items={[
+            {
+              label: t("history.button"),
+              onClick: () => setHistoryPanelOpen(true),
+            },
+            {
+              label: "sync",
+              onClick: () => setSyncPanelOpen(true),
+              warn: sync?.configured && !sync?.unlocked,
+              active: sync?.unlocked,
+            },
+            ...(settings.advanced
+              ? [
+                  {
+                    label: "vault",
+                    onClick: () => setVaultPanelOpen(true),
+                    warn: vault?.configured && !vault?.unlocked,
+                    active: vault?.unlocked,
+                  },
+                ]
+              : []),
+            {
+              label: t("settings.open"),
+              onClick: () => setSettingsOpen(true),
+            },
+          ]}
+        />
+      ) : (
       <header
         data-tauri-drag-region
         className="nx-safe-top relative z-10 h-9 bg-nx-bg-2 border-b border-nx-border flex items-center px-3 gap-3 select-none shrink-0"
       >
-        {/* Hamburger — only on mobile (drawer toggle for sidebar). */}
-        {isMobile && (
-          <button
-            onClick={() => setMobileDrawerOpen((v) => !v)}
-            aria-label={t("sidebar.toggle")}
-            className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
-          >
-            <MenuIcon size={14} />
-          </button>
-        )}
         {/* Brand mark — framed > glyph nodding to the app icon */}
         <div className="flex items-center gap-2" data-tauri-drag-region>
           <span className="inline-flex w-[18px] h-[18px] items-center justify-center border border-nx-accent rounded-nx-sm shadow-glow-sm">
@@ -2372,6 +2457,7 @@ function App() {
           <WindowControls />
         </div>
       </header>
+      )}
 
       <div className="relative z-10 flex-1 min-h-0 flex">
         {/* Desktop: inline sidebar + drag-divider. Mobile: drawer overlay
@@ -2409,7 +2495,8 @@ function App() {
               onClick={() => setMobileDrawerOpen(false)}
             />
             <aside
-              className="fixed top-9 left-0 bottom-0 z-40 w-[82vw] max-w-[320px] bg-nx-bg shadow-2xl"
+              className="fixed left-0 bottom-0 z-40 w-[82vw] max-w-[320px] bg-nx-bg shadow-2xl"
+              style={{ top: "calc(56px + env(safe-area-inset-top))" }}
               onClick={(e) => e.stopPropagation()}
             >
               <Sidebar
@@ -2476,13 +2563,15 @@ function App() {
         </div>
       </div>
 
-      <StatusLine
-        sessionCount={allSessions.length}
-        connectingCount={
-          allSessions.filter((s) => s.status === "connecting").length
-        }
-        syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
-      />
+      {!isMobile && (
+        <StatusLine
+          sessionCount={allSessions.length}
+          connectingCount={
+            allSessions.filter((s) => s.status === "connecting").length
+          }
+          syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
+        />
+      )}
 
       {/* Lazy-loaded panels: rendered only when the user opens them. Bundle
        *  splitting keeps the initial JS chunk small. Suspense fallback is null

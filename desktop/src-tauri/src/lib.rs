@@ -1,3 +1,4 @@
+mod android_updater;
 mod history;
 mod import_sources;
 mod sftp;
@@ -58,6 +59,8 @@ pub fn run() {
             history::history_export,
             updater::check_for_update,
             updater::install_update,
+            android_updater::android_install_apk,
+            android_updater::android_check_update,
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
             import_sources::read_import_sources,

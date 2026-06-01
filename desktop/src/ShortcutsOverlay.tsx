@@ -33,8 +33,6 @@ export function ShortcutsOverlay({ onClose }: Props) {
       title: t("shortcuts.s_tabs"),
       items: [
         { keys: ["Ctrl", "T"], desc: t("shortcuts.k_tab_picker") },
-        { keys: ["Ctrl", "N"], desc: t("shortcuts.k_tab_picker") },
-        { keys: ["Ctrl", "F"], desc: t("shortcuts.k_host_search") },
         { keys: ["Ctrl", "W"], desc: t("shortcuts.k_close_pane") },
         { keys: ["Ctrl", "Tab"], desc: t("shortcuts.k_cycle_tabs") },
         { keys: ["Ctrl", "Shift", "Tab"], desc: t("shortcuts.k_cycle_tabs_back") },
@@ -78,7 +76,7 @@ export function ShortcutsOverlay({ onClose }: Props) {
         {...contentProps}
         className="nx-modal-enter w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col bg-nx-bg-2 border border-nx-border rounded-nx shadow-2xl max-md:max-w-none max-md:max-h-none max-md:h-full max-md:rounded-none max-md:border-0"
       >
-        <div className="flex items-center gap-2.5 px-4 py-3 border-b border-nx-divider">
+        <div className="nx-safe-top flex items-center gap-2.5 px-4 py-3 border-b border-nx-divider">
           <span className="text-nx-accent">&gt;</span>
           <span className="text-lead text-nx-text font-mono">
             {t("shortcuts.title")}

@@ -7,13 +7,44 @@ export interface UpdateInfo {
   current_version: string;
   date: string | null;
   body: string | null;
+  /** Set on Android: URL of the .apk to hand to PackageInstaller. */
+  apk_url?: string;
+}
+
+interface AndroidUpdateInfo {
+  version: string;
+  current_version: string;
+  url: string;
+  notes: string | null;
+}
+
+/** Best-effort detection of an Android Tauri runtime. The desktop updater
+ *  plugin throws on Android, so we route there instead. */
+function isAndroid(): boolean {
+  return /Android/i.test(navigator.userAgent);
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
+  if (isAndroid()) {
+    const a = await invoke<AndroidUpdateInfo | null>("android_check_update");
+    if (!a) return null;
+    return {
+      version: a.version,
+      current_version: a.current_version,
+      date: null,
+      body: a.notes,
+      apk_url: a.url,
+    };
+  }
   return await invoke<UpdateInfo | null>("check_for_update");
 }
 
-export async function installUpdate(): Promise<void> {
+export async function installUpdate(info?: UpdateInfo): Promise<void> {
+  if (isAndroid()) {
+    if (!info?.apk_url) throw new Error("missing APK url");
+    await invoke("android_install_apk", { args: { url: info.apk_url } });
+    return;
+  }
   await invoke("install_update");
 }
 

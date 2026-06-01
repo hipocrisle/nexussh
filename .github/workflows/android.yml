@@ -75,6 +75,25 @@ jobs:
         working-directory: desktop
         run: npm ci
 
+      - name: Pin debug.keystore (stable signature across builds)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        # GitHub's runner generates a fresh debug.keystore on every job, which
+        # gives each APK a different signature — Android then refuses to update
+        # an existing install ("App not installed"). We pin a static keystore
+        # stored as a workflow secret so every CI build signs with the same
+        # certificate. If the secret isn't set yet we fall back to the SDK
+        # default, but updates between such builds will break.
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            chmod 600 ~/.android/debug.keystore
+            echo "Pinned debug.keystore ($(stat -c%s ~/.android/debug.keystore) bytes)"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 not set — APK will be signed with a fresh runner-generated keystore; updates will fail with 'App not installed'."
+          fi
+
       - name: Initialise Android project scaffolding
         working-directory: desktop
         env:
@@ -91,6 +110,12 @@ jobs:
         run: |
           cp -r src-tauri/icons/android/* \
             src-tauri/gen/android/app/src/main/res/
+
+      - name: Patch AndroidManifest for in-app updater
+        working-directory: desktop
+        # Adds REQUEST_INSTALL_PACKAGES + FileProvider so the app can hand
+        # the freshly-downloaded update APK to Android's PackageInstaller.
+        run: ./scripts/patch-android-manifest.sh src-tauri/gen/android
 
       - name: Build Android APK (debug, arm64 only)
         working-directory: desktop

@@ -254,7 +254,7 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
         }
       >
         {/* Search header */}
-        <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
+        <div className="nx-safe-top flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
           <span className="text-nx-accent">&gt;</span>
           <input
             ref={inputRef}

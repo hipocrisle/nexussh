@@ -1,6 +1,6 @@
 [package]
 name = "nexussh"
-version = "1.0.19"
+version = "1.0.20"
 description = "NexuSSH — cross-platform SSH client with custom Matrix UI"
 authors = ["you"]
 edition = "2021"
@@ -40,6 +40,11 @@ argon2 = "0.5.3"
 base64 = "0.22.1"
 tokio-socks = "0.5.2"
 ureq = "2.12"
+
+# Android-only: JNI access to PackageInstaller for the in-app updater.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
 
 # Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
 [target.'cfg(windows)'.dependencies]

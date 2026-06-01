@@ -137,7 +137,7 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
             covers the main titlebar. */}
         <header
           data-tauri-drag-region
-          className="h-9 border-b flex items-center px-4 select-none shrink-0 font-mono text-sm tracking-wider"
+          className="nx-safe-top h-9 border-b flex items-center px-4 select-none shrink-0 font-mono text-sm tracking-wider"
           style={{ background: t.bgSecondary, borderColor: t.border }}
         >
           <span style={{ color: t.accent }}>NexuSSH</span>

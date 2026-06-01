@@ -182,7 +182,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         }}
         onKeyDown={onFormKeyDown}
         {...contentProps}
-        className="nx-modal-enter relative w-[720px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg p-8 pt-7 shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none max-md:p-4"
+        className="nx-modal-enter relative w-[720px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg p-8 pt-7 shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none max-md:p-4 max-md:pt-[calc(env(safe-area-inset-top)+16px)]"
       >
         <span className="nx-brackets">
           <i />

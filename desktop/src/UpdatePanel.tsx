@@ -55,8 +55,11 @@ export function UpdatePanel({ initial, onClose }: Props) {
     setError(null);
     setInstalling(true);
     try {
-      await installUpdate();
-      // install_update restarts the app; if we're still here, that didn't happen
+      const ready = info && info !== "checking" ? info : undefined;
+      await installUpdate(ready);
+      // Desktop: install_update restarts the app; if we're still here that
+      // didn't happen. Android: the Android PackageInstaller takes over —
+      // we stay running until the user confirms in the system dialog.
     } catch (e) {
       setError(String(e));
       setInstalling(false);
@@ -70,7 +73,7 @@ export function UpdatePanel({ initial, onClose }: Props) {
     >
       <div
         {...contentProps}
-        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:flex max-md:flex-col"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:flex max-md:flex-col max-md:pt-[env(safe-area-inset-top)]"
       >
         <div className="flex items-center px-4 py-3 border-b border-[var(--nx-border)]">
           <h2 className="text-lg font-mono text-[var(--nx-accent)]">

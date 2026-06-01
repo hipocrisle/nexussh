@@ -216,7 +216,7 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
     >
       <div
         {...contentProps}
-        className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-lg border border-[var(--nx-border)] shadow-2xl overflow-hidden max-md:max-w-none max-md:max-h-none max-md:h-full max-md:rounded-none max-md:border-0"
+        className="w-full max-w-3xl max-h-[85vh] flex flex-col rounded-lg border border-[var(--nx-border)] shadow-2xl overflow-hidden max-md:max-w-none max-md:max-h-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:pt-[env(safe-area-inset-top)]"
         style={{ background: palette.bgBase }}
       >
         <div

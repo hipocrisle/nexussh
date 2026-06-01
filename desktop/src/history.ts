@@ -63,6 +63,23 @@ export function filterAltBuffer(s: string): string {
   );
 }
 
+/** Detect a tmux status-bar line so REPLAY (transcript / history) can skip it.
+ *  Each tmux redraw of the bottom status row gets captured to the cast; in
+ *  long sessions that ends up as dozens of "[claude] 0:claude*" snapshots
+ *  in scrollback, all functionally identical. Anchored regex matches the
+ *  unmistakable `[<name>] <num>:<name>[*+-!~]?` window-list prefix.
+ *
+ *  Easy to revert: delete this function + the single call site in
+ *  TranscriptOverlay.tsx and HistoryPanel.tsx.
+ */
+export function isTmuxStatusLine(line: string): boolean {
+  const plain = line
+    .replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
+    .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+    .replace(/\x1b./g, "");
+  return /^\s*\[[\w-]+\]\s+\d+:[\w-]+[\*+\-!~]?\b/.test(plain);
+}
+
 export async function historyDelete(sessionId: string): Promise<void> {
   await invoke("history_delete", { sessionId });
 }

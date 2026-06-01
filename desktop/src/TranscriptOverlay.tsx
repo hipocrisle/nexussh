@@ -22,6 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   historyReadEvents,
   filterAltBuffer,
+  isTmuxStatusLine,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -187,6 +188,8 @@ export function TranscriptOverlay({
         const line = parts[i];
         const sep = parts[i + 1] ?? "";
         if (line && sep && line === prev) continue;
+        // Drop tmux status-bar redraws. Easy revert: delete this single line.
+        if (line && sep && isTmuxStatusLine(line)) continue;
         term.write(line + sep);
         if (sep) prev = line;
       }

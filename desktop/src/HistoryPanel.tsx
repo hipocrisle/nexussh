@@ -38,6 +38,7 @@ import {
   fmtTs,
   fmtBytes,
   filterAltBuffer,
+  isTmuxStatusLine,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -214,6 +215,8 @@ export function HistoryPanel({ onClose }: Props) {
           // skip the duplicate line + its newline
           continue;
         }
+        // Drop tmux status-bar redraws. Easy revert: delete this single line.
+        if (line && sep && isTmuxStatusLine(line)) continue;
         term.write(line + sep);
         if (sep) prevLine = line;
       }

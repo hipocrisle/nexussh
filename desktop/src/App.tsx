@@ -679,9 +679,13 @@ function App() {
       !!editHost ||
       createHostOpen ||
       settingsOpen ||
-      shortcutsOpen;
+      shortcutsOpen ||
+      historyPanelOpen ||
+      syncPanelOpen ||
+      vaultPanelOpen ||
+      !!updatePanel ||
+      !!sftpTarget;
     if (anyOpen) {
-      // Push only once per "open" — subsequent renders shouldn't stack.
       if (history.state?.nxOverlay !== true) {
         history.pushState({ nxOverlay: true }, "");
       }
@@ -694,16 +698,37 @@ function App() {
     createHostOpen,
     settingsOpen,
     shortcutsOpen,
+    historyPanelOpen,
+    syncPanelOpen,
+    vaultPanelOpen,
+    updatePanel,
+    sftpTarget,
   ]);
+  // Keep refs current so the popstate handler always sees the latest snapshot.
+  backRef.current.historyPanelOpen = historyPanelOpen;
+  backRef.current.syncPanelOpen = syncPanelOpen;
+  backRef.current.vaultPanelOpen = vaultPanelOpen;
+  (backRef.current as { updatePanelOpen?: boolean }).updatePanelOpen =
+    !!updatePanel;
+  (backRef.current as { sftpOpen?: boolean }).sftpOpen = !!sftpTarget;
   useEffect(() => {
     if (!isMobile) return;
     const onPop = () => {
-      const b = backRef.current;
-      if (b.settingsOpen) setSettingsOpen(false);
+      const b = backRef.current as typeof backRef.current & {
+        updatePanelOpen?: boolean;
+        sftpOpen?: boolean;
+      };
+      // Drill-down order: deepest/newest first.
+      if (b.sftpOpen) setSftpTarget(null);
+      else if (b.updatePanelOpen) setUpdatePanel(null);
+      else if (b.settingsOpen) setSettingsOpen(false);
       else if (b.shortcutsOpen) setShortcutsOpen(false);
       else if (b.editHost) setEditHost(null);
       else if (b.createHostOpen) setCreateHostOpen(false);
       else if (b.pickerOpen) setPickerOpen(false);
+      else if (b.historyPanelOpen) setHistoryPanelOpen(false);
+      else if (b.syncPanelOpen) setSyncPanelOpen(false);
+      else if (b.vaultPanelOpen) setVaultPanelOpen(false);
       else if (b.mobileDrawerOpen) setMobileDrawerOpen(false);
     };
     window.addEventListener("popstate", onPop);

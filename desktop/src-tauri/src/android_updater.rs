@@ -76,7 +76,8 @@ fn is_newer(remote: &str, current: &str) -> bool {
 }
 
 #[cfg(target_os = "android")]
-mod android_impl {
+#[allow(dead_code)]
+mod android_impl_jni {
     use super::InstallApkArgs;
     use jni::objects::{JObject, JString, JValue};
     use std::fs::{create_dir_all, File};
@@ -84,9 +85,10 @@ mod android_impl {
     use std::path::PathBuf;
     use tauri::{AppHandle, Manager};
 
-    /// Download the APK into `cacheDir/updates/nexussh.apk`, then ask Android
-    /// to open it as an `application/vnd.android.package-archive`. The user
-    /// confirms the install in the system PackageInstaller dialog.
+    /// JNI install path — currently unreachable because ndk_context isn't
+    /// initialized under Tauri 2 (panics on `android_context()`). Left
+    /// behind for the future when we either move to a Tauri Android plugin
+    /// or wire ndk-context from a Kotlin entrypoint.
     pub fn install(app: AppHandle, args: InstallApkArgs) -> Result<(), String> {
         let cache_dir: PathBuf = app
             .path()
@@ -218,16 +220,22 @@ mod android_impl {
     }
 }
 
-#[cfg(target_os = "android")]
+/// Browser-fallback installer.
+///
+/// Until we can reliably grab a JNI handle inside Tauri 2 Android (the
+/// ndk_context route panics — Tauri doesn't initialize it), just open the
+/// release APK URL in the system browser. The browser downloads the APK
+/// and Android's PackageInstaller fires from the "tap to open" notification
+/// the user gets when the download finishes. One extra tap vs. the JNI
+/// flow but always works.
 #[tauri::command]
-pub async fn android_install_apk(app: AppHandle, args: InstallApkArgs) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || android_impl::install(app, args))
-        .await
-        .map_err(|e| format!("join: {e}"))?
-}
-
-#[cfg(not(target_os = "android"))]
-#[tauri::command]
-pub async fn android_install_apk(_app: AppHandle, _args: InstallApkArgs) -> Result<(), String> {
-    Err("android_install_apk is only available on Android".into())
+pub async fn android_install_apk(
+    app: AppHandle,
+    args: InstallApkArgs,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(&args.url, None::<&str>)
+        .map_err(|e| format!("open_url: {e}"))?;
+    Ok(())
 }

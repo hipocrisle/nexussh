@@ -1,9 +1,10 @@
 // Add/edit host modal.
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Lock, KeyRound, Shield, ChevronDown } from "lucide-react";
+import { X, Lock, KeyRound, Shield, ChevronDown, Folder } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
+import { FolderPicker } from "./FolderPicker";
 import { vaultKeys } from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
@@ -57,6 +58,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [port, setPort] = useState(settings.defaultPort);
   const [user, setUser] = useState(settings.defaultUser);
   const [group, setGroup] = useState("");
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [note, setNote] = useState("");
   const [authKind, setAuthKind] = useState<AuthKind>("password");
   const [password, setPassword] = useState("");
@@ -245,12 +247,33 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             />
 
             <RowLabel className="mt-4">{t("dialog.group")}</RowLabel>
-            <GroupCombobox
-              value={group}
-              onChange={setGroup}
-              options={effectiveGroups}
-              placeholder={t("dialog.group_ph")}
-            />
+            <button
+              type="button"
+              onClick={() => setFolderPickerOpen(true)}
+              className="nx-focus w-full mt-1.5 bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text px-2.5 py-1.5 flex items-center gap-2 font-mono hover:bg-nx-elevated"
+            >
+              <Folder size={13} className="text-nx-muted shrink-0" />
+              <span
+                className={
+                  "flex-1 text-left truncate " + (group ? "" : "text-nx-muted")
+                }
+              >
+                {group || t("dialog.group_ph")}
+              </span>
+              <ChevronDown size={12} className="text-nx-muted shrink-0" />
+            </button>
+            {folderPickerOpen && (
+              <FolderPicker
+                paths={effectiveGroups}
+                current={group || null}
+                title={t("dialog.group")}
+                onClose={() => setFolderPickerOpen(false)}
+                onPick={(path) => {
+                  setGroup(path ?? "");
+                  setFolderPickerOpen(false);
+                }}
+              />
+            )}
 
             <RowLabel className="mt-4">{t("dialog.note")}</RowLabel>
             <textarea
@@ -404,84 +427,3 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   );
 }
 
-// GroupCombobox — themed input + dropdown of existing groups. Replaces the
-// browser's native <input list=…> + <datalist> popup, which renders as a
-// white WebView2 system menu with no theme support.
-function GroupCombobox({
-  value,
-  onChange,
-  options,
-  placeholder,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  placeholder?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const filter = value.trim().toLowerCase();
-  const filtered = filter
-    ? options.filter((g) => g.toLowerCase().includes(filter))
-    : options;
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDoc);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative">
-      <Input
-        value={value}
-        onChange={(v) => {
-          onChange(v);
-          if (!open) setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        placeholder={placeholder}
-      />
-      {options.length > 0 && (
-        <button
-          type="button"
-          tabIndex={-1}
-          onClick={() => setOpen((o) => !o)}
-          className="absolute right-1.5 top-1/2 mt-[3px] -translate-y-1/2 p-1 text-nx-muted hover:text-nx-text"
-        >
-          <ChevronDown size={14} />
-        </button>
-      )}
-      {open && filtered.length > 0 && (
-        <div
-          className="absolute top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal z-30 font-mono text-sm"
-        >
-          {filtered.map((opt) => (
-            <button
-              key={opt}
-              type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onChange(opt);
-                setOpen(false);
-              }}
-              className="w-full text-left px-3 py-1.5 hover:bg-nx-elevated text-nx-text"
-            >
-              {opt}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}

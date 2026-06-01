@@ -45,6 +45,7 @@ import {
 import { HostDialog } from "./HostDialog";
 import { MenuItem } from "./ContextMenu";
 import { askPrompt } from "./dialogs";
+import { FolderPicker } from "./FolderPicker";
 
 // Folders form a tree via "/"-separated group paths ("Work/Office-A/Switches").
 interface FolderNode {
@@ -147,6 +148,8 @@ export function Sidebar({
   const [dialog, setDialog] = useState<
     { kind: "add" } | { kind: "edit"; rec: HostRecord } | null
   >(null);
+  // Folder picker for "Move to folder…" — opened with a host.
+  const [movingHost, setMovingHost] = useState<HostRecord | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     readCollapsedGroups(),
   );
@@ -288,43 +291,15 @@ export function Sidebar({
   function onHostContextMenu(e: React.MouseEvent, h: HostRecord) {
     e.preventDefault();
     e.stopPropagation();
-    const moveItems: MenuItem[] = knownGroups
-      .filter((g) => g !== h.group)
-      .map((g) => ({
-        label: g,
+    // Move-to-folder is now a tree-rendered picker (FolderPicker). The flat
+    // list grew unusable past ~20 folders. One menu entry opens the modal.
+    const moveItems: MenuItem[] = [
+      {
+        label: t("sidebar.move_to_folder"),
         icon: <Folder size={13} />,
-        onClick: async () => {
-          await moveHostToFolder(h.id, g);
-          reload();
-        },
-      }));
-    if (h.group) {
-      // Current folder — shown checked, non-actionable.
-      moveItems.unshift({
-        label: h.group,
-        icon: <Folder size={13} />,
-        checked: true,
-      });
-    }
-    moveItems.push({
-      label: t("sidebar.move_ungroup"),
-      onClick: async () => {
-        await moveHostToFolder(h.id, null);
-        reload();
+        onClick: () => setMovingHost(h),
       },
-      disabled: !h.group,
-    });
-    moveItems.push({
-      label: t("sidebar.move_new_folder"),
-      icon: <FolderPlus size={13} />,
-      onClick: async () => {
-        const name = await askPrompt(t("sidebar.new_folder_prompt"));
-        if (name && name.trim()) {
-          await moveHostToFolder(h.id, name.trim());
-          reload();
-        }
-      },
-    });
+    ];
 
     onContextMenu?.(
       e.clientX,
@@ -705,6 +680,19 @@ export function Sidebar({
             }}
           />
         )}
+        {movingHost && (
+          <FolderPicker
+            paths={knownGroups}
+            current={movingHost.group ?? null}
+            title={t("sidebar.move_to_folder")}
+            onClose={() => setMovingHost(null)}
+            onPick={async (path) => {
+              await moveHostToFolder(movingHost.id, path);
+              setMovingHost(null);
+              reload();
+            }}
+          />
+        )}
       </aside>
     );
   }
@@ -830,6 +818,19 @@ export function Sidebar({
           onClose={() => setDialog(null)}
           onSaved={() => {
             setDialog(null);
+            reload();
+          }}
+        />
+      )}
+      {movingHost && (
+        <FolderPicker
+          paths={knownGroups}
+          current={movingHost.group ?? null}
+          title={t("sidebar.move_to_folder")}
+          onClose={() => setMovingHost(null)}
+          onPick={async (path) => {
+            await moveHostToFolder(movingHost.id, path);
+            setMovingHost(null);
             reload();
           }}
         />

@@ -39,6 +39,7 @@ import {
   fmtBytes,
   filterAltBuffer,
   isTmuxStatusLine,
+  isClaudeChromeLine,
   stripAnsiString,
   CastEvent,
 } from "./history";
@@ -255,6 +256,7 @@ export function HistoryPanel({ onClose }: Props) {
       const line = parts[i];
       const sep = parts[i + 1] ?? "";
       if (line && sep && isTmuxStatusLine(line)) continue;
+      if (plainText && line && sep && isClaudeChromeLine(line)) continue;
       term.write(line + sep);
     }
 

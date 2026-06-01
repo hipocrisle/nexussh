@@ -23,6 +23,7 @@ import {
   historyReadEvents,
   filterAltBuffer,
   isTmuxStatusLine,
+  isClaudeChromeLine,
   stripAnsiString,
   CastEvent,
 } from "./history";
@@ -243,6 +244,7 @@ export function TranscriptOverlay({
       const line = parts[i];
       const sep = parts[i + 1] ?? "";
       if (line && sep && isTmuxStatusLine(line)) continue;
+      if (plainText && line && sep && isClaudeChromeLine(line)) continue;
       term.write(line + sep);
     }
     // Scroll to BOTTOM so user sees the latest output first; they can wheel

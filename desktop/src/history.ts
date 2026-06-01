@@ -84,6 +84,33 @@ export function filterAltBuffer(s: string): string {
   return out;
 }
 
+/** Detect a Claude Code "chrome" line — status footer, spinner, prompt box,
+ *  task list — that's noise when reading back a session. Each TUI repaint
+ *  duplicates this chrome dozens of times; even with sliding-window dedup
+ *  the result is "wall of system noise interleaved with the actual
+ *  conversation". User: «нельзя из истории удалять (фильтровать) твои
+ *  системные таски и оставлять только мои вводы и твои ответы?» — yes,
+ *  this filter drops them. */
+export function isClaudeChromeLine(line: string): boolean {
+  // Status footer at the very bottom: "⏵⏵ accept edits on · 3 shells · …"
+  if (/^⏵⏵\s+accept edits/.test(line)) return true;
+  // Prompt-box separator (long horizontal run).
+  if (/^─{20,}\s*$/.test(line)) return true;
+  // Empty prompt arrow.
+  if (/^❯\s*$/.test(line)) return true;
+  // Spinner: "* Building mobile UI shell… (4m 29s · ↓ 3.0k tokens)" or
+  //          "✻ Cooked for 4m 29s · 3 shells still running"
+  if (/^[*✻]\s+\S+.*\((?:\d+h)? ?(?:\d+m)? ?\d+s\b/.test(line)) return true;
+  if (/^✻\s+\w+ for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s/.test(line)) return true;
+  // Task list header: "112 tasks (106 done, 1 in progress, 5 open)"
+  if (/^\d+ tasks \(\d+ done, \d+ in progress, \d+ open\)/.test(line)) return true;
+  // Task checkbox row (optionally indented under ⎿).
+  if (/^\s*(?:⎿\s+)?[◼◻]\s/.test(line)) return true;
+  // Pending/completed/lines summary marker.
+  if (/^\s*…\s+\+\d+\s+(pending|completed|lines)/.test(line)) return true;
+  return false;
+}
+
 /** Detect a tmux status-bar line so REPLAY (transcript / history) can skip it.
  *  Each tmux redraw of the bottom status row gets captured to the cast; in
  *  long sessions that ends up as dozens of "[claude] 0:claude*" snapshots

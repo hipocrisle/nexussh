@@ -118,47 +118,181 @@ export async function historyExport(
 }
 
 /** Strip ANSI/OSC/SS2/SS3 + charset/DCS escapes for the "Plain text"
- *  transcript toggle. TUI sessions (Claude Code / vim / htop) draw by
- *  cursor positioning rather than newlines — `\x1b[5;10H text \x1b[6;1H more`
- *  is two logically separate rows. If we strip the escapes silently the
- *  bytes glue into one wall ("кривое без пробелов и отступов"); instead
- *  we convert every cursor-move / erase op into `\n` so each redraw
- *  fragment lands on its own line. Caller's adjacent-dedup then
- *  collapses identical status-row redraws. */
+ *  transcript toggle.
+ *
+ *  TUI sessions (Claude Code / vim / htop) draw by cursor positioning,
+ *  not newlines. Naive regex stripping either glued everything into one
+ *  blob (v1.0.30: no whitespace between rows) or split every word onto
+ *  its own line (v1.0.32: staircase, because `\x1b[5;1Haccept \x1b[5;8Hedits`
+ *  became two newlines).
+ *
+ *  This pass simulates a 1-row buffer of "what's currently being painted":
+ *  - text accumulates into a buffer
+ *  - cursor moves to a different row, or a "line restart" (jump back to
+ *    col 1 on the same row), flush the buffer as one output line
+ *  - cursor moves forward on the same row insert a space separator
+ *
+ *  Result: each row of the TUI surface = one output line. Caller's
+ *  adjacent-line dedup then collapses identical status-row redraws to
+ *  a single copy. */
 export function stripAnsiString(s: string): string {
-  return (
-    s
-      // 1. Absolute cursor-position to any row;col → newline.
-      //    Covers `\x1b[H`, `\x1b[5H`, `\x1b[5;10H`, `\x1b[5;10f`.
-      .replace(/\x1b\[\d*(?:;\d+)*[Hf]/g, "\n")
-      // 2. Relative cursor moves (up/down/forward/back/next/prev/col) → newline.
-      //    Each represents "render in a different spot from the previous one".
-      .replace(/\x1b\[\d*[ABCDEFG]/g, "\n")
-      // 3. Erase-line / erase-display → newline (the row is being rewritten).
-      .replace(/\x1b\[\d*[JK]/g, "\n")
-      // 4. OSC: ESC ] … BEL or ESC ] … ESC\
-      .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
-      // 5. DCS / SOS / PM / APC: ESC P|X|^|_ … ESC\ or BEL
-      .replace(/\x1b[PX^_][\s\S]*?(\x07|\x1b\\)/g, "")
-      // 6. Remaining CSI (SGR colors, mode toggles, etc) — strip silently.
-      .replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "")
-      // 7. Charset designation: ESC ( B, ESC ) B, ESC * B, ESC + B, etc.
-      //    These produce visible `(B` `)B` garbage in the user's output.
-      .replace(/\x1b[()*+\-./][\w@-~]/g, "")
-      // 8. SS2 / SS3 single-char: ESC N <c>, ESC O <c>
-      .replace(/\x1b[NO]./g, "")
-      // 9. Other single-char escapes (locking shifts, save/restore cursor,
-      //    ESC c reset, ESC = ESC > app-kp, ESC 7/8 etc.)
-      .replace(/\x1b[A-Z\\=78<>\d]/g, "")
-      // 10. Any lingering ESC <byte> we missed.
-      .replace(/\x1b./g, "")
-      // 11. Control chars (keep \n \r \t).
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-      // 12. Normalize CR/CRLF -> LF.
-      .replace(/\r\n?/g, "\n")
-      // 13. Collapse runs of >2 newlines so we don't render a forest of blanks.
-      .replace(/\n{3,}/g, "\n\n")
-  );
+  const out: string[] = [];
+  let buf = "";
+  let row = 1;
+  let col = 1;
+
+  const flush = () => {
+    out.push(buf);
+    buf = "";
+  };
+  const pad = () => {
+    if (buf.length > 0 && !buf.endsWith(" ")) buf += " ";
+  };
+
+  let i = 0;
+  while (i < s.length) {
+    const c = s.charCodeAt(i);
+
+    if (c === 0x1b) {
+      const next = s[i + 1];
+
+      if (next === "[") {
+        // CSI ESC [ <params> <final>
+        let j = i + 2;
+        let params = "";
+        while (j < s.length) {
+          const cc = s.charCodeAt(j);
+          if (cc >= 0x40 && cc <= 0x7e) break;
+          params += s[j];
+          j++;
+        }
+        const fin = s[j] || "";
+        i = j + 1;
+        const nums = params
+          .replace(/^\?/, "")
+          .split(";")
+          .map((p) => parseInt(p, 10) || 0);
+
+        if (fin === "H" || fin === "f") {
+          const r = nums[0] || 1;
+          const c2 = nums[1] || 1;
+          // New row OR jump back to an earlier column = line restart.
+          if (r !== row || c2 < col) {
+            flush();
+            row = r;
+            col = c2;
+          } else if (c2 > col) {
+            pad();
+            col = c2;
+          }
+        } else if (fin === "A") {
+          flush();
+          row = Math.max(1, row - (nums[0] || 1));
+          col = 1;
+        } else if (fin === "B" || fin === "E") {
+          flush();
+          row += nums[0] || 1;
+          col = 1;
+        } else if (fin === "F") {
+          flush();
+          row = Math.max(1, row - (nums[0] || 1));
+          col = 1;
+        } else if (fin === "C") {
+          pad();
+          col += nums[0] || 1;
+        } else if (fin === "D") {
+          col = Math.max(1, col - (nums[0] || 1));
+        } else if (fin === "G") {
+          const cAbs = nums[0] || 1;
+          if (cAbs < col) flush();
+          else if (cAbs > col) pad();
+          col = cAbs;
+        }
+        // J, K, m, h, l, r, s, u, t and friends — strip silently.
+        continue;
+      }
+
+      if (next === "]") {
+        // OSC: ESC ] … BEL or ESC ] … ESC\
+        let j = i + 2;
+        while (j < s.length) {
+          if (s.charCodeAt(j) === 0x07) {
+            j++;
+            break;
+          }
+          if (s.charCodeAt(j) === 0x1b && s[j + 1] === "\\") {
+            j += 2;
+            break;
+          }
+          j++;
+        }
+        i = j;
+        continue;
+      }
+
+      if (next === "P" || next === "X" || next === "^" || next === "_") {
+        // DCS / SOS / PM / APC
+        let j = i + 2;
+        while (j < s.length) {
+          if (s.charCodeAt(j) === 0x07) {
+            j++;
+            break;
+          }
+          if (s.charCodeAt(j) === 0x1b && s[j + 1] === "\\") {
+            j += 2;
+            break;
+          }
+          j++;
+        }
+        i = j;
+        continue;
+      }
+
+      if (next && "()*+-./NO".includes(next)) {
+        // Charset designation + SS2/SS3: ESC <byte> <byte>
+        i += 3;
+        continue;
+      }
+
+      // Other 2-byte escapes (ESC 7, ESC 8, ESC c, ESC =, ESC >, etc.)
+      i += 2;
+      continue;
+    }
+
+    if (c === 0x0a) {
+      // LF
+      flush();
+      row++;
+      col = 1;
+      i++;
+      continue;
+    }
+    if (c === 0x0d) {
+      // CR — reset column but don't emit a new line yet (next H/text will).
+      col = 1;
+      i++;
+      continue;
+    }
+    if (c === 0x09) {
+      buf += "\t";
+      col += 8;
+      i++;
+      continue;
+    }
+    if (c < 0x20 || c === 0x7f) {
+      // Drop other control bytes.
+      i++;
+      continue;
+    }
+
+    // Visible character.
+    buf += s[i];
+    col++;
+    i++;
+  }
+  flush();
+
+  return out.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** Strip ANSI escape sequences in JS for in-app display.

@@ -292,7 +292,11 @@ export function stripAnsiString(s: string): string {
   }
   flush();
 
-  return out.join("\n").replace(/\n{3,}/g, "\n\n");
+  // CRLF — xterm needs the CR or the cursor stays at the column where the
+  // previous line ended, producing a diagonal drift down-and-right
+  // ("каждая строка начинается чуть правее предыдущей").
+  const joined = out.join("\r\n");
+  return joined.replace(/(?:\r\n){3,}/g, "\r\n\r\n");
 }
 
 /** Strip ANSI escape sequences in JS for in-app display.

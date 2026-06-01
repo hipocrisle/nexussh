@@ -60,11 +60,14 @@ jobs:
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
+          # Only cache the user-home Gradle dirs. The project-local
+          # gen/android/.gradle is per-run state — caching it left a
+          # partial gen/android tree behind that confused `tauri android
+          # init` ("directory does not exist" on a stale half-tree).
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-            desktop/src-tauri/gen/android/.gradle
-          key: ${{ runner.os }}-gradle-${{ hashFiles('desktop/src-tauri/gen/android/**/*.gradle*') }}
+          key: ${{ runner.os }}-gradle-v2
           restore-keys: |
             ${{ runner.os }}-gradle-
 

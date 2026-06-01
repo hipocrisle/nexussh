@@ -115,12 +115,19 @@ pub async fn android_install_apk(
 
     // 2) Hand the file to Android's PackageInstaller through a FileProvider
     //    URI + Intent.ACTION_VIEW. Runs on the WebView's UI thread.
+    //
+    // `webview.jni_handle()` lives on `PlatformWebview`, which we reach via
+    // `Webview::with_webview(|pw| ...)`. The closure runs on the UI thread.
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let apk_path_str = apk_path.to_string_lossy().into_owned();
-    webview.jni_handle().exec(move |env, activity, _webview| {
-        let res = jni_install(env, activity, &apk_path_str);
-        let _ = tx.send(res);
-    });
+    webview
+        .with_webview(move |pw| {
+            pw.jni_handle().exec(move |env, activity, _wv| {
+                let res = jni_install(env, activity, &apk_path_str);
+                let _ = tx.send(res);
+            });
+        })
+        .map_err(|e| format!("with_webview: {e}"))?;
     rx.await
         .map_err(|e| format!("oneshot: {e}"))??;
     Ok(())

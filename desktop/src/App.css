@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Hide WebView2/Edge native password-reveal & clear icons. Without this
+ * a second eye stacks on top of our custom <PasswordInput> button on
+ * Windows. No effect on Linux/macOS WebKitGTK. */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none !important;
+}
+
 @font-face {
   font-family: "JetBrains Mono";
   font-style: normal;

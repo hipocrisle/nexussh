@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, Shield, ChevronDown } from "lucide-react";
-import { HostRecord, saveHost, newHostId } from "./hosts";
+import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { vaultKeys } from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
@@ -30,7 +30,26 @@ interface Props {
   onSaved: (h: HostRecord) => void;
 }
 
-export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Props) {
+export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
+  // When caller didn't pre-compute group suggestions (e.g. opened from
+  // TabPicker's "+ Новое подключение"), pull them ourselves so the folder
+  // dropdown is never empty in CREATE mode.
+  const [autoGroups, setAutoGroups] = useState<string[]>([]);
+  useEffect(() => {
+    if (knownGroups && knownGroups.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listHosts();
+        if (cancelled) return;
+        const fromHosts = (list.map((h) => h.group).filter(Boolean) as string[]);
+        const folders = loadKnownFolders();
+        setAutoGroups(Array.from(new Set([...fromHosts, ...folders])));
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [knownGroups]);
+  const effectiveGroups = knownGroups && knownGroups.length > 0 ? knownGroups : autoGroups;
   const { t } = useTranslation();
   const [settings] = useSettings();
   const [name, setName] = useState("");
@@ -229,7 +248,7 @@ export function HostDialog({ initial, knownGroups = [], onClose, onSaved }: Prop
             <GroupCombobox
               value={group}
               onChange={setGroup}
-              options={knownGroups}
+              options={effectiveGroups}
               placeholder={t("dialog.group_ph")}
             />
 

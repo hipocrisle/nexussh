@@ -39,6 +39,7 @@ import {
   fmtBytes,
   filterAltBuffer,
   isTmuxStatusLine,
+  stripAnsiString,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -67,6 +68,8 @@ function searchDecorations(t: ThemePalette) {
 }
 
 const FULLSCREEN_LS_KEY = "nexussh.historyFullscreen";
+// Same key as TranscriptOverlay — one Plain toggle for both replay surfaces.
+const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
 
 export function HistoryPanel({ onClose }: Props) {
   const { t } = useTranslation();
@@ -81,6 +84,17 @@ export function HistoryPanel({ onClose }: Props) {
     setFullscreen((v) => {
       const next = !v;
       localStorage.setItem(FULLSCREEN_LS_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
+  const [plainText, setPlainText] = useState<boolean>(() => {
+    const v = localStorage.getItem(PLAIN_LS_KEY);
+    return v === null ? true : v === "1";
+  });
+  function togglePlain() {
+    setPlainText((v) => {
+      const next = !v;
+      localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
       return next;
     });
   }
@@ -196,10 +210,14 @@ export function HistoryPanel({ onClose }: Props) {
 
   // Replay events into xterm.
   //
-  // Concatenate ALL events first, then filter alt-screen content — see
-  // history.ts for why per-event filtering misses cross-chunk
-  // `[?1049l` markers. Removed the per-line dedup (was eating legit
-  // repeats).
+  // Two modes — same as TranscriptOverlay:
+  //   • Plain (default): stripAnsiString + dedup adjacent identical lines.
+  //     Best for TUI sessions (Claude Code / vim / htop), which redraw
+  //     via cursor positioning and produce a wall of overlapping moves
+  //     in colored replay.
+  //   • Color: drop the whole alt-screen window, let xterm render the
+  //     rest with SGR colors intact. Good for sessions that mostly stayed
+  //     in the main buffer.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
@@ -208,7 +226,17 @@ export function HistoryPanel({ onClose }: Props) {
     fitRef.current?.fit();
 
     const full = events.map((e) => e.d).join("");
-    const cleaned = filterAltBuffer(full);
+    let cleaned = plainText ? stripAnsiString(full) : filterAltBuffer(full);
+    if (plainText) {
+      const lines = cleaned.split("\n");
+      const dedup: string[] = [];
+      for (const ln of lines) {
+        if (dedup.length === 0 || dedup[dedup.length - 1] !== ln) {
+          dedup.push(ln);
+        }
+      }
+      cleaned = dedup.join("\n");
+    }
     const parts = cleaned.split(/(\r\n|\n)/);
     for (let i = 0; i < parts.length; i += 2) {
       const line = parts[i];
@@ -219,7 +247,7 @@ export function HistoryPanel({ onClose }: Props) {
 
     term.scrollToTop();
     requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events]);
+  }, [events, plainText]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -315,6 +343,18 @@ export function HistoryPanel({ onClose }: Props) {
             — {t("history.subtitle")}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={togglePlain}
+              title={t("history.plain_text_hint")}
+              className={
+                "h-7 px-2 rounded text-meta font-mono border " +
+                (plainText
+                  ? "border-nx-accent text-nx-accent bg-nx-accent/10"
+                  : "border-nx-divider text-nx-muted hover:text-nx-text")
+              }
+            >
+              {plainText ? t("history.plain_on") : t("history.plain_off")}
+            </button>
             <IconButton icon={<RefreshCw size={13} />} onClick={refresh} title={t("history.refresh")} />
             <IconButton
               icon={fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}

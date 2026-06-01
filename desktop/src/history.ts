@@ -118,41 +118,46 @@ export async function historyExport(
 }
 
 /** Strip ANSI/OSC/SS2/SS3 + charset/DCS escapes for the "Plain text"
- *  transcript toggle. Best-effort — TUI sessions (Claude Code / vim /
- *  htop) draw by cursor positioning rather than newlines, so stripped
- *  output ends up as a single long run with no structure. We compensate
- *  by treating cursor-home moves and CRs as synthetic line breaks before
- *  stripping, so consecutive TUI repaints at least split into separate
- *  visible lines (and the caller's dedup collapses identical repaints
- *  next to each other). */
+ *  transcript toggle. TUI sessions (Claude Code / vim / htop) draw by
+ *  cursor positioning rather than newlines — `\x1b[5;10H text \x1b[6;1H more`
+ *  is two logically separate rows. If we strip the escapes silently the
+ *  bytes glue into one wall ("кривое без пробелов и отступов"); instead
+ *  we convert every cursor-move / erase op into `\n` so each redraw
+ *  fragment lands on its own line. Caller's adjacent-dedup then
+ *  collapses identical status-row redraws. */
 export function stripAnsiString(s: string): string {
   return (
     s
-      // 1. Insert a synthetic newline BEFORE every cursor-home so each
-      //    full-screen redraw lands on its own line — caller deduplicates
-      //    identical neighbours, so an idle Claude Code prompt collapses
-      //    to one copy instead of thousands.
-      .replace(/\x1b\[(?:[01];[01])?[Hf]/g, "\n")
-      // 2. OSC: ESC ] … BEL or ESC ] … ESC\
+      // 1. Absolute cursor-position to any row;col → newline.
+      //    Covers `\x1b[H`, `\x1b[5H`, `\x1b[5;10H`, `\x1b[5;10f`.
+      .replace(/\x1b\[\d*(?:;\d+)*[Hf]/g, "\n")
+      // 2. Relative cursor moves (up/down/forward/back/next/prev/col) → newline.
+      //    Each represents "render in a different spot from the previous one".
+      .replace(/\x1b\[\d*[ABCDEFG]/g, "\n")
+      // 3. Erase-line / erase-display → newline (the row is being rewritten).
+      .replace(/\x1b\[\d*[JK]/g, "\n")
+      // 4. OSC: ESC ] … BEL or ESC ] … ESC\
       .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
-      // 3. DCS / SOS / PM / APC: ESC P|X|^|_ … ESC\ or BEL
+      // 5. DCS / SOS / PM / APC: ESC P|X|^|_ … ESC\ or BEL
       .replace(/\x1b[PX^_][\s\S]*?(\x07|\x1b\\)/g, "")
-      // 4. CSI: ESC [ … final byte
+      // 6. Remaining CSI (SGR colors, mode toggles, etc) — strip silently.
       .replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "")
-      // 5. Charset designation: ESC ( B, ESC ) B, ESC * B, ESC + B, etc.
+      // 7. Charset designation: ESC ( B, ESC ) B, ESC * B, ESC + B, etc.
       //    These produce visible `(B` `)B` garbage in the user's output.
       .replace(/\x1b[()*+\-./][\w@-~]/g, "")
-      // 6. SS2 / SS3 single-char: ESC N <c>, ESC O <c>
+      // 8. SS2 / SS3 single-char: ESC N <c>, ESC O <c>
       .replace(/\x1b[NO]./g, "")
-      // 7. Other single-char escapes (locking shifts, save/restore cursor,
-      //    designate G2/G3, ESC c reset, ESC = ESC > app-kp, ESC 7/8 etc.)
+      // 9. Other single-char escapes (locking shifts, save/restore cursor,
+      //    ESC c reset, ESC = ESC > app-kp, ESC 7/8 etc.)
       .replace(/\x1b[A-Z\\=78<>\d]/g, "")
-      // 8. Any lingering ESC <byte> we missed.
+      // 10. Any lingering ESC <byte> we missed.
       .replace(/\x1b./g, "")
-      // 9. Control chars (keep \n \r \t).
+      // 11. Control chars (keep \n \r \t).
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-      // 10. Normalize CR/CRLF -> LF.
+      // 12. Normalize CR/CRLF -> LF.
       .replace(/\r\n?/g, "\n")
+      // 13. Collapse runs of >2 newlines so we don't render a forest of blanks.
+      .replace(/\n{3,}/g, "\n\n")
   );
 }
 

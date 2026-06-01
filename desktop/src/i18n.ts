@@ -216,6 +216,10 @@ const ru = {
     sessions: "сессиях",
     fullscreen: "полноэкранный режим",
     exit_fullscreen: "выйти из полноэкранного",
+    plain_on: "plain ✓",
+    plain_off: "plain",
+    plain_text_hint:
+      "Plain-режим: убрать ANSI и схлопнуть одинаковые перерисовки. Лучше для Claude Code / vim / htop; выключи чтобы увидеть цвета.",
   },
   settings: {
     open: "настройки",
@@ -741,6 +745,10 @@ const en = {
     sessions: "sessions",
     fullscreen: "fullscreen",
     exit_fullscreen: "exit fullscreen",
+    plain_on: "plain ✓",
+    plain_off: "plain",
+    plain_text_hint:
+      "Plain-text mode: strip ANSI escapes and collapse identical redraws. Best for Claude Code / vim / htop sessions; turn off to see colors.",
   },
   settings: {
     open: "settings",

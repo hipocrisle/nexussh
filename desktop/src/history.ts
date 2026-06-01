@@ -117,17 +117,43 @@ export async function historyExport(
   await invoke("history_export", { sessionId, outPath, strip });
 }
 
-/** Strip ANSI/OSC/SS2/SS3 escape sequences from a string. Used by the
- *  "Plain text" toggle in TranscriptOverlay/HistoryPanel so even TUI-heavy
- *  recordings stay readable when the colored replay is busy fighting
- *  itself with stacked cursor moves. */
+/** Strip ANSI/OSC/SS2/SS3 + charset/DCS escapes for the "Plain text"
+ *  transcript toggle. Best-effort — TUI sessions (Claude Code / vim /
+ *  htop) draw by cursor positioning rather than newlines, so stripped
+ *  output ends up as a single long run with no structure. We compensate
+ *  by treating cursor-home moves and CRs as synthetic line breaks before
+ *  stripping, so consecutive TUI repaints at least split into separate
+ *  visible lines (and the caller's dedup collapses identical repaints
+ *  next to each other). */
 export function stripAnsiString(s: string): string {
-  return s
-    .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[NOPXabc]/g, "")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/\r(?!\n)/g, "");
+  return (
+    s
+      // 1. Insert a synthetic newline BEFORE every cursor-home so each
+      //    full-screen redraw lands on its own line — caller deduplicates
+      //    identical neighbours, so an idle Claude Code prompt collapses
+      //    to one copy instead of thousands.
+      .replace(/\x1b\[(?:[01];[01])?[Hf]/g, "\n")
+      // 2. OSC: ESC ] … BEL or ESC ] … ESC\
+      .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+      // 3. DCS / SOS / PM / APC: ESC P|X|^|_ … ESC\ or BEL
+      .replace(/\x1b[PX^_][\s\S]*?(\x07|\x1b\\)/g, "")
+      // 4. CSI: ESC [ … final byte
+      .replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "")
+      // 5. Charset designation: ESC ( B, ESC ) B, ESC * B, ESC + B, etc.
+      //    These produce visible `(B` `)B` garbage in the user's output.
+      .replace(/\x1b[()*+\-./][\w@-~]/g, "")
+      // 6. SS2 / SS3 single-char: ESC N <c>, ESC O <c>
+      .replace(/\x1b[NO]./g, "")
+      // 7. Other single-char escapes (locking shifts, save/restore cursor,
+      //    designate G2/G3, ESC c reset, ESC = ESC > app-kp, ESC 7/8 etc.)
+      .replace(/\x1b[A-Z\\=78<>\d]/g, "")
+      // 8. Any lingering ESC <byte> we missed.
+      .replace(/\x1b./g, "")
+      // 9. Control chars (keep \n \r \t).
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+      // 10. Normalize CR/CRLF -> LF.
+      .replace(/\r\n?/g, "\n")
+  );
 }
 
 /** Strip ANSI escape sequences in JS for in-app display.

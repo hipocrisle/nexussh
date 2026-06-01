@@ -68,10 +68,17 @@ export function TranscriptOverlay({
   const fitRef = useRef<FitAddon | null>(null);
   const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Default to plain-text mode — the ANSI replay strips alt-screen
+  // windows entirely (TUI redraws there can't be cleanly replayed into
+  // the main buffer), and almost every long session has Claude Code /
+  // vim / htop inside, so default-ANSI ends up empty. Plain text shows
+  // everything readably. User can flip back when they want colors and
+  // know the recording is plain-shell.
   const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
-  const [plainText, setPlainText] = useState<boolean>(
-    () => localStorage.getItem(PLAIN_LS_KEY) === "1",
-  );
+  const [plainText, setPlainText] = useState<boolean>(() => {
+    const v = localStorage.getItem(PLAIN_LS_KEY);
+    return v === null ? true : v === "1";
+  });
 
   // Load events for this session
   useEffect(() => {

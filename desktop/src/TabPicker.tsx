@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Server, ChevronRight, ChevronDown, Folder, Plus } from "lucide-react";
+import { Server, ChevronRight, ChevronDown, Folder, Plus, X } from "lucide-react";
 import { HostRecord, listHosts } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
@@ -239,15 +239,22 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm pt-[15vh]"
+      // Desktop: floating popover at 15vh. Mobile: full-screen sheet — no
+      // backdrop dim (the picker IS the screen) and no top padding.
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 backdrop-blur-sm pt-[15vh] md:bg-black/60 md:backdrop-blur-sm md:pt-[15vh] max-md:bg-nx-bg max-md:backdrop-blur-none max-md:pt-0"
       {...backdropProps}
     >
       <div
         {...contentProps}
-        className={"nx-modal-enter w-full max-w-xl overflow-hidden " + POPOVER_SURFACE}
+        // Desktop card vs mobile fullscreen sheet.
+        className={
+          "nx-modal-enter w-full max-w-xl overflow-hidden flex flex-col " +
+          "max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 " +
+          POPOVER_SURFACE
+        }
       >
         {/* Search header */}
-        <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider">
+        <div className="flex items-center gap-2.5 px-3.5 py-2.5 border-b border-nx-divider shrink-0">
           <span className="text-nx-accent">&gt;</span>
           <input
             ref={inputRef}
@@ -263,6 +270,14 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
           <span className="text-micro uppercase tracking-wider px-1.5 rounded-nx-sm border border-nx-border text-nx-muted whitespace-nowrap">
             {q.trim() ? `${activeRows.length} ${t("picker.results")}` : `${hosts.length}`}
           </span>
+          {/* Close button — visible on mobile where there's no backdrop to tap. */}
+          <button
+            onClick={onClose}
+            aria-label={t("picker.close") ?? "Close"}
+            className="md:hidden shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
+          >
+            <X size={14} />
+          </button>
         </div>
 
         {/* Create-new row, only when not searching */}
@@ -273,7 +288,7 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
                 onCreateNew();
                 onClose();
               }}
-              className="nx-row grid grid-cols-[16px_1fr] gap-2.5 items-center px-3.5 py-2 cursor-pointer text-nx-accent hover:bg-nx-elevated"
+              className="nx-row grid grid-cols-[16px_1fr] gap-2.5 items-center px-3.5 py-2 max-md:py-3 cursor-pointer text-nx-accent hover:bg-nx-elevated"
             >
               <Plus size={14} className="shrink-0" />
               <span className="text-lead">{t("picker.create_new")}</span>
@@ -283,7 +298,10 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
         )}
 
         {/* Results */}
-        <div ref={listRef} className="max-h-[50vh] overflow-y-auto py-1">
+        <div
+          ref={listRef}
+          className="max-h-[50vh] overflow-y-auto py-1 max-md:max-h-none max-md:flex-1"
+        >
           {activeRows.length === 0 ? (
             <div className="px-4 py-6 text-center font-mono text-meta text-nx-muted">
               {hosts.length === 0 ? t("picker.no_hosts") : t("picker.no_match")}
@@ -302,7 +320,7 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
                     onMouseEnter={() => setIdx(i)}
                     onClick={() => toggleExpand(row.node.path)}
                     style={{ paddingLeft: folderPadPx(row.depth) }}
-                    className="nx-row grid grid-cols-[16px_16px_1fr_auto] gap-2 items-center pr-3.5 py-1.5 cursor-pointer"
+                    className="nx-row grid grid-cols-[16px_16px_1fr_auto] gap-2 items-center pr-3.5 py-1.5 max-md:py-3 cursor-pointer"
                   >
                     {isOpen ? (
                       <ChevronDown size={12} className="text-nx-muted shrink-0" />
@@ -336,7 +354,7 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
                     onClose();
                   }}
                   style={{ paddingLeft: folderPadPx(row.depth) + 18 }}
-                  className="nx-row grid grid-cols-[16px_1fr_auto] gap-2.5 items-center pr-3.5 py-2 cursor-pointer"
+                  className="nx-row grid grid-cols-[16px_1fr_auto] gap-2.5 items-center pr-3.5 py-2 max-md:py-3 cursor-pointer"
                 >
                   <Server size={12} className="text-nx-muted shrink-0" />
                   <div className="min-w-0">
@@ -365,8 +383,8 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
         </div>
 
         <PopoverDivider />
-        {/* Footer hints */}
-        <div className="px-3.5 py-2 flex gap-4 text-micro uppercase tracking-[0.12em] text-nx-muted">
+        {/* Footer hints — keyboard shortcuts, hidden on touch/mobile. */}
+        <div className="max-md:hidden shrink-0 px-3.5 py-2 flex gap-4 text-micro uppercase tracking-[0.12em] text-nx-muted">
           <span>
             <kbd className="text-nx-accent">↑ ↓</kbd> {t("picker.hint_move")}
           </span>

@@ -47,20 +47,41 @@ export async function historyReadEvents(
 
 /** Sanitize a recorded chunk for REPLAY (History viewer / Transcript overlay)
  *  so the whole session stays as scrollable history. Runs only on replay —
- *  the live terminal writes raw bytes and is unaffected. */
+ *  the live terminal writes raw bytes and is unaffected.
+ *
+ *  Operates on the FULL session text (events concatenated) so it can
+ *  match across event boundaries — an alt-screen window can easily span
+ *  hundreds of small chunks.
+ */
 export function filterAltBuffer(s: string): string {
-  return (
-    s
-      // 1. Alt-screen toggles (ESC[?1049/1048/1047/47 h|l) — flatten TUI
-      //    redraws (Claude Code / vim / htop) into the main buffer instead of
-      //    vanishing when the app exits alt-screen.
-      .replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "")
-      // 2. ESC[3J — erase scrollback. `clear` / `tput clear` emit it (usually
-      //    as ESC[H ESC[2J ESC[3J). Honoring it during replay wipes the entire
-      //    recorded history, leaving only post-clear output — the user sees
-      //    "only the tail". Strip it so the full session remains scrollable.
-      .replace(/\x1b\[3J/g, "")
-  );
+  // 1. Drop the ENTIRE alt-screen window (open marker + body + close
+  //    marker). Without this the body — full of cursor-position and
+  //    erase-line escapes targeted at the alt buffer — gets applied to
+  //    the main buffer instead, drawing TUI redraws on top of one
+  //    another. Result: unreadable wall of stacked characters whenever
+  //    the session ran Claude Code / vim / htop / etc.
+  //
+  //    Old code stripped only the toggles (`[?1049h` / `[?1049l`) which
+  //    is the worst of both worlds — alt-screen "content" leaks into
+  //    main buffer with no alt context to position it.
+  //
+  //    Variants 1049/1048/1047/47 are all equivalent for our purposes
+  //    (different historical xterm modes for save/restore + alt screen).
+  //    The lazy regex `[\s\S]*?` makes sure we don't span multiple
+  //    independent alt-windows.
+  //
+  //    If the recording ends mid-alt-screen (no closing toggle), drop
+  //    everything from the opening marker to the end of the buffer so
+  //    we don't leave the body dangling.
+  let out = s
+    .replace(/\x1b\[\?(?:1049|1048|1047|47)h[\s\S]*?\x1b\[\?(?:1049|1048|1047|47)l/g, "")
+    .replace(/\x1b\[\?(?:1049|1048|1047|47)h[\s\S]*$/g, "");
+  // 2. ESC[3J — erase scrollback. `clear` / `tput clear` emit it (usually
+  //    as ESC[H ESC[2J ESC[3J). Honoring it during replay wipes the entire
+  //    recorded history, leaving only post-clear output — the user sees
+  //    "only the tail". Strip so the full session remains scrollable.
+  out = out.replace(/\x1b\[3J/g, "");
+  return out;
 }
 
 /** Detect a tmux status-bar line so REPLAY (transcript / history) can skip it.
@@ -94,6 +115,19 @@ export async function historyExport(
   strip: boolean,
 ): Promise<void> {
   await invoke("history_export", { sessionId, outPath, strip });
+}
+
+/** Strip ANSI/OSC/SS2/SS3 escape sequences from a string. Used by the
+ *  "Plain text" toggle in TranscriptOverlay/HistoryPanel so even TUI-heavy
+ *  recordings stay readable when the colored replay is busy fighting
+ *  itself with stacked cursor moves. */
+export function stripAnsiString(s: string): string {
+  return s
+    .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[\d;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[NOPXabc]/g, "")
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .replace(/\r(?!\n)/g, "");
 }
 
 /** Strip ANSI escape sequences in JS for in-app display.

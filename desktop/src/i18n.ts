@@ -508,6 +508,9 @@ const ru = {
     hint: "read-only · колесо мыши для скрола · Esc для возврата",
     return: "Вернуться в живой терминал",
     return_short: "live",
+    plain_on: "plain ✓",
+    plain_off: "plain",
+    plain_hint: "Текстовый режим: убирает все ANSI-коды и схлопывает повторы. Включай если TUI-сессия (Claude Code / vim / htop) показывает кашу.",
   },
   term_menu: {
     copy: "Копировать (Ctrl+Shift+C)",
@@ -1029,6 +1032,9 @@ const en = {
     hint: "read-only · wheel to scroll · Esc to return",
     return: "Return to live terminal",
     return_short: "live",
+    plain_on: "plain ✓",
+    plain_off: "plain",
+    plain_hint: "Plain-text mode: strips all ANSI escapes and collapses duplicate lines. Flip on when a TUI session (Claude Code / vim / htop) renders as garbage.",
   },
   term_menu: {
     copy: "Copy (Ctrl+C)",

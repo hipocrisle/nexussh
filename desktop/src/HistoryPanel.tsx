@@ -194,38 +194,27 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm
+  // Replay events into xterm.
+  //
+  // Concatenate ALL events first, then filter alt-screen content — see
+  // history.ts for why per-event filtering misses cross-chunk
+  // `[?1049l` markers. Removed the per-line dedup (was eating legit
+  // repeats).
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
     if (!events) return;
-
-    // Fit terminal to container BEFORE writing so wrap math is correct.
     fitRef.current?.fit();
 
-    // Replay with a simple consecutive-line dedup: Claude Code's streaming
-    // responses often emit the same paragraph multiple times as the model
-    // re-flows text. We accumulate output into a buffer and skip lines that
-    // are byte-identical to the immediately preceding one.
-    let prevLine = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prevLine) {
-          // skip the duplicate line + its newline
-          continue;
-        }
-        // Drop tmux status-bar redraws. Easy revert: delete this single line.
-        if (line && sep && isTmuxStatusLine(line)) continue;
-        term.write(line + sep);
-        if (sep) prevLine = line;
-      }
-    };
-    for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+    const full = events.map((e) => e.d).join("");
+    const cleaned = filterAltBuffer(full);
+    const parts = cleaned.split(/(\r\n|\n)/);
+    for (let i = 0; i < parts.length; i += 2) {
+      const line = parts[i];
+      const sep = parts[i + 1] ?? "";
+      if (line && sep && isTmuxStatusLine(line)) continue;
+      term.write(line + sep);
     }
 
     term.scrollToTop();

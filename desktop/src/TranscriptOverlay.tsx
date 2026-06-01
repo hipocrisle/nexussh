@@ -23,6 +23,7 @@ import {
   historyReadEvents,
   filterAltBuffer,
   isTmuxStatusLine,
+  stripAnsiString,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -67,6 +68,10 @@ export function TranscriptOverlay({
   const fitRef = useRef<FitAddon | null>(null);
   const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
+  const [plainText, setPlainText] = useState<boolean>(
+    () => localStorage.getItem(PLAIN_LS_KEY) === "1",
+  );
 
   // Load events for this session
   useEffect(() => {
@@ -175,34 +180,53 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change
+  // Replay events into hidden xterm whenever events change.
+  //
+  // Concatenate ALL events first, then filter — alt-screen windows from
+  // Claude Code / vim / htop can easily span hundreds of small chunks,
+  // and per-event filtering can't see the closing `\x1b[?1049l` if it's
+  // in a later chunk. Once that whole alt-screen body is gone, we feed
+  // the remainder line-by-line (skipping tmux status redraws).
+  //
+  // The line-dedup that lived here ("if (line === prev) continue") was
+  // dropping legitimate consecutive identical output too aggressively —
+  // also removed.
   useEffect(() => {
     const term = termRef.current;
     if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
-    let prev = "";
-    const writeChunk = (s: string) => {
-      const parts = s.split(/(\r\n|\n)/);
-      for (let i = 0; i < parts.length; i += 2) {
-        const line = parts[i];
-        const sep = parts[i + 1] ?? "";
-        if (line && sep && line === prev) continue;
-        // Drop tmux status-bar redraws. Easy revert: delete this single line.
-        if (line && sep && isTmuxStatusLine(line)) continue;
-        term.write(line + sep);
-        if (sep) prev = line;
+    const full = events.map((e) => e.d).join("");
+    // Plain-text mode: drop ALL escapes (alt-screen content survives as
+    // visible characters) — best fallback when the colored replay shows a
+    // wall of overlapping cursor moves. Otherwise: drop the whole
+    // alt-screen window and let xterm render the rest with color.
+    let cleaned = plainText ? stripAnsiString(full) : filterAltBuffer(full);
+    if (plainText) {
+      // Collapse consecutive identical lines — TUI redraws otherwise
+      // stack up as N copies of the same prompt.
+      const lines = cleaned.split("\n");
+      const dedup: string[] = [];
+      for (const ln of lines) {
+        if (dedup.length === 0 || dedup[dedup.length - 1] !== ln) {
+          dedup.push(ln);
+        }
       }
-    };
-    for (const ev of events) {
-      writeChunk(filterAltBuffer(ev.d));
+      cleaned = dedup.join("\n");
+    }
+    const parts = cleaned.split(/(\r\n|\n)/);
+    for (let i = 0; i < parts.length; i += 2) {
+      const line = parts[i];
+      const sep = parts[i + 1] ?? "";
+      if (line && sep && isTmuxStatusLine(line)) continue;
+      term.write(line + sep);
     }
     // Scroll to BOTTOM so user sees the latest output first; they can wheel
     // up to inspect older content. Same UX as terminal scrollback.
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });
-  }, [events]);
+  }, [events, plainText]);
 
   // Apply theme/font changes live
   useEffect(() => {
@@ -256,9 +280,25 @@ export function TranscriptOverlay({
           {t("transcript.hint")}
         </span>
         <button
+          onClick={() => {
+            const next = !plainText;
+            setPlainText(next);
+            localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
+          }}
+          title={t("transcript.plain_hint")}
+          className={
+            "ml-auto mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border " +
+            (plainText
+              ? "bg-[var(--nx-accent-glow)] text-[var(--nx-accent)] border-[var(--nx-accent)]"
+              : "border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-elevated)]")
+          }
+        >
+          {plainText ? t("transcript.plain_on") : t("transcript.plain_off")}
+        </button>
+        <button
           onClick={onClose}
           title={t("transcript.return")}
-          className="ml-auto px-2 py-0.5 rounded flex items-center gap-1.5 hover:bg-[var(--nx-bg-elevated)] text-[var(--nx-text-soft)]"
+          className="px-2 py-0.5 rounded flex items-center gap-1.5 hover:bg-[var(--nx-bg-elevated)] text-[var(--nx-text-soft)]"
         >
           <ArrowDown size={12} />
           <span>{t("transcript.return_short")}</span>

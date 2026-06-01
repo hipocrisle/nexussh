@@ -49,7 +49,7 @@ import { useSettings } from "./settings/settings-store";
 import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
-import { UpdateInfo, maybeAutoCheck } from "./updater";
+import { UpdateInfo, startupCheck } from "./updater";
 import { sshConnect, sshDisconnect } from "./ssh";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
@@ -789,9 +789,10 @@ function App() {
     });
   }
 
-  // Auto-update check on mount (once per 24h, silent on failure).
+  // Auto-update check on every startup (silent on failure). Skipped if
+  // user disabled auto-check in Settings, or chose "skip this version".
   useEffect(() => {
-    maybeAutoCheck()
+    startupCheck()
       .then((info) => {
         if (info) setUpdatePanel({ initial: info });
       })

@@ -392,6 +392,9 @@ const ru = {
     check_again: "Проверить ещё раз",
     install_restart: "Установить и перезапустить",
     installing: "Устанавливаем...",
+    later: "Позже",
+    skip_version: "Пропустить версию",
+    skip_version_hint: "Больше не показывать эту версию (но напоминать о следующих)",
   },
   picker: {
     placeholder: "поиск хоста...",
@@ -864,6 +867,9 @@ const en = {
     check_again: "Check again",
     install_restart: "Install and restart",
     installing: "Installing...",
+    later: "Later",
+    skip_version: "Skip this version",
+    skip_version_hint: "Don't show this version again (still notify about next ones)",
   },
   picker: {
     placeholder: "search hosts...",

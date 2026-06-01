@@ -12,6 +12,7 @@ import {
   checkForUpdate,
   installUpdate,
   markChecked,
+  skipVersion,
 } from "./updater";
 import { useBackdropClose } from "./useBackdropClose";
 
@@ -124,31 +125,53 @@ export function UpdatePanel({ initial, onClose }: Props) {
           )}
         </div>
 
-        <div className="flex gap-2 px-4 py-3 border-t border-[var(--nx-border)]">
-          <button
-            onClick={runCheck}
-            disabled={info === "checking" || installing}
-            className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)] disabled:opacity-50"
-          >
-            {t("update.check_again")}
-          </button>
-          {info && info !== "checking" && (
+        <div className="flex gap-2 px-4 py-3 border-t border-[var(--nx-border)] flex-wrap">
+          {info && info !== "checking" ? (
+            <>
+              {/* Update-available footer: prominent Install + clear Later/Skip. */}
+              <button
+                onClick={onClose}
+                disabled={installing}
+                className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)] disabled:opacity-50"
+              >
+                {t("update.later")}
+              </button>
+              <button
+                onClick={() => {
+                  skipVersion(info.version);
+                  onClose();
+                }}
+                disabled={installing}
+                className="flex-1 py-2 bg-transparent hover:bg-[var(--nx-border)] text-[var(--nx-text-muted)] font-mono rounded border border-[var(--nx-border)] disabled:opacity-50 text-xs"
+                title={t("update.skip_version_hint")}
+              >
+                {t("update.skip_version")}
+              </button>
+              <button
+                onClick={runInstall}
+                disabled={installing}
+                className="flex-1 min-w-[180px] py-2 bg-[var(--nx-accent)] hover:bg-[var(--nx-accent)] text-[var(--nx-bg-base)] font-mono font-bold rounded disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {installing ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    {t("update.installing")}
+                  </>
+                ) : (
+                  <>
+                    <Download size={14} />
+                    {t("update.install_restart")}
+                  </>
+                )}
+              </button>
+            </>
+          ) : (
             <button
-              onClick={runInstall}
-              disabled={installing}
-              className="flex-1 py-2 bg-[var(--nx-accent)] hover:bg-[var(--nx-accent)] text-[var(--nx-bg-base)] font-mono font-bold rounded disabled:opacity-50 flex items-center justify-center gap-2"
+              onClick={runCheck}
+              disabled={info === "checking" || installing}
+              className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)] disabled:opacity-50"
             >
-              {installing ? (
-                <>
-                  <Loader2 size={14} className="animate-spin" />
-                  {t("update.installing")}
-                </>
-              ) : (
-                <>
-                  <Download size={14} />
-                  {t("update.install_restart")}
-                </>
-              )}
+              {t("update.check_again")}
             </button>
           )}
         </div>

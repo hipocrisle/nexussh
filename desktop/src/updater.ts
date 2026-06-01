@@ -41,7 +41,8 @@ export function markChecked() {
 }
 
 /** Returns the available update info if auto-check is due, else null.
- *  Silent on errors (network down, etc.) — UI shows nothing. */
+ *  Silent on errors (network down, etc.) — UI shows nothing.
+ *  Legacy 24h throttle — kept for callers that explicitly want it. */
 export async function maybeAutoCheck(): Promise<UpdateInfo | null> {
   if (!isAutoCheckEnabled()) return null;
   const last = lastCheckAt();
@@ -53,4 +54,33 @@ export async function maybeAutoCheck(): Promise<UpdateInfo | null> {
   } catch {
     return null;
   }
+}
+
+/** Check on every app startup. Honors "auto-check disabled" setting.
+ *  If the user previously chose "skip this version", returns null until
+ *  a newer version appears. */
+export async function startupCheck(): Promise<UpdateInfo | null> {
+  if (!isAutoCheckEnabled()) return null;
+  try {
+    const info = await checkForUpdate();
+    markChecked();
+    if (info && skippedVersion() === info.version) return null;
+    return info;
+  } catch {
+    return null;
+  }
+}
+
+const SKIPPED_VERSION_LS = "nexussh.updateSkippedVersion";
+
+export function skippedVersion(): string {
+  return localStorage.getItem(SKIPPED_VERSION_LS) ?? "";
+}
+
+export function skipVersion(v: string) {
+  localStorage.setItem(SKIPPED_VERSION_LS, v);
+}
+
+export function clearSkippedVersion() {
+  localStorage.removeItem(SKIPPED_VERSION_LS);
 }

@@ -60,6 +60,7 @@ import {
   findPlaintextPasswordHosts,
   migratePlaintextToVault,
 } from "./secretsMigration";
+import { VaultLockScreen } from "./VaultLockScreen";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -468,6 +469,13 @@ function App() {
   }
 
   const [vault, setVault] = useState<VaultStatus | null>(null);
+  // App-lock: when the vault exists but is locked, a full-screen overlay
+  // gates the UI (live SSH sessions keep running). Used at launch (unlock
+  // first, THEN reconnect) and on manual/idle lock.
+  const [appLocked, setAppLocked] = useState(false);
+  // Whether vault state is known yet — session restore waits for it so it
+  // never reconnects saved-password hosts before the vault unlocks.
+  const [vaultChecked, setVaultChecked] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
@@ -744,20 +752,28 @@ function App() {
   // if that's all we have in localStorage. PTY sessions don't survive a
   // process exit, so only host references are persisted.
   const restoredRef = useRef(false);
+  // Snapshot the saved workspaces synchronously at first render — the persist
+  // effect fires on mount with workspaces=[] and would wipe localStorage
+  // before a vault-gated restore gets to read it.
+  const restoreSnapshotRef = useRef<{ rawV1: string | null; rawV0: string | null } | null>(null);
+  if (restoreSnapshotRef.current === null) {
+    try {
+      restoreSnapshotRef.current = {
+        rawV1: localStorage.getItem("nexussh.workspaces"),
+        rawV0: localStorage.getItem("nexussh.lastTabs"),
+      };
+    } catch {
+      restoreSnapshotRef.current = { rawV1: null, rawV0: null };
+    }
+  }
   useEffect(() => {
     if (restoredRef.current) return;
+    // Wait until the vault state is known and (if locked) unlocked, so we
+    // never reconnect saved-password hosts before the master password.
+    if (!vaultChecked || appLocked) return;
     restoredRef.current = true;
     if (!settings.restoreSession) return;
-    // Read localStorage SYNCHRONOUSLY before the persist effect (which fires
-    // right after this one with workspaces=[]) wipes it.
-    let rawV1: string | null = null;
-    let rawV0: string | null = null;
-    try {
-      rawV1 = localStorage.getItem("nexussh.workspaces");
-      rawV0 = localStorage.getItem("nexussh.lastTabs");
-    } catch {
-      /* private mode etc. */
-    }
+    const { rawV1, rawV0 } = restoreSnapshotRef.current!;
     if (!rawV1 && !rawV0) return;
     (async () => {
       try {
@@ -783,7 +799,7 @@ function App() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [vaultChecked, appLocked]);
 
   // Persist the full workspace shape (layout tree + pane → host ids + focus +
   // active workspace). Survives across restarts.
@@ -940,6 +956,11 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
         setSettingsOpen((v) => !v);
+      } else if (meta && e.shiftKey && k === "l") {
+        // Ctrl/Cmd+Shift+L — lock the app (vault). SSH sessions keep running.
+        e.preventDefault();
+        e.stopPropagation();
+        if (vault?.configured) lockApp();
       } else if (meta && !e.shiftKey && k === "w") {
         // Ctrl/Cmd+W — close focused tab (single pane = whole workspace).
         inActiveWs((wsId) => {
@@ -1069,25 +1090,47 @@ function App() {
     return () => window.removeEventListener("contextmenu", onContextMenu);
   }, [t]);
 
+  function lockApp() {
+    vaultLock()
+      .catch(() => {})
+      .finally(() => {
+        setAppLocked(true);
+        vaultStatus().then(setVault).catch(() => {});
+      });
+  }
+
   // Poll vault + sync status on mount; run one-time legacy cleanup +
   // detect plaintext passwords that need migrating into the vault.
   const [migrationPending, setMigrationPending] = useState(false);
   useEffect(() => {
-    vaultStatus().then(setVault).catch(() => {});
     syncStatus().then(setSync).catch(() => {});
     // Delete leftover session recordings (plaintext SSH output) from old
     // versions — silent, one-shot, no-op once gone.
     invoke<number>("purge_legacy_sessions").catch(() => {});
-    // If any host still has a plaintext saved password, force the vault
-    // open so we can move them into encrypted storage.
-    findPlaintextPasswordHosts()
-      .then((hosts) => {
-        if (hosts.length > 0) {
+    (async () => {
+      let st;
+      try {
+        st = await vaultStatus();
+        setVault(st);
+      } catch {
+        setVaultChecked(true);
+        return;
+      }
+      // Configured + locked → show the lock screen FIRST; session restore
+      // is gated on vaultChecked && !appLocked so it waits for the unlock.
+      if (st.configured && !st.unlocked) setAppLocked(true);
+      setVaultChecked(true);
+      // Leftover plaintext passwords → force vault open to migrate them.
+      try {
+        const plain = await findPlaintextPasswordHosts();
+        if (plain.length > 0) {
           setMigrationPending(true);
-          setVaultPanelOpen(true);
+          if (!st.configured) setVaultPanelOpen(true);
         }
-      })
-      .catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
 
   // Once the vault is unlocked and a migration is pending, move every
@@ -1102,23 +1145,22 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [migrationPending, vault?.unlocked]);
 
-  // Vault auto-lock: after VAULT_IDLE_LOCK_MS of no user input (mouse/key),
-  // call vault_lock so any cached master key is wiped from memory. Active
-  // SSH sessions are NOT affected — only the vault.
+  // Idle auto-lock: after `vaultAutoLockMin` minutes of no input, lock the
+  // app (master-password screen) while keeping live SSH sessions running.
+  // Default is 0 = never; the user opts in via Settings.
   useEffect(() => {
-    const IDLE_LOCK_MS = 15 * 60 * 1000;
+    const mins = settings.vaultAutoLockMin;
+    if (!mins || mins <= 0 || appLocked) return;
+    const IDLE_MS = mins * 60 * 1000;
     let timer: number | null = null;
     const reset = () => {
       if (timer != null) window.clearTimeout(timer);
       timer = window.setTimeout(async () => {
         try {
           const st = await vaultStatus();
-          if (st.unlocked) {
-            await vaultLock();
-            vaultStatus().then(setVault).catch(() => {});
-          }
+          if (st.unlocked) lockApp();
         } catch {}
-      }, IDLE_LOCK_MS);
+      }, IDLE_MS);
     };
     const events: (keyof WindowEventMap)[] = [
       "mousemove",
@@ -1133,7 +1175,8 @@ function App() {
       if (timer != null) window.clearTimeout(timer);
       for (const ev of events) window.removeEventListener(ev, reset);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.vaultAutoLockMin, appLocked]);
 
   // ---------------------------------------------------------------------------
   // Session operations
@@ -2563,11 +2606,23 @@ function App() {
       {/* Lazy-loaded panels: rendered only when the user opens them. Bundle
        *  splitting keeps the initial JS chunk small. Suspense fallback is null
        *  — the brief load gap on first open is acceptable for a modal. */}
+      {appLocked && (
+        <VaultLockScreen
+          onUnlocked={() => {
+            setAppLocked(false);
+            vaultStatus().then(setVault).catch(() => {});
+          }}
+        />
+      )}
       <Suspense fallback={null}>
         {vaultPanelOpen && (
           <VaultPanel
             onClose={() => setVaultPanelOpen(false)}
             onChange={setVault}
+            onLock={() => {
+              setVaultPanelOpen(false);
+              lockApp();
+            }}
           />
         )}
         {syncPanelOpen && (

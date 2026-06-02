@@ -7,16 +7,17 @@ import {
   vaultStatus,
   vaultCreate,
   vaultUnlock,
-  vaultLock,
 } from "./vault";
 import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
   onClose: () => void;
   onChange?: (status: VaultStatus) => void;
+  /** Lock the whole app (master-password screen); keeps SSH sessions alive. */
+  onLock?: () => void;
 }
 
-export function VaultPanel({ onClose, onChange }: Props) {
+export function VaultPanel({ onClose, onChange, onLock }: Props) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [pw, setPw] = useState("");
@@ -57,18 +58,10 @@ export function VaultPanel({ onClose, onChange }: Props) {
       setPw("");
       setPw2("");
       await refresh();
+      // Success → just close and get back to work; no extra clicks.
+      onClose();
     } catch (e) {
       setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function lock() {
-    setBusy(true);
-    try {
-      await vaultLock();
-      await refresh();
     } finally {
       setBusy(false);
     }
@@ -161,31 +154,41 @@ export function VaultPanel({ onClose, onChange }: Props) {
         )}
 
         <div className="flex gap-2 pt-5">
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
-          >
-            {t("dialog.cancel")}
-          </button>
           {mode === "manage" ? (
-            <button
-              type="button"
-              onClick={lock}
-              disabled={busy}
-              className="flex-1 py-2 bg-[var(--nx-warning)] disabled:opacity-50 text-[var(--nx-bg-base)] font-mono font-bold rounded"
-            >
-              {t("vault.lock")}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-2 bg-[var(--nx-accent)] text-[var(--nx-bg-base)] font-mono font-bold rounded"
+              >
+                {t("vault.done")}
+              </button>
+              <button
+                type="button"
+                onClick={() => onLock?.()}
+                className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
+              >
+                {t("vault.lock")}
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={submit}
-              disabled={busy || !pw}
-              className="flex-1 py-2 bg-[var(--nx-accent)] disabled:opacity-50 disabled:cursor-not-allowed text-[var(--nx-bg-base)] font-mono font-bold rounded"
-            >
-              {busy ? "..." : mode === "create" ? t("vault.create_btn") : t("vault.unlock")}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
+              >
+                {t("dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={submit}
+                disabled={busy || !pw}
+                className="flex-1 py-2 bg-[var(--nx-accent)] disabled:opacity-50 disabled:cursor-not-allowed text-[var(--nx-bg-base)] font-mono font-bold rounded"
+              >
+                {busy ? "..." : mode === "create" ? t("vault.create_btn") : t("vault.unlock")}
+              </button>
+            </>
           )}
         </div>
       </div>

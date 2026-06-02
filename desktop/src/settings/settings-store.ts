@@ -30,6 +30,9 @@ export interface NexuSettings {
   /** PuTTY-style mouse: selection auto-copies, right-click pastes
    *  (Shift+right-click still shows the context menu). */
   puttyMouse: boolean;
+  /** Auto-lock the app (vault) after N minutes idle. 0 = never (default).
+   *  Locking shows a master-password screen; live SSH sessions keep running. */
+  vaultAutoLockMin: number;
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -52,6 +55,7 @@ export const DEFAULTS: NexuSettings = {
   confirmClose: true,
   advanced: false,
   puttyMouse: false,
+  vaultAutoLockMin: 0,
 };
 
 const STORAGE_KEY = "nexussh.settings.v1";

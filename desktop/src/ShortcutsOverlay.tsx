@@ -52,6 +52,7 @@ export function ShortcutsOverlay({ onClose }: Props) {
       title: t("shortcuts.s_chrome"),
       items: [
         { keys: ["Ctrl", ","], desc: t("shortcuts.k_settings") },
+        { keys: ["Ctrl", "Shift", "L"], desc: t("shortcuts.k_lock") },
         { keys: ["?"], desc: t("shortcuts.k_this_overlay") },
         { keys: ["Ctrl", "/"], desc: t("shortcuts.k_this_overlay") },
         { keys: ["Esc"], desc: t("shortcuts.k_close_overlay") },
@@ -60,7 +61,6 @@ export function ShortcutsOverlay({ onClose }: Props) {
     {
       title: t("shortcuts.s_terminal"),
       items: [
-        { keys: ["Ctrl", "Shift", "↑"], desc: t("shortcuts.k_scrollback") },
         { keys: ["Ctrl", "Shift", "C"], desc: t("shortcuts.k_copy") },
         { keys: ["Ctrl", "Shift", "V"], desc: t("shortcuts.k_paste") },
       ],

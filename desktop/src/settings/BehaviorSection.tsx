@@ -172,6 +172,21 @@ export function BehaviorSection({ s, set, t }: Props) {
       </Row>
 
       <Row
+        label={tr("settings.behavior.autolock")}
+        hint={tr("settings.behavior.autolock_hint")}
+        t={t}
+      >
+        <NumField
+          value={s.vaultAutoLockMin}
+          onChange={(v) => set({ vaultAutoLockMin: v })}
+          suffix={tr("settings.behavior.autolock_suffix")}
+          min={0}
+          max={240}
+          t={t}
+        />
+      </Row>
+
+      <Row
         label={tr("settings.behavior.reconnect")}
         hint={tr("settings.behavior.reconnect_hint")}
         t={t}

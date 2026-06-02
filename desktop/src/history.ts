@@ -106,8 +106,16 @@ export function isClaudeChromeLine(line: string): boolean {
     if (/(?:\d+s\b|tokens\)|shells still running|Waiting|for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s)/.test(line)) return true;
     if (/\b(?:Cooked|Brewed|Baked|Sautéed|Churned|Whisked|Building|Cooking|Brewing|Baking|Sautéing|Churning|Whisking|Crafting|Computing)\b/.test(line)) return true;
   }
-  // Status footer: "⏵⏵ accept edits on · 3 shells · …"
-  if (/^⏵⏵\s+accept edits/.test(line)) return true;
+  // Status footer with or without ⏵⏵ prefix: "accept edits on · 3 shells · esc to interrupt · ctrl+t to … · ↓ to manage"
+  if (/accept edits on/.test(line)) return true;
+  if (/esc to interrupt.*ctrl\+t/.test(line)) return true;
+  if (/ctrl\+t to (?:hide|show) tasks/.test(line)) return true;
+  if (/↓ to manage|\* for agents/.test(line)) return true;
+  // Claude Code "thinking" indicator
+  if (/^\s*\[\s*thinking\s*\]/i.test(line)) return true;
+  if (/^⏵⏵\s+/.test(line)) return true;
+  // tmux status row: "[claude] 0: claude*"
+  if (/^\s*\[[\w-]+\]\s+\d+:\s*[\w-]+[\*+\-!~]?\b/.test(line)) return true;
   // Prompt-box separator (long horizontal run).
   if (/^─{20,}\s*$/.test(line)) return true;
   // Empty prompt / Y-N choices.
@@ -130,44 +138,78 @@ export function isClaudeChromeLine(line: string): boolean {
   return false;
 }
 
-/** Extract ONLY Claude Code conversation blocks — user prompts (`❯ …`),
- *  assistant turns / tool calls (`● …`), and tool results (`⎿ …`) along
- *  with their indented continuations. Everything else (spinner debris,
- *  task list, confirmations, prompt-box chrome) is dropped.
+/** Extract ONLY user prompts and assistant text replies — no tool calls,
+ *  no tool results, no chrome. Implements user's «только мои вводы и твои
+ *  окончательные выводы».
  *
- *  This is the "convo only" mode — addresses the user request «оставлять
- *  только мои вводы и твои окончательные выводы». It works on the dump
- *  produced by the headless xterm replay, so the lines are already in
- *  rendering order. */
+ *  Markers we track:
+ *  - `❯ <text>` — user input (drop `❯ N. Yes/No` confirmation choices).
+ *  - `● <text>` — assistant text reply IF it isn't a tool call signature
+ *    (`● ToolName(…)` or `● ToolName`). Tool calls and their `⎿` results
+ *    are dropped entirely.
+ *
+ *  The function operates on the dump produced by the headless xterm
+ *  replay (lines in rendering order). */
 export function extractClaudeConversation(lines: string[]): string[] {
   const out: string[] = [];
-  let inBlock = false;
+  type Mode = "neutral" | "text" | "tool";
+  let mode: Mode = "neutral";
   let blanks = 0;
+
+  // Heuristic: a tool-call header is `● Name(` or bare `● Name` (no space
+  // continuation, single capitalised identifier). Plain text replies start
+  // with `● ` and continue with lowercase / cyrillic / punctuation.
+  const isToolCallHeader = (s: string) =>
+    /^●\s+[A-Z]\w*\s*\(/.test(s) || /^●\s+[A-Z]\w{2,}\s*$/.test(s);
+
   for (const raw of lines) {
     if (isClaudeChromeLine(raw)) {
-      inBlock = false;
+      mode = "neutral";
       blanks = 0;
       continue;
     }
     const trimmed = raw.trimStart();
-    // Marker lines start a new block.
-    if (/^[●⎿]\s/.test(trimmed) || /^❯\s+\S/.test(trimmed)) {
-      // Don't pull in the chrome-y `❯ 1. Yes` confirmation choices.
+
+    // User input.
+    if (/^❯\s+\S/.test(trimmed)) {
       if (/^❯\s*\d+\.\s+(Yes|No)\b/.test(trimmed)) {
-        inBlock = false;
+        mode = "neutral";
         continue;
       }
-      inBlock = true;
+      mode = "text";
       blanks = 0;
       out.push(raw);
       continue;
     }
-    if (!inBlock) continue;
-    // Inside a block: keep indented continuations and short blank runs.
+
+    // Assistant marker — distinguish tool call vs text reply.
+    if (/^●\s/.test(trimmed)) {
+      if (isToolCallHeader(trimmed)) {
+        mode = "tool";
+        blanks = 0;
+        continue;
+      }
+      mode = "text";
+      blanks = 0;
+      out.push(raw);
+      continue;
+    }
+
+    // Tool result line — drop. It always follows a tool call so flush
+    // any "text" mode (block ended).
+    if (/^\s*⎿/.test(trimmed)) {
+      mode = "tool";
+      blanks = 0;
+      continue;
+    }
+
+    if (mode === "tool" || mode === "neutral") continue;
+
+    // mode === "text": keep continuation lines until a blank run / chrome.
     if (raw.trim() === "") {
       blanks++;
       if (blanks >= 2) {
-        inBlock = false;
+        mode = "neutral";
         continue;
       }
       out.push("");
@@ -193,7 +235,8 @@ export function isTmuxStatusLine(line: string): boolean {
     .replace(/\x1b\[[\d;?]*[ -\/]*[@-~]/g, "")
     .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "")
     .replace(/\x1b./g, "");
-  return /^\s*\[[\w-]+\]\s+\d+:[\w-]+[\*+\-!~]?\b/.test(plain);
+  // Allow optional space after the colon ("[claude] 0: claude*").
+  return /^\s*\[[\w-]+\]\s+\d+:\s*[\w-]+[\*+\-!~]?\b/.test(plain);
 }
 
 export async function historyDelete(sessionId: string): Promise<void> {

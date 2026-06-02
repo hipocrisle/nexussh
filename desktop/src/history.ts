@@ -84,43 +84,48 @@ export function filterAltBuffer(s: string): string {
   return out;
 }
 
-// All known Claude Code spinner glyphs. They rotate through the asterisk
-// family in the Unicode Dingbats block + ASCII `*`. Any line that starts
-// with one of these followed by a space is almost certainly chrome.
-const CC_SPINNER_GLYPHS = "*✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋✢✣✤✥✦✧✩✪✫✬✭✮✯✰";
+// Unicode glyphs Claude Code's spinner cycles through. Outside Claude
+// Code's chrome these are vanishingly rare in legitimate terminal output,
+// so any line led by one is treated as noise unconditionally.
+const CC_SPINNER_GLYPHS = "✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋✢✣✤✥✦✧✩✪✫✬✭✮✯✰";
 
-/** Detect a Claude Code "chrome" line — status footer, spinner, prompt box,
- *  task list, confirmation prompts — that's noise when reading back a
- *  session. User: «нельзя из истории удалять (фильтровать) твои системные
- *  таски и оставлять только мои вводы и твои ответы?» — yes, drop. */
+/** Detect a Claude Code "chrome" line — status footer, spinner, prompt
+ *  box, task list, confirmation prompts. Even after the headless xterm
+ *  replay we still see spinner frames in scrollback (each frame paints
+ *  while the previous content gets pushed up), so we hard-filter on
+ *  glyph presence rather than chasing every possible textual variant. */
 export function isClaudeChromeLine(line: string): boolean {
+  // ANY line whose first non-whitespace char is a CC spinner glyph.
+  // No suffix check — fragmented frames like `✸Build ing mob` or `✻ B`
+  // would slip past a stricter test, and these glyphs basically never
+  // appear in real command output.
+  if (new RegExp(`^\\s*[${CC_SPINNER_GLYPHS}]`).test(line)) return true;
+  // ASCII `*` is too common (markdown bullets, *args, etc) — only drop
+  // when paired with CC-specific suffixes.
+  if (/^\s*\*\s+\S+/.test(line)) {
+    if (/(?:\d+s\b|tokens\)|shells still running|Waiting|for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s)/.test(line)) return true;
+    if (/\b(?:Cooked|Brewed|Baked|Sautéed|Churned|Whisked|Building|Cooking|Brewing|Baking|Sautéing|Churning|Whisking|Crafting|Computing)\b/.test(line)) return true;
+  }
   // Status footer: "⏵⏵ accept edits on · 3 shells · …"
   if (/^⏵⏵\s+accept edits/.test(line)) return true;
   // Prompt-box separator (long horizontal run).
   if (/^─{20,}\s*$/.test(line)) return true;
-  // Empty prompt arrow / Yes-No confirmation choices.
+  // Empty prompt / Y-N choices.
   if (/^❯\s*$/.test(line)) return true;
   if (/^❯\s*\d+\.\s*(Yes|No)/.test(line)) return true;
   if (/^\s*\d+\.\s+(Yes|No)\b/.test(line)) return true;
   if (/^\s*(Yes|No),?\s*$/.test(line)) return true;
   if (/^\s*(Esc to cancel|Tab to amend|Do you want to proceed)/.test(line)) return true;
   if (/^Bash command\s*$/.test(line)) return true;
-  // Spinner with any glyph + verb in -ing or -ed form.
-  const glyphClass = `[${CC_SPINNER_GLYPHS}]`;
-  if (new RegExp(`^${glyphClass}\\s+\\S+`).test(line)) {
-    // Has timer / tokens / shells / verb-ing / for X — chrome.
-    if (/(?:\d+s\b|tokens\)|shells still running|Waiting|for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s)/.test(line)) return true;
-    if (/\b\w+ing\b/.test(line)) return true; // "Building", "Cooking", "Brewing"
-    if (/\b(Cooked|Brewed|Baked|Sautéed|Churned|Whisked|Beaten|Blended|Toasted|Glazed|Mashed|Steamed|Stewed|Simmered)\b/.test(line)) return true;
-  }
   // Task list header and rows.
   if (/^\d+ tasks \(\d+ done, \d+ in progress, \d+ open\)/.test(line)) return true;
   if (/^\s*(?:⎿\s+)?[◼◻]\s/.test(line)) return true;
   // Pending/completed/lines summary marker.
   if (/^\s*…\s+\+\d+\s+(pending|completed|lines)/.test(line)) return true;
-  // ⎿ Waiting… / ⎿ (No output)
-  if (/^\s*⎿\s+(Waiting|\(No output\)|Running…)/.test(line)) return true;
-  // Trailing isolated "…" / single-char animation residue.
+  // ⎿ Waiting… / ⎿ (No output) / ⎿ Running…
+  if (/^\s*⎿\s+(Waiting|\(No output\)|Running…|Resuming…)/.test(line)) return true;
+  // Trailing isolated "…" / "..." animation residue.
+  if (/^\s*\.{2,}\s*$/.test(line)) return true;
   if (/^\s*…\s*$/.test(line)) return true;
   return false;
 }

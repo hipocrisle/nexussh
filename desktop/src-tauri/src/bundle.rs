@@ -81,6 +81,23 @@ pub async fn bundle_import(path: String, passphrase: String) -> Result<String, B
     if passphrase.is_empty() {
         return Err(BundleError::EmptyPassword);
     }
+    // Defense in depth — path comes from a native open dialog, but the command
+    // is webview-reachable. Reject non-regular files and cap the size so it
+    // can't be turned into an unbounded arbitrary-file read.
+    const MAX_BUNDLE_BYTES: u64 = 32 * 1024 * 1024;
+    let meta = std::fs::metadata(&path)?;
+    if !meta.is_file() {
+        return Err(BundleError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )));
+    }
+    if meta.len() > MAX_BUNDLE_BYTES {
+        return Err(BundleError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "bundle too large",
+        )));
+    }
     let encrypted = std::fs::read(&path)?;
     decrypt(&encrypted, &passphrase)
 }

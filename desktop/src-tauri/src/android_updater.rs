@@ -13,6 +13,10 @@ use tauri::AppHandle;
 #[derive(Debug, Deserialize)]
 pub struct InstallApkArgs {
     pub url: String,
+    /// Expected lowercase-hex SHA-256 of the APK. Install refuses if this is
+    /// absent or doesn't match the download (fail closed).
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +25,10 @@ pub struct AndroidUpdateInfo {
     pub current_version: String,
     pub url: String,
     pub notes: Option<String>,
+    /// Expected SHA-256 of the release APK, published in latest.json. Without
+    /// it the in-app install refuses to run (an unverified APK over the update
+    /// channel would be a remote-code-execution vector).
+    pub sha256: Option<String>,
 }
 
 #[tauri::command]
@@ -49,14 +57,22 @@ pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdate
         return Ok(None);
     }
     let notes = v.get("notes").and_then(|x| x.as_str()).map(String::from);
+    // Published APK hash — accept either a top-level `android_sha256` or a
+    // nested `android.sha256` so the release pipeline can choose either shape.
+    let sha256 = v
+        .get("android_sha256")
+        .and_then(|x| x.as_str())
+        .or_else(|| v.get("android").and_then(|a| a.get("sha256")).and_then(|x| x.as_str()))
+        .map(|s| s.trim().to_lowercase());
     let url = format!(
-        "https://github.com/hipocrisle/nexussh/releases/download/v{remote}/app-universal-debug.apk"
+        "https://github.com/hipocrisle/nexussh/releases/download/v{remote}/app-universal-release.apk"
     );
     Ok(Some(AndroidUpdateInfo {
         version: remote,
         current_version: cur,
         url,
         notes,
+        sha256,
     }))
 }
 
@@ -76,9 +92,23 @@ pub async fn android_install_apk(
     app: AppHandle,
     args: InstallApkArgs,
 ) -> Result<(), String> {
+    use sha2::{Digest, Sha256};
     use std::fs::{create_dir_all, File};
     use std::io::{Read, Write};
     use tauri::{Emitter, Manager};
+
+    // Fail closed: never install an APK we can't verify against a hash the
+    // release published. An unverified update channel is an RCE vector.
+    let expected_sha = args
+        .sha256
+        .as_ref()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            "update is missing a valid SHA-256 — refusing to install (the release must \
+             publish android_sha256 in latest.json)"
+                .to_string()
+        })?;
 
     // 1) Download the APK to cacheDir/updates/nexussh.apk.
     //
@@ -94,6 +124,7 @@ pub async fn android_install_apk(
     let url = args.url.clone();
     let apk_path_for_dl = apk_path.clone();
     let app_for_dl = app.clone();
+    let expected_for_dl = expected_sha.clone();
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         if let Some(parent) = apk_path_for_dl.parent() {
             create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
@@ -112,6 +143,7 @@ pub async fn android_install_apk(
         let mut reader = resp.into_reader();
         let mut file =
             File::create(&apk_path_for_dl).map_err(|e| format!("create apk: {e}"))?;
+        let mut hasher = Sha256::new();
         let mut buf = [0u8; 64 * 1024];
         let mut downloaded: u64 = 0;
         let mut last_emit: u64 = 0;
@@ -122,6 +154,7 @@ pub async fn android_install_apk(
                 break;
             }
             file.write_all(&buf[..n]).map_err(|e| format!("write: {e}"))?;
+            hasher.update(&buf[..n]);
             downloaded += n as u64;
             // Throttle emits to ~once per MiB so the channel doesn't drown.
             if downloaded - last_emit >= 1_048_576 {
@@ -161,6 +194,19 @@ pub async fn android_install_apk(
             return Err(format!(
                 "downloaded file isn't a ZIP (magic bytes: {:?})",
                 magic
+            ));
+        }
+
+        // Integrity check — the bytes must match the SHA-256 the release
+        // published. This (not the size/magic sanity checks) is what makes the
+        // update channel safe: an attacker can't swap the APK without also
+        // matching a hash that only a real release author can publish.
+        let actual = hasher.finalize();
+        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        if actual_hex != expected_for_dl {
+            let _ = std::fs::remove_file(&apk_path_for_dl);
+            return Err(format!(
+                "APK hash mismatch — refusing to install (expected {expected_for_dl}, got {actual_hex})"
             ));
         }
         Ok(())

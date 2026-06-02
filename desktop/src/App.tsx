@@ -53,7 +53,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -891,6 +891,7 @@ function App() {
         user: h.user,
         auth,
         vpn: resolveHostVpn(h),
+        allow_legacy: h.allowLegacy,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
@@ -1145,6 +1146,12 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [migrationPending, vault?.unlocked]);
 
+  // Scrub any leftover plaintext host list if encryption was enabled but a
+  // crash left a copy in hosts.json (see hosts.ts::reconcileHostEncryption).
+  useEffect(() => {
+    reconcileHostEncryption().catch(() => {});
+  }, []);
+
   // Idle auto-lock: after `vaultAutoLockMin` minutes of no input, lock the
   // app (master-password screen) while keeping live SSH sessions running.
   // Default is 0 = never; the user opts in via Settings.
@@ -1211,6 +1218,7 @@ function App() {
         user: h.user,
         auth,
         vpn: resolveHostVpn(h),
+        allow_legacy: h.allowLegacy,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
@@ -1239,6 +1247,7 @@ function App() {
         user: h.user,
         auth,
         vpn: resolveHostVpn(h),
+        allow_legacy: h.allowLegacy,
       },
       title: `${h.user}@${h.host}`,
     });
@@ -1306,6 +1315,7 @@ function App() {
         user: host.user,
         auth,
         vpn: resolveHostVpn(host),
+        allow_legacy: host.allowLegacy,
       });
       bumpLastUsed(host.id).catch(() => {});
       // promoteSession keeps focus where it is (no focus-steal on auto-reconnect
@@ -1384,6 +1394,7 @@ function App() {
         user: h.user,
         auth,
         vpn: resolveHostVpn(h),
+        allow_legacy: h.allowLegacy,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");

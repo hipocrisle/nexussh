@@ -101,7 +101,16 @@ fn decrypt_payload(encrypted: &[u8], passphrase: &str) -> Result<String, VaultEr
     String::from_utf8(out).map_err(|_| VaultError::Utf8)
 }
 
+/// Parse the decrypted payload. Current format is JSON (lossless for any
+/// value — passwords with newlines, `=`, leading spaces, etc.). Falls back to
+/// the legacy `key = value` line format so vaults written by older builds still
+/// open; they get rewritten as JSON on the next `vault_set`/`vault_delete`.
 fn parse_kv_text(text: &str) -> HashMap<String, String> {
+    if let Ok(m) = serde_json::from_str::<HashMap<String, String>>(text) {
+        return m;
+    }
+    // Legacy line format — note this was lossy for values with newlines; nothing
+    // we can do to recover those, but plain passwords migrate fine.
     let mut m = HashMap::new();
     for line in text.lines() {
         let line = line.trim();
@@ -119,32 +128,27 @@ fn parse_kv_text(text: &str) -> HashMap<String, String> {
     m
 }
 
+/// Serialize the secret map as JSON — handles arbitrary bytes in values
+/// losslessly (unlike the old `k = v` lines, which silently truncated values
+/// containing a newline and stripped leading/trailing whitespace).
 fn serialize_kv(map: &HashMap<String, String>) -> String {
-    let mut keys: Vec<&String> = map.keys().collect();
-    keys.sort();
-    let mut s = String::new();
-    for k in keys {
-        s.push_str(k);
-        s.push_str(" = ");
-        s.push_str(&map[k]);
-        s.push('\n');
-    }
-    s
+    serde_json::to_string(map).unwrap_or_else(|_| "{}".into())
 }
 
-/// Re-encrypt the in-memory map and write it to disk, backing up the old
-/// file first so a crash mid-write can't lose the vault.
+/// Re-encrypt the in-memory map and write it to disk atomically: write to a
+/// temp file in the same dir, then rename over the vault. A crash mid-write
+/// leaves the old vault intact (rename is atomic on the same filesystem) — no
+/// truncated/undecryptable file, and no stale plaintext-equivalent `.bak` that
+/// retains deleted secrets a generation longer.
 fn persist(u: &Unlocked) -> Result<(), VaultError> {
     let text = serialize_kv(&u.secrets);
     let encrypted = encrypt_payload(&text, &u.passphrase)?;
-    if u.vault_path.exists() {
-        let bak = u.vault_path.with_extension("age.bak");
-        let _ = std::fs::copy(&u.vault_path, &bak);
-    }
     if let Some(parent) = u.vault_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&u.vault_path, &encrypted)?;
+    let tmp = u.vault_path.with_extension("age.tmp");
+    std::fs::write(&tmp, &encrypted)?;
+    std::fs::rename(&tmp, &u.vault_path)?;
     Ok(())
 }
 

@@ -250,6 +250,53 @@ pub fn xray_config(node: &VpnNode, socks_port: u16) -> Value {
     })
 }
 
+/// Per-user runtime dir for xray configs. On Unix we use `$HOME/.cache/nexussh`
+/// (a per-user location, never shared `/tmp`) created 0700; on Windows the
+/// temp dir is already per-user. This keeps the VPN-credential config out of a
+/// world-readable directory.
+fn xray_runtime_dir() -> std::io::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    let dir = {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(".cache").join("nexussh");
+        std::fs::create_dir_all(&dir)?;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        dir
+    };
+    #[cfg(not(unix))]
+    let dir = {
+        let dir = std::env::temp_dir().join("nexussh");
+        std::fs::create_dir_all(&dir)?;
+        dir
+    };
+    Ok(dir)
+}
+
+/// Write `bytes` to `path` with owner-only (0600) permissions on Unix, so the
+/// VPN-credential config can't be read by other local users.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)?;
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::create(path)?.write_all(bytes)
+    }
+}
+
 /// Path to the bundled xray sidecar — Tauri places externalBin next to the app
 /// executable (the target-triple suffix is stripped at bundle time).
 fn xray_bin_path() -> std::path::PathBuf {
@@ -265,12 +312,15 @@ fn xray_bin_path() -> std::path::PathBuf {
 /// a local SOCKS port. The returned Child has kill_on_drop so the proxy dies
 /// with the owning SSH session. Userspace only — no TUN, no elevation.
 pub fn spawn_xray(node: &VpnNode, socks_port: u16) -> std::io::Result<tokio::process::Child> {
-    use std::io::Write;
     let cfg = xray_config(node, socks_port);
     let bytes = serde_json::to_vec(&cfg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-    let path = std::env::temp_dir().join(format!("nexussh-xray-{socks_port}.json"));
-    std::fs::File::create(&path)?.write_all(&bytes)?;
+    // The config holds VPN credentials (node UUID, Reality keys). Write it into a
+    // per-user 0700 dir with 0600 perms — NOT shared /tmp world-readable (0644),
+    // where any local account could read the subscription secret.
+    let dir = xray_runtime_dir()?;
+    let path = dir.join(format!("nexussh-xray-{socks_port}.json"));
+    write_private(&path, &bytes)?;
     let mut cmd = tokio::process::Command::new(xray_bin_path());
     cmd.arg("run")
         .arg("-c")
@@ -349,6 +399,14 @@ pub fn vpn_parse_subscription(sub_text: String) -> Result<Vec<VpnNode>, String> 
 /// on cross-origin fetch.
 #[tauri::command]
 pub async fn vpn_fetch_subscription(url: String) -> Result<String, String> {
+    // Require HTTPS — the subscription body carries VPN credentials (VLESS
+    // UUIDs / Reality keys). Over plain HTTP a network MITM could read them and
+    // substitute attacker nodes, routing the user's SSH through themselves.
+    let trimmed = url.trim();
+    if !trimmed.starts_with("https://") {
+        return Err("subscription URL must use https:// (refusing plaintext fetch)".into());
+    }
+    let url = trimmed.to_string();
     tokio::task::spawn_blocking(move || {
         let resp = ureq::get(&url)
             .timeout(std::time::Duration::from_secs(20))

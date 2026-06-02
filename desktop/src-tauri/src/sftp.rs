@@ -9,18 +9,22 @@
 //! v1 transfers read/write the whole file in memory (no streaming/progress
 //! yet) — fine for config-sized files; large-file streaming is a follow-up.
 
-use russh::client::{self, Handler};
-use russh::keys::ssh_key::PublicKey;
+use russh::client::{self};
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::ssh::{AuthMethod, ConnectArgs};
+use crate::ssh::{known_hosts_path, AuthMethod, ConnectArgs, TofuHandler};
+
+/// Cap for in-memory SFTP transfers (whole-file read/write). A malicious or
+/// buggy server could otherwise hand back an arbitrarily large file and OOM
+/// the client. 512 MiB is generous for the config-sized files this targets.
+const MAX_TRANSFER_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SftpError {
@@ -49,21 +53,11 @@ impl serde::Serialize for SftpError {
     }
 }
 
-/// Accept any host key (TOFU not yet implemented — same posture as ssh.rs).
-struct SftpHandler;
-
-impl Handler for SftpHandler {
-    type Error = russh::Error;
-    async fn check_server_key(&mut self, _key: &PublicKey) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
 /// One open SFTP session. Keeps the russh connection handle alive alongside
 /// the SFTP layer — dropping the handle would tear down the transport.
 struct SftpHandle {
     sftp: SftpSession,
-    _conn: client::Handle<SftpHandler>,
+    _conn: client::Handle<TofuHandler>,
     /// xray child for VPN-routed SFTP — kill_on_drop tears the proxy down with
     /// the session.
     _xray: Option<tokio::process::Child>,
@@ -113,17 +107,27 @@ async fn get_session(
 
 #[tauri::command]
 pub async fn sftp_connect(
+    app: AppHandle,
     state: State<'_, Arc<SftpManager>>,
     vault: State<'_, crate::vault::VaultState>,
     args: ConnectArgs,
 ) -> Result<SftpConnectResult, SftpError> {
-    // Same permissive algorithm set as the shell side, so SFTP also reaches old
-    // gear (Cisco/ESXi). See ssh.rs::permissive_preferred.
+    // Legacy algorithms only when the host opted in (mirror ssh.rs), so SFTP to
+    // a modern host can't be downgraded.
     let config = Arc::new({
         let mut c = client::Config::default();
-        c.preferred = crate::ssh::permissive_preferred();
+        c.preferred = crate::ssh::preferred_for(args.allow_legacy);
         c
     });
+
+    // Same TOFU host-key verification as the shell side — both transports share
+    // one known_hosts.json so a key trusted on the shell is enforced for SFTP
+    // (and a changed key is refused on either).
+    let handler = || TofuHandler {
+        host: args.host.clone(),
+        port: args.port,
+        store_path: known_hosts_path(&app),
+    };
 
     // Route through the built-in VPN (xray SOCKS) when the host is flagged,
     // mirroring ssh.rs — otherwise a VPN-only host can't open files.
@@ -143,11 +147,11 @@ pub async fn sftp_connect(
         .await
         .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
         let session =
-            client::connect_stream(config, stream.into_inner(), SftpHandler).await?;
+            client::connect_stream(config, stream.into_inner(), handler()).await?;
         (session, Some(child))
     } else {
         let addr = format!("{}:{}", args.host, args.port);
-        (client::connect(config, addr.as_str(), SftpHandler).await?, None)
+        (client::connect(config, addr.as_str(), handler()).await?, None)
     };
 
     let auth_ok = match &args.auth {
@@ -250,6 +254,16 @@ pub async fn sftp_download(
     local_path: String,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
+    // Stat first and refuse oversized files — `read` buffers the whole file in
+    // memory, so a malicious server could otherwise OOM the client.
+    if let Ok(meta) = h.sftp.metadata(remote_path.clone()).await {
+        if meta.size.unwrap_or(0) > MAX_TRANSFER_BYTES {
+            return Err(SftpError::Other(format!(
+                "file too large (> {} MiB) — streaming download not yet supported",
+                MAX_TRANSFER_BYTES / (1024 * 1024)
+            )));
+        }
+    }
     let data = h.sftp.read(remote_path).await?;
     tokio::fs::write(&local_path, data).await?;
     Ok(())

@@ -57,10 +57,12 @@ export function BehaviorSection({ s, set, t }: Props) {
     try {
       if (on) await enableHostEncryption();
       else await disableHostEncryption();
-      setHostEnc(on);
     } catch (e) {
       setEncErr(String(e));
     } finally {
+      // Re-derive the checkbox from the source of truth, so a partial failure
+      // can't leave the UI claiming a state the storage doesn't have.
+      setHostEnc(hostsEncrypted());
       setEncBusy(false);
     }
   }

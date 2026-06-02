@@ -81,6 +81,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // Default: ask every connect. Inverted in UI as "save password" opt-in.
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(true);
   const [useVpn, setUseVpn] = useState(false);
+  const [allowLegacy, setAllowLegacy] = useState(false);
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
@@ -99,6 +100,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setNote(initial.note ?? "");
     setAlwaysAskPassword(!!initial.alwaysAskPassword);
     setUseVpn(!!initial.useVpn);
+    setAllowLegacy(!!initial.allowLegacy);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
     // A host whose secret lives in the vault under its own per-host key is
@@ -196,6 +198,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,
+        allowLegacy: allowLegacy || undefined,
+        order: initial?.order,
       };
       await saveHost(rec);
       onSaved(rec);
@@ -453,6 +457,16 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                   )}
                 </div>
               ))}
+            <div className="mt-4">
+              <ToggleRow
+                label={t("dialog.allow_legacy")}
+                value={allowLegacy}
+                onChange={setAllowLegacy}
+              />
+              <p className="text-meta text-nx-muted font-mono mt-1.5">
+                {t("dialog.allow_legacy_hint")}
+              </p>
+            </div>
               </>
             )}
           </div>

@@ -64,9 +64,12 @@ impl Serialize for SyncError {
 
 #[derive(Default)]
 pub struct SyncState {
-    /// Derived 32-byte AES key, kept in memory while sync is unlocked.
-    /// None when locked.
-    key: Mutex<Option<[u8; 32]>>,
+    /// Derived 32-byte AES key + the salt it was derived from, kept in memory
+    /// while sync is unlocked. None when locked. The salt is held so the first
+    /// push writes the SAME salt that produced the in-memory key — otherwise a
+    /// push after unlock-with-no-file would store a fresh salt that no longer
+    /// matches the key, making the file permanently undecryptable.
+    key: Mutex<Option<([u8; 32], Vec<u8>)>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,15 +185,14 @@ pub async fn sync_unlock(
         cipher
             .decrypt(Nonce::from_slice(&nonce_bytes), ct.as_slice())
             .map_err(|_| SyncError::BadPassword)?;
-        *state.key.lock().unwrap() = Some(key_bytes);
+        *state.key.lock().unwrap() = Some((key_bytes, salt));
     } else {
-        // No file yet — derive fresh key with random salt, will be used on first push
+        // No file yet — derive a key from a fresh random salt and keep BOTH, so
+        // the first push writes exactly this salt (see SyncState doc).
         let mut salt = [0u8; 16];
         OsRng.fill_bytes(&mut salt);
         let key_bytes = derive_key(&password, &salt)?;
-        *state.key.lock().unwrap() = Some(key_bytes);
-        // Stash the salt so the next push uses it
-        // (we save it inside the blob anyway, so this is just for "first push")
+        *state.key.lock().unwrap() = Some((key_bytes, salt.to_vec()));
     }
     Ok(())
 }
@@ -206,7 +208,7 @@ pub async fn sync_push(
     app: AppHandle,
     state: State<'_, SyncState>,
 ) -> Result<(), SyncError> {
-    let key_bytes = state.key.lock().unwrap().ok_or(SyncError::Locked)?;
+    let (key_bytes, salt) = state.key.lock().unwrap().clone().ok_or(SyncError::Locked)?;
     let (path, _) = config(&app)?;
     let path = path.ok_or(SyncError::NotConfigured)?;
 
@@ -219,28 +221,11 @@ pub async fn sync_push(
         .unwrap_or(serde_json::json!([]));
     let plaintext = serde_json::to_vec(&hosts)?;
 
-    let mut salt = [0u8; 16];
-    OsRng.fill_bytes(&mut salt);
+    // Fresh nonce per push (AES-GCM requires unique nonce per key). The salt is
+    // the one the in-memory key was derived from (held in SyncState) — writing
+    // it ensures the next unlock re-derives the SAME key.
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
-
-    // Re-derive key with this push's salt (or reuse existing on next unlock).
-    // We rederive so each push has its own salt — but that means key must match.
-    // Actually: we use the in-memory key directly; salt is metadata for unlock'd-from-fresh case.
-    // To keep it simple: every push generates fresh salt and re-derives.
-    // That means we need the password. We don't have it. So: use in-memory key with fresh nonce only,
-    // and the SAME salt as in the blob if file exists. For fresh-file-first-push case,
-    // the unlock_step already generated a salt — we need to persist it. Simplest: derive_key on push using stored salt.
-    // We'll store the salt in the blob; first push reuses the salt we generated at unlock.
-    // For subsequent pushes we use the existing blob's salt.
-
-    // Get existing salt or fresh
-    let existing_salt = if path.exists() {
-        let blob: Blob = serde_json::from_slice(&std::fs::read(&path)?)?;
-        B64.decode(&blob.salt)?
-    } else {
-        salt.to_vec()
-    };
 
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
     let ct = cipher
@@ -250,7 +235,7 @@ pub async fn sync_push(
     let blob = Blob {
         v: 1,
         kdf: "argon2id-19MiB/2/1".into(),
-        salt: B64.encode(&existing_salt),
+        salt: B64.encode(&salt),
         nonce: B64.encode(nonce),
         ct: B64.encode(&ct),
         ts: chrono_string(std::time::SystemTime::now()),
@@ -268,7 +253,7 @@ pub async fn sync_pull(
     app: AppHandle,
     state: State<'_, SyncState>,
 ) -> Result<usize, SyncError> {
-    let key_bytes = state.key.lock().unwrap().ok_or(SyncError::Locked)?;
+    let (key_bytes, _salt) = state.key.lock().unwrap().clone().ok_or(SyncError::Locked)?;
     let (path, _) = config(&app)?;
     let path = path.ok_or(SyncError::NotConfigured)?;
     if !path.exists() {
@@ -278,6 +263,9 @@ pub async fn sync_pull(
     let blob: Blob = serde_json::from_slice(&bytes)?;
     let nonce = B64.decode(&blob.nonce)?;
     let ct = B64.decode(&blob.ct)?;
+    // Re-derive nothing — decrypt with the in-memory key (derived at unlock from
+    // this file's salt). A blob written by another device carries the same salt,
+    // so the key matches.
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
     let plaintext = cipher
         .decrypt(Nonce::from_slice(&nonce), ct.as_slice())

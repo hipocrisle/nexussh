@@ -410,8 +410,23 @@ fn strip_jsonc(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Read a UTF-8 text file the user picked (for bulk host-list import).
+///
+/// Defense in depth: the path always originates from a native file dialog, but
+/// this command is also reachable from any webview JS. So we reject non-regular
+/// files (block reading `/dev/*`, directories, FIFOs) and cap the size — a
+/// bulk-import list is tiny, this is not a general file reader for arbitrary
+/// secrets like `~/.ssh/id_*` keys (still allowed if the user literally picks
+/// one, but no longer a silent unbounded read primitive).
 #[tauri::command]
 pub fn read_text_file(path: String) -> Result<String, String> {
+    const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
+    if meta.len() > MAX_IMPORT_BYTES {
+        return Err("file too large (max 8 MiB)".into());
+    }
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 

@@ -80,7 +80,18 @@ export async function importBundleHosts(
   let added = 0;
   let skipped = 0;
   for (const bh of payload.hosts) {
-    const key = `${bh.host}:${bh.port}`;
+    // Validate untrusted bundle fields — a hostile/malformed bundle could carry
+    // wrong types or out-of-range ports that would break connect later.
+    const host = typeof bh.host === "string" ? bh.host.trim() : "";
+    if (!host) {
+      skipped += 1;
+      continue;
+    }
+    const port =
+      Number.isInteger(bh.port) && bh.port >= 1 && bh.port <= 65535
+        ? bh.port
+        : 22;
+    const key = `${host}:${port}`;
     if (seen.has(key)) {
       skipped += 1;
       continue;
@@ -88,14 +99,14 @@ export async function importBundleHosts(
     seen.add(key);
     const rec: HostRecord = {
       id: newHostId(),
-      name: bh.name || bh.host,
-      host: bh.host,
-      port: bh.port || 22,
-      user: bh.user || defaultUser,
+      name: typeof bh.name === "string" && bh.name ? bh.name : host,
+      host,
+      port,
+      user: typeof bh.user === "string" && bh.user ? bh.user : defaultUser,
       auth: { kind: "password", password: "" },
       alwaysAskPassword: true,
-      group: bh.group,
-      note: bh.note,
+      group: typeof bh.group === "string" ? bh.group : undefined,
+      note: typeof bh.note === "string" ? bh.note : undefined,
     };
     await saveHost(rec);
     added += 1;

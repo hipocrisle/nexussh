@@ -23,20 +23,36 @@ interface Parsed {
 
 // One host per line: `10.0.0.5`, `10.0.0.5:2222`, `host.example.com`, or
 // `host.example.com:2222`. Blank lines and `#` comments are ignored.
+function clampPort(raw: string): number | null {
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return null; // reject, don't clamp
+  return n;
+}
+
 function parseList(text: string, defaultPort: number): Parsed[] {
   const out: Parsed[] = [];
   for (const lineRaw of text.split(/\r?\n/)) {
     const line = lineRaw.trim();
     if (!line || line.startsWith("#")) continue;
-    // Split host:port but tolerate bare IPv6 (no brackets) by only treating
-    // a trailing :digits after the LAST colon as a port when there's exactly
-    // one colon (plain IPv4 / hostname). IPv6 users can add brackets later.
-    const m = line.match(/^(.*?)(?::(\d{1,5}))?$/);
     let host = line;
     let port = defaultPort;
-    if (line.split(":").length === 2 && m) {
-      host = m[1];
-      if (m[2]) port = Math.min(65535, Math.max(1, parseInt(m[2], 10)));
+    // Bracketed IPv6 with optional port: [fe80::1] or [fe80::1]:2222
+    const v6 = line.match(/^\[([^\]]+)\](?::(\d{1,5}))?$/);
+    if (v6) {
+      host = v6[1];
+      if (v6[2]) {
+        const p = clampPort(v6[2]);
+        if (p === null) continue; // bad port → skip the line
+        port = p;
+      }
+    } else if (line.split(":").length === 2) {
+      // Single colon → host:port (plain IPv4 / hostname). Bare IPv6 (2+ colons)
+      // falls through and is kept whole with the default port.
+      const [h, p] = line.split(":");
+      host = h;
+      const parsed = clampPort(p);
+      if (parsed === null) continue; // bad port → skip
+      port = parsed;
     }
     if (host) out.push({ host, port });
   }

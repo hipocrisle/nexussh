@@ -9,6 +9,8 @@ export interface UpdateInfo {
   body: string | null;
   /** Set on Android: URL of the .apk to hand to PackageInstaller. */
   apk_url?: string;
+  /** Set on Android: expected SHA-256 of the APK (verified before install). */
+  apk_sha256?: string | null;
 }
 
 interface AndroidUpdateInfo {
@@ -16,6 +18,7 @@ interface AndroidUpdateInfo {
   current_version: string;
   url: string;
   notes: string | null;
+  sha256: string | null;
 }
 
 /** Best-effort detection of an Android Tauri runtime. The desktop updater
@@ -34,6 +37,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       date: null,
       body: a.notes,
       apk_url: a.url,
+      apk_sha256: a.sha256,
     };
   }
   return await invoke<UpdateInfo | null>("check_for_update");
@@ -42,7 +46,9 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 export async function installUpdate(info?: UpdateInfo): Promise<void> {
   if (isAndroid()) {
     if (!info?.apk_url) throw new Error("missing APK url");
-    await invoke("android_install_apk", { args: { url: info.apk_url } });
+    await invoke("android_install_apk", {
+      args: { url: info.apk_url, sha256: info.apk_sha256 ?? null },
+    });
     return;
   }
   await invoke("install_update");

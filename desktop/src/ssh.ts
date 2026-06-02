@@ -19,6 +19,8 @@ export interface ConnectArgs {
   /** When set, route the SSH connection through the built-in xray SOCKS proxy
    *  egressing via this node. */
   vpn?: VpnNode | null;
+  /** Opt-in to weak legacy algorithms for old gear. OFF by default. */
+  allow_legacy?: boolean;
 }
 
 export interface DataEvent {

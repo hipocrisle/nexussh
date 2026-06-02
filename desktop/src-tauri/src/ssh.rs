@@ -77,6 +77,12 @@ pub struct ConnectArgs {
     /// the chosen profile+exit into a node and passes it here.
     #[serde(default)]
     pub vpn: Option<crate::vpn::VpnNode>,
+    /// Opt-in to weak legacy algorithms (3DES/CBC/SHA-1 KEX+MAC, ssh-rsa) for
+    /// reaching old gear (Cisco IOS / ESXi). OFF by default so a MITM can't
+    /// downgrade a modern host — the legacy set is offered only for hosts the
+    /// user explicitly flagged.
+    #[serde(default)]
+    pub allow_legacy: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -131,21 +137,31 @@ impl SessionManager {
 /// key only if it still matches; a mismatch returns `false` so russh aborts the
 /// handshake (the user sees a connection error rather than transparently
 /// talking to a possibly-MITM'd peer).
-struct TofuHandler {
-    host: String,
-    port: u16,
-    store_path: std::path::PathBuf,
+pub(crate) struct TofuHandler {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) store_path: std::path::PathBuf,
 }
 
 fn fingerprint_sha256(key: &PublicKey) -> String {
     key.fingerprint(russh::keys::HashAlg::Sha256).to_string()
 }
 
-fn read_known_hosts(path: &std::path::Path) -> HashMap<String, String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
-        .unwrap_or_default()
+/// Serializes the read-modify-write of known_hosts.json so two concurrent
+/// first-connects can't clobber each other's pin (lost-update race).
+static KNOWN_HOSTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read the pin store. Distinguishes "file absent" (legitimate empty → Ok)
+/// from "file present but unparseable" (corruption → Err, so we refuse to
+/// silently drop every pin and accept any key).
+fn read_known_hosts(path: &std::path::Path) -> std::io::Result<HashMap<String, String>> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => serde_json::from_str::<HashMap<String, String>>(&s).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, format!("known_hosts corrupt: {e}"))
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(e) => Err(e),
+    }
 }
 
 fn write_known_hosts(path: &std::path::Path, map: &HashMap<String, String>) -> std::io::Result<()> {
@@ -153,28 +169,47 @@ fn write_known_hosts(path: &std::path::Path, map: &HashMap<String, String>) -> s
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(map).unwrap_or_else(|_| "{}".into());
-    std::fs::write(path, json)
+    // Atomic replace so a crash mid-write can't truncate the pin store.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// TOFU verification shared by the shell (`ssh.rs`) and SFTP (`sftp.rs`) so a
+/// key trusted on one transport is enforced on the other. Returns Ok(true) to
+/// accept, Ok(false) to refuse (changed key), Err on store I/O/corruption — and
+/// a first-use pin that can't be persisted is treated as an error (fail closed)
+/// rather than silently accepting every future key.
+pub(crate) fn verify_known_host(
+    store_path: &std::path::Path,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+) -> std::io::Result<bool> {
+    let id = format!("{host}:{port}");
+    let fp = fingerprint_sha256(key);
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = read_known_hosts(store_path)?;
+    match map.get(&id) {
+        Some(known) if known == &fp => Ok(true),
+        Some(_) => Ok(false), // key changed — refuse (possible MITM)
+        None => {
+            map.insert(id, fp);
+            write_known_hosts(store_path, &map)?; // fail closed if not persisted
+            Ok(true)
+        }
+    }
 }
 
 impl Handler for TofuHandler {
     type Error = russh::Error;
     async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
-        let id = format!("{}:{}", self.host, self.port);
-        let fp = fingerprint_sha256(key);
-        let mut map = read_known_hosts(&self.store_path);
-        match map.get(&id) {
-            Some(known) if known == &fp => Ok(true),
-            Some(_) => Ok(false), // key changed — refuse
-            None => {
-                map.insert(id, fp);
-                let _ = write_known_hosts(&self.store_path, &map);
-                Ok(true)
-            }
-        }
+        verify_known_host(&self.store_path, &self.host, self.port, key)
+            .map_err(russh::Error::from)
     }
 }
 
-fn known_hosts_path(app: &AppHandle) -> std::path::PathBuf {
+pub(crate) fn known_hosts_path(app: &AppHandle) -> std::path::PathBuf {
     let mut p = app
         .path()
         .app_data_dir()
@@ -282,6 +317,17 @@ pub(crate) fn permissive_preferred() -> Preferred {
     }
 }
 
+/// Pick the algorithm set for a connection: russh's secure default unless the
+/// host opted into legacy algorithms. Never weaken a connection the user didn't
+/// explicitly flag.
+pub(crate) fn preferred_for(allow_legacy: bool) -> Preferred {
+    if allow_legacy {
+        permissive_preferred()
+    } else {
+        Preferred::default()
+    }
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -300,8 +346,8 @@ pub async fn ssh_connect(
     let mut cfg = client::Config::default();
     cfg.keepalive_interval = Some(std::time::Duration::from_secs(20));
     cfg.keepalive_max = 0;
-    // Offer legacy algorithms too, so old gear (Cisco IOS / ESXi) can connect.
-    cfg.preferred = permissive_preferred();
+    // Offer legacy algorithms only when the host opted in (old gear Cisco/ESXi).
+    cfg.preferred = preferred_for(args.allow_legacy);
     let config = Arc::new(cfg);
 
     // Establish the transport stream: either a direct TCP connect, or — when

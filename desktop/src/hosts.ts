@@ -7,7 +7,7 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import { syncStatus, syncPush } from "./sync";
-import { vaultGet, vaultSet, vaultDelete } from "./vault";
+import { vaultGet, vaultSet, vaultDelete, vaultStatus } from "./vault";
 
 export interface HostRecord {
   id: string;
@@ -34,6 +34,10 @@ export interface HostRecord {
   alwaysAskPassword?: boolean;
   /** Route this host's connection through the built-in VPN transport. */
   useVpn?: boolean;
+  /** Opt-in to weak legacy SSH algorithms (3DES/CBC/SHA-1, ssh-rsa) for old
+   *  gear (Cisco IOS / ESXi). OFF by default — modern hosts never get the
+   *  downgradeable algorithm set. */
+  allowLegacy?: boolean;
   /** Local VPN profile id (see vpn.ts). The sub URL itself stays local, never
    *  in this record, so it doesn't ride the sync. */
   vpnProfileId?: string;
@@ -287,21 +291,46 @@ export function renameKnownFolder(oldName: string, newName: string) {
 // failure the source is left intact — the flag is flipped only after the new
 // location holds the data, so a crash mid-migration can't lose hosts.
 
-/** Move host list from plaintext hosts.json into the encrypted vault. */
+/** Move host list from plaintext hosts.json into the encrypted vault. Requires
+ *  an unlocked vault (caller guarantees). Ordered for durability: the encrypted
+ *  copy exists before the flag flips, and the flag flips before the plaintext
+ *  is scrubbed — so at no intermediate point is the list readable from neither
+ *  source. If the scrub throws, `reconcileHostEncryption()` cleans up at next
+ *  start (no data loss — the flag already routes reads to the vault). */
 export async function enableHostEncryption(): Promise<void> {
   if (hostsEncrypted()) return;
   const s = await getStore();
   const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
-  await vaultSet(VAULT_HOSTLIST_KEY, JSON.stringify(all)); // 1. write encrypted copy
-  localStorage.setItem(HOSTS_ENCRYPTED_LS, "1"); //            2. flip source flag
-  await s.delete(HOSTS_KEY); //                                3. wipe plaintext
+  await vaultSet(VAULT_HOSTLIST_KEY, JSON.stringify(all)); // 1. encrypted copy
+  localStorage.setItem(HOSTS_ENCRYPTED_LS, "1"); //            2. reads → vault
+  await s.delete(HOSTS_KEY); //                                3. scrub plaintext
   await s.save();
   notifyHostsChanged();
+}
+
+/** If the list is encrypted but a plaintext copy lingers in hosts.json (e.g. a
+ *  crash mid-enable), scrub it. Call once at startup. */
+export async function reconcileHostEncryption(): Promise<void> {
+  if (!hostsEncrypted()) return;
+  try {
+    const s = await getStore();
+    const leftover = await s.get<HostRecord[]>(HOSTS_KEY);
+    if (leftover && leftover.length) {
+      await s.delete(HOSTS_KEY);
+      await s.save();
+    }
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** Move host list from the encrypted vault back into plaintext hosts.json. */
 export async function disableHostEncryption(): Promise<void> {
   if (!hostsEncrypted()) return;
+  // Must be able to read the encrypted list before dropping it. If the vault is
+  // locked we cannot — abort rather than lose the list.
+  const st = await vaultStatus();
+  if (!st.unlocked) throw new Error("vault locked");
   let all: HostRecord[] = [];
   try {
     const raw = await vaultGet(VAULT_HOSTLIST_KEY);
@@ -310,13 +339,14 @@ export async function disableHostEncryption(): Promise<void> {
       if (Array.isArray(parsed)) all = parsed;
     }
   } catch {
-    /* vault read failed — abort without flipping the flag */
-    throw new Error("vault read failed");
+    // Unlocked but read threw → the key was never written (empty list). Safe to
+    // proceed with an empty plaintext list rather than getting stuck ON forever.
+    all = [];
   }
   const s = await getStore();
   await s.set(HOSTS_KEY, all); //               1. write plaintext copy
   await s.save();
   localStorage.removeItem(HOSTS_ENCRYPTED_LS); // 2. flip source flag
-  await vaultDelete(VAULT_HOSTLIST_KEY); //      3. drop encrypted copy
+  await vaultDelete(VAULT_HOSTLIST_KEY).catch(() => {}); // 3. drop encrypted copy
   notifyHostsChanged();
 }

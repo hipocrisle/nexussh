@@ -84,30 +84,44 @@ export function filterAltBuffer(s: string): string {
   return out;
 }
 
+// All known Claude Code spinner glyphs. They rotate through the asterisk
+// family in the Unicode Dingbats block + ASCII `*`. Any line that starts
+// with one of these followed by a space is almost certainly chrome.
+const CC_SPINNER_GLYPHS = "*✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋✢✣✤✥✦✧✩✪✫✬✭✮✯✰";
+
 /** Detect a Claude Code "chrome" line — status footer, spinner, prompt box,
- *  task list — that's noise when reading back a session. Each TUI repaint
- *  duplicates this chrome dozens of times; even with sliding-window dedup
- *  the result is "wall of system noise interleaved with the actual
- *  conversation". User: «нельзя из истории удалять (фильтровать) твои
- *  системные таски и оставлять только мои вводы и твои ответы?» — yes,
- *  this filter drops them. */
+ *  task list, confirmation prompts — that's noise when reading back a
+ *  session. User: «нельзя из истории удалять (фильтровать) твои системные
+ *  таски и оставлять только мои вводы и твои ответы?» — yes, drop. */
 export function isClaudeChromeLine(line: string): boolean {
-  // Status footer at the very bottom: "⏵⏵ accept edits on · 3 shells · …"
+  // Status footer: "⏵⏵ accept edits on · 3 shells · …"
   if (/^⏵⏵\s+accept edits/.test(line)) return true;
   // Prompt-box separator (long horizontal run).
   if (/^─{20,}\s*$/.test(line)) return true;
-  // Empty prompt arrow.
+  // Empty prompt arrow / Yes-No confirmation choices.
   if (/^❯\s*$/.test(line)) return true;
-  // Spinner: "* Building mobile UI shell… (4m 29s · ↓ 3.0k tokens)" or
-  //          "✻ Cooked for 4m 29s · 3 shells still running"
-  if (/^[*✻]\s+\S+.*\((?:\d+h)? ?(?:\d+m)? ?\d+s\b/.test(line)) return true;
-  if (/^✻\s+\w+ for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s/.test(line)) return true;
-  // Task list header: "112 tasks (106 done, 1 in progress, 5 open)"
+  if (/^❯\s*\d+\.\s*(Yes|No)/.test(line)) return true;
+  if (/^\s*\d+\.\s+(Yes|No)\b/.test(line)) return true;
+  if (/^\s*(Yes|No),?\s*$/.test(line)) return true;
+  if (/^\s*(Esc to cancel|Tab to amend|Do you want to proceed)/.test(line)) return true;
+  if (/^Bash command\s*$/.test(line)) return true;
+  // Spinner with any glyph + verb in -ing or -ed form.
+  const glyphClass = `[${CC_SPINNER_GLYPHS}]`;
+  if (new RegExp(`^${glyphClass}\\s+\\S+`).test(line)) {
+    // Has timer / tokens / shells / verb-ing / for X — chrome.
+    if (/(?:\d+s\b|tokens\)|shells still running|Waiting|for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s)/.test(line)) return true;
+    if (/\b\w+ing\b/.test(line)) return true; // "Building", "Cooking", "Brewing"
+    if (/\b(Cooked|Brewed|Baked|Sautéed|Churned|Whisked|Beaten|Blended|Toasted|Glazed|Mashed|Steamed|Stewed|Simmered)\b/.test(line)) return true;
+  }
+  // Task list header and rows.
   if (/^\d+ tasks \(\d+ done, \d+ in progress, \d+ open\)/.test(line)) return true;
-  // Task checkbox row (optionally indented under ⎿).
   if (/^\s*(?:⎿\s+)?[◼◻]\s/.test(line)) return true;
   // Pending/completed/lines summary marker.
   if (/^\s*…\s+\+\d+\s+(pending|completed|lines)/.test(line)) return true;
+  // ⎿ Waiting… / ⎿ (No output)
+  if (/^\s*⎿\s+(Waiting|\(No output\)|Running…)/.test(line)) return true;
+  // Trailing isolated "…" / single-char animation residue.
+  if (/^\s*…\s*$/.test(line)) return true;
   return false;
 }
 

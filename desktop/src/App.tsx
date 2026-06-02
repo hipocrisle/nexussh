@@ -5,7 +5,6 @@ import {
   Unlock,
   KeyRound,
   RefreshCw,
-  History,
   Settings as SettingsIcon,
   HelpCircle,
 } from "lucide-react";
@@ -24,9 +23,6 @@ const VaultPanel = lazy(() =>
 const SyncPanel = lazy(() =>
   import("./SyncPanel").then((m) => ({ default: m.SyncPanel })),
 );
-const HistoryPanel = lazy(() =>
-  import("./HistoryPanel").then((m) => ({ default: m.HistoryPanel })),
-);
 const SFTPPanel = lazy(() =>
   import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
 );
@@ -44,7 +40,6 @@ import { PasswordPrompt } from "./PasswordPrompt";
 const SettingsScreen = lazy(() =>
   import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
 );
-import { TranscriptOverlay } from "./TranscriptOverlay";
 import { PaneHeader } from "./PaneHeader";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, applyTheme } from "./settings/themes";
@@ -62,7 +57,6 @@ import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
-import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // `getCurrentWindow()` and the window plugin only exist inside a Tauri webview;
@@ -472,7 +466,6 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
-  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   const [sftpTarget, setSftpTarget] = useState<{
     args: ConnectArgs;
     title: string;
@@ -570,22 +563,6 @@ function App() {
   // Bounded to last 20 entries by the push site in closePane.
   const closedStackRef = useRef<HostRecord[]>([]);
 
-  // Per-session scrollback overlay state. When a session id is in this set,
-  // the active TerminalView is hidden behind a TranscriptOverlay that lets the
-  // user wheel-scroll through everything written so far (works even in
-  // alt-screen mode like Claude Code).
-  const [transcriptTabs, setTranscriptTabs] = useState<Set<string>>(
-    () => new Set<string>(),
-  );
-  function toggleTranscript(sessionId: string) {
-    setTranscriptTabs((prev) => {
-      const next = new Set(prev);
-      if (next.has(sessionId)) next.delete(sessionId);
-      else next.add(sessionId);
-      return next;
-    });
-  }
-
   function toggleSidebar() {
     const next = !sidebarCollapsed;
     setSidebarCollapsed(next);
@@ -653,7 +630,6 @@ function App() {
     shortcutsOpen,
     syncPanelOpen: false as boolean,
     vaultPanelOpen: false as boolean,
-    historyPanelOpen: false as boolean,
     sftpTarget: null as unknown,
     closers: {} as Record<string, () => void>,
   });
@@ -680,7 +656,6 @@ function App() {
       createHostOpen ||
       settingsOpen ||
       shortcutsOpen ||
-      historyPanelOpen ||
       syncPanelOpen ||
       vaultPanelOpen ||
       !!updatePanel ||
@@ -698,14 +673,12 @@ function App() {
     createHostOpen,
     settingsOpen,
     shortcutsOpen,
-    historyPanelOpen,
     syncPanelOpen,
     vaultPanelOpen,
     updatePanel,
     sftpTarget,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
-  backRef.current.historyPanelOpen = historyPanelOpen;
   backRef.current.syncPanelOpen = syncPanelOpen;
   backRef.current.vaultPanelOpen = vaultPanelOpen;
   (backRef.current as { updatePanelOpen?: boolean }).updatePanelOpen =
@@ -726,7 +699,6 @@ function App() {
       else if (b.editHost) setEditHost(null);
       else if (b.createHostOpen) setCreateHostOpen(false);
       else if (b.pickerOpen) setPickerOpen(false);
-      else if (b.historyPanelOpen) setHistoryPanelOpen(false);
       else if (b.syncPanelOpen) setSyncPanelOpen(false);
       else if (b.vaultPanelOpen) setVaultPanelOpen(false);
       else if (b.mobileDrawerOpen) setMobileDrawerOpen(false);
@@ -963,17 +935,6 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
         setSettingsOpen((v) => !v);
-      } else if (
-        e.ctrlKey &&
-        e.shiftKey &&
-        (e.key === "ArrowUp" || e.key === "Up")
-      ) {
-        // Ctrl+Shift+↑ — transcript overlay for focused session.
-        if (activeId) {
-          e.preventDefault();
-          e.stopPropagation();
-          toggleTranscript(activeId);
-        }
       } else if (meta && !e.shiftKey && k === "w") {
         // Ctrl/Cmd+W — close focused tab (single pane = whole workspace).
         inActiveWs((wsId) => {
@@ -1103,13 +1064,10 @@ function App() {
     return () => window.removeEventListener("contextmenu", onContextMenu);
   }, [t]);
 
-  // Poll vault + sync status on mount; also kick off session-history GC.
+  // Poll vault + sync status on mount.
   useEffect(() => {
     vaultStatus().then(setVault).catch(() => {});
     syncStatus().then(setSync).catch(() => {});
-    // Auto-delete cast/log/meta triples older than 30 days. Active sessions
-    // are never pruned (their meta mtime keeps moving).
-    invoke<number>("history_prune", { maxAgeDays: 30 }).catch(() => {});
   }, []);
 
   // Vault auto-lock: after VAULT_IDLE_LOCK_MS of no user input (mouse/key),
@@ -1374,16 +1332,6 @@ function App() {
     const hasPanes = ws.panes.length > 0;
     const others = workspaces.filter((w) => w.id !== wsId);
     const items: MenuItem[] = [
-      {
-        label:
-          focusedSid && transcriptTabs.has(focusedSid)
-            ? t("tabmenu.exit_transcript")
-            : t("tabmenu.open_transcript"),
-        onClick: () => {
-          if (focusedSid) toggleTranscript(focusedSid);
-        },
-        disabled: !focusedSid,
-      },
       {
         label: t("tabmenu.restart"),
         onClick: () => {
@@ -1872,12 +1820,6 @@ function App() {
       y,
       items: [
         {
-          label: transcriptTabs.has(sid)
-            ? t("tabmenu.exit_transcript")
-            : t("tabmenu.open_transcript"),
-          onClick: () => toggleTranscript(sid),
-        },
-        {
           label: t("tabmenu.restart"),
           onClick: () => restartSession(sid),
           disabled: pane.session.status === "connecting",
@@ -2221,18 +2163,6 @@ function App() {
                   </div>
                 </div>
               )}
-              {transcriptTabs.has(p.session.id) && (
-                <div style={{ ...cs, zIndex: 20 }}>
-                  <TranscriptOverlay
-                    sessionId={p.session.id}
-                    hostLabel={`${p.session.host.user}@${p.session.host.host}`}
-                    onClose={() => toggleTranscript(p.session.id)}
-                    onContextMenu={(x, y, items) =>
-                      setMenu({ x, y, items })
-                    }
-                  />
-                </div>
-              )}
             </Fragment>
           );
         })}
@@ -2368,10 +2298,6 @@ function App() {
           onDrawer={() => setMobileDrawerOpen((v) => !v)}
           items={[
             {
-              label: t("history.button"),
-              onClick: () => setHistoryPanelOpen(true),
-            },
-            {
               label: "sync",
               onClick: () => setSyncPanelOpen(true),
               warn: sync?.configured && !sync?.unlocked,
@@ -2442,13 +2368,6 @@ function App() {
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">
-          <HeaderButton
-            icon={<History size={12} />}
-            onClick={() => setHistoryPanelOpen(true)}
-            title={t("history.open_panel")}
-          >
-            {t("history.button")}
-          </HeaderButton>
           <HeaderButton
             icon={<RefreshCw size={12} />}
             onClick={() => setSyncPanelOpen(true)}
@@ -2624,9 +2543,6 @@ function App() {
             onClose={() => setSyncPanelOpen(false)}
             onChange={setSync}
           />
-        )}
-        {historyPanelOpen && (
-          <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
         )}
         {sftpTarget && (
           <SFTPPanel

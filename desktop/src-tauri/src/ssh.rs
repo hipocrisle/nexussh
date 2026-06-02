@@ -87,10 +87,9 @@ pub struct ConnectResult {
 /// Per-session output gate. Frontend's `listen('ssh-data', ...)` is async
 /// — if the server sends a banner before the JS listener finishes
 /// attaching, those bytes are lost (terminal stays blank even though the
-/// connection succeeded; the .cast file still has them since the logger
-/// runs in-process). Backend therefore buffers `ssh-data` payloads until
-/// the frontend calls `ssh_ready`, then flushes and switches to direct
-/// emit.
+/// connection succeeded). Backend therefore buffers `ssh-data` payloads
+/// until the frontend calls `ssh_ready`, then flushes and switches to
+/// direct emit.
 enum OutputGate {
     Buffering(Vec<Vec<u8>>),
     Ready,
@@ -107,7 +106,6 @@ struct ActiveSession {
     _xray: Option<tokio::process::Child>,
 }
 
-use crate::history::SessionLogger;
 
 enum SessionCommand {
     Data(Vec<u8>),
@@ -383,20 +381,6 @@ pub async fn ssh_connect(
         },
     );
 
-    // Open per-session log file for history.
-    // Failure to open the log is non-fatal — we still let the user connect.
-    let logger = SessionLogger::open(
-        &app,
-        &session_id,
-        &args.host,
-        args.port,
-        &args.user,
-        cols,
-        rows,
-    )
-    .ok()
-    .map(Arc::new);
-
     let sid = session_id.clone();
     let app_handle = app.clone();
     let manager = state.inner().clone();
@@ -408,13 +392,9 @@ pub async fn ssh_connect(
             &mut channel,
             &mut rx,
             session,
-            logger.as_deref(),
             gate,
         )
         .await;
-        if let Some(l) = logger.as_ref() {
-            l.finalize();
-        }
         manager.sessions.lock().await.remove(&sid);
         let _ = app_handle.emit(
             "ssh-closed",
@@ -446,7 +426,6 @@ async fn run_session_loop(
     channel: &mut russh::Channel<client::Msg>,
     rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
     session: client::Handle<TofuHandler>,
-    logger: Option<&SessionLogger>,
     gate: Arc<Mutex<OutputGate>>,
 ) -> String {
     // Emit-or-buffer for ssh-data. Atomic under the gate Mutex so that
@@ -512,12 +491,10 @@ async fn run_session_loop(
                 let Some(msg) = msg else { return "server closed channel".into(); };
                 match msg {
                     ChannelMsg::Data { data } => {
-                        if let Some(l) = logger { l.append(&data); }
                         ship(app, sid, &gate, data.to_vec()).await;
                     }
                     ChannelMsg::ExtendedData { data, .. } => {
                         // stderr arrives here in some shells; merge into the same stream
-                        if let Some(l) = logger { l.append(&data); }
                         ship(app, sid, &gate, data.to_vec()).await;
                     }
                     ChannelMsg::ExitStatus { exit_status } => {

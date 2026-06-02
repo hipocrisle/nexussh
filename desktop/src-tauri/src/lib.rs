@@ -1,5 +1,4 @@
 mod android_updater;
-mod history;
 mod import_sources;
 mod sftp;
 mod ssh;
@@ -50,13 +49,6 @@ pub fn run() {
             sync::sync_lock,
             sync::sync_push,
             sync::sync_pull,
-            history::history_list,
-            history::history_read,
-            history::history_read_events,
-            history::history_delete,
-            history::history_prune,
-            history::history_search,
-            history::history_export,
             updater::check_for_update,
             updater::install_update,
             android_updater::android_install_apk,

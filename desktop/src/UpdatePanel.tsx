@@ -7,6 +7,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, Download, X } from "lucide-react";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import {
   UpdateInfo,
   checkForUpdate,
@@ -15,6 +16,12 @@ import {
   skipVersion,
 } from "./updater";
 import { useBackdropClose } from "./useBackdropClose";
+
+interface ProgressPayload {
+  phase: "download" | "install";
+  downloaded?: number;
+  total?: number;
+}
 
 interface Props {
   /** Pre-populated update info (e.g. from auto-check on startup). */
@@ -29,6 +36,24 @@ export function UpdatePanel({ initial, onClose }: Props) {
   );
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<ProgressPayload | null>(null);
+
+  // Backend emits `update-progress` events during the Android install
+  // pipeline. Surface them so the user sees a real download bar and
+  // knows when we hand off to the system PackageInstaller.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    listen<ProgressPayload>("update-progress", (e) => {
+      setProgress(e.payload);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
   const { backdropProps, contentProps } = useBackdropClose(
     installing ? () => {} : onClose,
   );
@@ -123,8 +148,29 @@ export function UpdatePanel({ initial, onClose }: Props) {
               )}
             </>
           )}
+          {installing && progress?.phase === "download" && progress.total ? (
+            <div className="mt-3">
+              <div className="h-2 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded overflow-hidden">
+                <div
+                  className="h-full bg-[var(--nx-accent)] transition-all"
+                  style={{
+                    width: `${Math.min(100, ((progress.downloaded ?? 0) / progress.total) * 100)}%`,
+                  }}
+                />
+              </div>
+              <div className="text-[var(--nx-text-muted)] text-[11px] mt-1.5 tabular-nums">
+                {fmtMb(progress.downloaded ?? 0)} / {fmtMb(progress.total)} MB
+              </div>
+            </div>
+          ) : installing && progress?.phase === "install" ? (
+            <div className="text-[var(--nx-text-soft)] text-xs">
+              {t("update.handing_to_system")}
+            </div>
+          ) : null}
           {error && (
-            <div className="text-[var(--nx-error)] text-xs break-all">✗ {error}</div>
+            <div className="mt-3 bg-[var(--nx-bg-panel)] border border-[var(--nx-error)] rounded p-3 text-xs text-[var(--nx-error)] whitespace-pre-wrap break-all">
+              ✗ {error}
+            </div>
           )}
         </div>
 
@@ -158,7 +204,11 @@ export function UpdatePanel({ initial, onClose }: Props) {
                 {installing ? (
                   <>
                     <Loader2 size={14} className="animate-spin" />
-                    {t("update.installing")}
+                    {progress?.phase === "install"
+                      ? t("update.installing")
+                      : progress?.phase === "download"
+                        ? `${fmtMb(progress.downloaded ?? 0)} / ${fmtMb(progress.total ?? 0)} MB`
+                        : t("update.installing")}
                   </>
                 ) : (
                   <>
@@ -181,4 +231,8 @@ export function UpdatePanel({ initial, onClose }: Props) {
       </div>
     </div>
   );
+}
+
+function fmtMb(b: number): string {
+  return (b / 1024 / 1024).toFixed(1);
 }

@@ -240,13 +240,16 @@ export function HistoryPanel({ onClose }: Props) {
 
     const full = events.map((e) => e.d).join("");
     const meta = entries.find((e) => e.session_id === selectedId);
-    const sessionCols = meta?.cols && meta.cols > 0 ? meta.cols : 120;
-    const sessionRows = meta?.rows && meta.rows > 0 ? meta.rows : 40;
+    // Replay WIDE. The recorded `cols` is the SSH-PTY width NexuSSH set,
+    // but when the session runs in tmux the actual content width is tmux's
+    // window width — usually wider than a phone's PTY. Replaying narrower
+    // than the baked content re-wraps every line into garbage; replaying
+    // wider is always safe. Floor at 220, but honour a genuinely larger
+    // recorded width (desktop ultrawide) if present.
+    const sessionCols = Math.max(meta?.cols ?? 0, 220);
+    const sessionRows = 50;
 
     if (plainText) {
-      // Headless replay — see TranscriptOverlay for rationale. The
-      // recording's original cols matter because text wraps at the same
-      // boundary as the session saw, so output lines up correctly.
       const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
       const off = new Terminal({
         cols: sessionCols,

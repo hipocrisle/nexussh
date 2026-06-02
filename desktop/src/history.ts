@@ -106,6 +106,15 @@ export function isClaudeChromeLine(line: string): boolean {
     if (/(?:\d+s\b|tokens\)|shells still running|Waiting|for\s+(?:\d+h)? ?(?:\d+m)? ?\d+s)/.test(line)) return true;
     if (/\b(?:Cooked|Brewed|Baked|Sautéed|Churned|Whisked|Building|Cooking|Brewing|Baking|Sautéing|Churning|Whisking|Crafting|Computing)\b/.test(line)) return true;
   }
+  // Spinner line / completion line, regardless of leading char. Claude
+  // Code emits `<glyph> Gerund… (12s · ↓ 3.0k tokens · esc to interrupt)`
+  // and `<glyph> Brewed for 1s · 339 tokens`. Match the generic
+  // token-count / timer / interrupt signatures so we don't have to chase
+  // the ever-growing verb vocabulary (Brewed/Cooked/Sautéed/Churned/…).
+  if (/·\s*↓\s*[\d.]+k?\s*tokens/.test(line)) return true;
+  if (/\bfor \d+(?:\.\d+)?s\b\s*·/.test(line)) return true;
+  if (/\(\d+(?:\.\d+)?s\b/.test(line) && /tokens|↓|esc to interrupt/.test(line)) return true;
+  if (/\besc to interrupt\b/.test(line)) return true;
   // Status footer with or without ⏵⏵ prefix: "accept edits on · 3 shells · esc to interrupt · ctrl+t to … · ↓ to manage"
   if (/accept edits on/.test(line)) return true;
   if (/esc to interrupt.*ctrl\+t/.test(line)) return true;
@@ -159,8 +168,15 @@ export function extractClaudeConversation(lines: string[]): string[] {
   // Heuristic: a tool-call header is `● Name(` or bare `● Name` (no space
   // continuation, single capitalised identifier). Plain text replies start
   // with `● ` and continue with lowercase / cyrillic / punctuation.
+  // A `●` line is a tool call if it's `● Name(…)`, a bare `● Name`, or
+  // starts with a known Claude Code tool name (which may be followed by a
+  // human summary like `● Write 1 memory` / `● Update src/foo.ts`).
+  const TOOL_NAMES =
+    /^●\s+(Bash|Read|Write|Edit|MultiEdit|Update|Create|Task|Agent|Glob|Grep|Search|TodoWrite|Todo|WebFetch|WebSearch|NotebookEdit|Skill|Workflow|Fetch|List|Move|Delete|Kill|BashOutput|Plan|ExitPlanMode)\b/;
   const isToolCallHeader = (s: string) =>
-    /^●\s+[A-Z]\w*\s*\(/.test(s) || /^●\s+[A-Z]\w{2,}\s*$/.test(s);
+    /^●\s+[A-Z]\w*\s*\(/.test(s) ||
+    /^●\s+[A-Z]\w{2,}\s*$/.test(s) ||
+    TOOL_NAMES.test(s);
 
   for (const raw of lines) {
     if (isClaudeChromeLine(raw)) {

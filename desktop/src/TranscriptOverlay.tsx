@@ -227,9 +227,19 @@ export function TranscriptOverlay({
       // buffer (with scrollback) instead of the small alt buffer that
       // gets thrown away on exit.
       const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+      // Replay at a deliberately WIDE width. The recorded bytes were laid
+      // out at the *server-side* render width — which, when the session
+      // runs inside tmux, is tmux's window width (often 80-120), NOT the
+      // narrow SSH-PTY width the phone reported. Replaying narrower than the
+      // baked content width re-wraps every line mid-word ("garbage");
+      // replaying wider is always safe (absolute cursor positions land
+      // correctly, baked newlines are preserved). 220 exceeds any realistic
+      // tmux window on phone/laptop. The visible terminal then soft-wraps
+      // these clean lines to the panel width.
+      const REPLAY_COLS = 220;
       const off = new Terminal({
-        cols: 120,
-        rows: 40,
+        cols: REPLAY_COLS,
+        rows: 50,
         scrollback: 100000,
         allowProposedApi: true,
         convertEol: false,

@@ -1,12 +1,11 @@
-// VaultPanel — configure paths + unlock/lock. Shown as a modal.
+// VaultPanel — create / unlock / lock the passphrase-protected vault. Modal.
 
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   VaultStatus,
   vaultStatus,
-  vaultSetPaths,
+  vaultCreate,
   vaultUnlock,
   vaultLock,
 } from "./vault";
@@ -20,8 +19,8 @@ interface Props {
 export function VaultPanel({ onClose, onChange }: Props) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<VaultStatus | null>(null);
-  const [vaultPath, setVaultPath] = useState("");
-  const [keyPath, setKeyPath] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
@@ -29,8 +28,6 @@ export function VaultPanel({ onClose, onChange }: Props) {
   const refresh = async () => {
     const s = await vaultStatus();
     setStatus(s);
-    setVaultPath(s.vault_path ?? "");
-    setKeyPath(s.key_path ?? "");
     onChange?.(s);
   };
 
@@ -38,20 +35,27 @@ export function VaultPanel({ onClose, onChange }: Props) {
     refresh();
   }, []);
 
-  async function pick(setter: (v: string) => void, label: string) {
-    const file = await open({
-      multiple: false,
-      title: label,
-    });
-    if (typeof file === "string") setter(file);
-  }
+  // Three modes: create (not configured), unlock (configured+locked), manage (unlocked).
+  const mode: "create" | "unlock" | "manage" = !status
+    ? "unlock"
+    : !status.configured
+      ? "create"
+      : status.unlocked
+        ? "manage"
+        : "unlock";
 
-  async function saveAndUnlock() {
+  async function submit() {
     setError(null);
+    if (mode === "create") {
+      if (pw.length < 6) return setError(t("vault.err_short"));
+      if (pw !== pw2) return setError(t("vault.err_mismatch"));
+    }
     setBusy(true);
     try {
-      await vaultSetPaths(vaultPath, keyPath);
-      await vaultUnlock();
+      if (mode === "create") await vaultCreate(pw);
+      else await vaultUnlock(pw);
+      setPw("");
+      setPw2("");
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -71,11 +75,10 @@ export function VaultPanel({ onClose, onChange }: Props) {
   }
 
   const inputBase =
-    "flex-1 bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-3 py-2 text-[var(--nx-text-primary)] " +
+    "w-full bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-3 py-2 text-[var(--nx-text-primary)] " +
     "focus:outline-none focus:border-[var(--nx-accent)] placeholder-[var(--nx-text-muted)] font-mono text-sm";
-  const labelBase = "text-xs uppercase tracking-wider text-[var(--nx-text-soft)] mb-1 block";
-  const btnSecondary =
-    "px-3 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono text-sm rounded border border-[var(--nx-border)]";
+  const labelBase =
+    "text-xs uppercase tracking-wider text-[var(--nx-text-soft)] mb-1 block";
 
   return (
     <div
@@ -84,11 +87,15 @@ export function VaultPanel({ onClose, onChange }: Props) {
     >
       <div
         {...contentProps}
-        className="w-full max-w-lg bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:overflow-y-auto max-md:pt-[calc(env(safe-area-inset-top)+16px)]"
+        className="w-full max-w-md bg-[var(--nx-bg-base)] border border-[var(--nx-border)] rounded-lg shadow-2xl p-6 max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 max-md:overflow-y-auto max-md:pt-[calc(env(safe-area-inset-top)+16px)]"
       >
         <h2 className="text-xl font-mono text-[var(--nx-accent)] mb-1">&gt; vault</h2>
         <p className="text-xs text-[var(--nx-text-muted)] font-mono mb-5">
-          {t("vault.subtitle")}
+          {mode === "create"
+            ? t("vault.create_subtitle")
+            : mode === "unlock"
+              ? t("vault.unlock_subtitle")
+              : t("vault.manage_subtitle")}
         </p>
 
         {status && (
@@ -99,86 +106,87 @@ export function VaultPanel({ onClose, onChange }: Props) {
             ) : status.configured ? (
               <span className="text-[var(--nx-warning)]">● locked</span>
             ) : (
-              <span className="text-[var(--nx-error)]">○ not configured</span>
+              <span className="text-[var(--nx-error)]">○ not created</span>
             )}
           </div>
         )}
 
-        <div className="space-y-3">
-          <div>
-            <label className={labelBase}>{t("vault.vault_file")}</label>
-            <div className="flex gap-2">
+        {mode !== "manage" && (
+          <div className="space-y-3">
+            <div>
+              <label className={labelBase}>
+                {mode === "create"
+                  ? t("vault.new_master")
+                  : t("vault.master")}
+              </label>
               <input
-                value={vaultPath}
-                onChange={(e) => setVaultPath(e.target.value)}
-                placeholder="/path/to/vault.age"
+                type="password"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && mode === "unlock" && submit()}
+                placeholder="••••••••"
+                autoFocus
                 className={inputBase}
               />
-              <button
-                type="button"
-                onClick={() => pick(setVaultPath, t("vault.vault_file"))}
-                className={btnSecondary}
-              >
-                {t("vault.browse")}
-              </button>
             </div>
-          </div>
-          <div>
-            <label className={labelBase}>{t("vault.key_file")}</label>
-            <div className="flex gap-2">
-              <input
-                value={keyPath}
-                onChange={(e) => setKeyPath(e.target.value)}
-                placeholder="/path/to/vault.key"
-                className={inputBase}
-              />
-              <button
-                type="button"
-                onClick={() => pick(setKeyPath, t("vault.key_file"))}
-                className={btnSecondary}
-              >
-                {t("vault.browse")}
-              </button>
-            </div>
-          </div>
-
-          <p className="text-xs text-[var(--nx-text-muted)] font-mono pt-1">
-            {t("vault.hint")}
-          </p>
-
-          {error && (
-            <div className="text-[var(--nx-error)] text-sm font-mono break-all">
-              ✗ {error}
-            </div>
-          )}
-
-          <div className="flex gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
-            >
-              {t("dialog.cancel")}
-            </button>
-            {status?.unlocked && (
-              <button
-                type="button"
-                onClick={lock}
-                disabled={busy}
-                className="flex-1 py-2 bg-[var(--nx-warning)] hover:bg-[var(--nx-warning)] disabled:opacity-50 text-[var(--nx-bg-base)] font-mono font-bold rounded"
-              >
-                {t("vault.lock")}
-              </button>
+            {mode === "create" && (
+              <div>
+                <label className={labelBase}>{t("vault.confirm_master")}</label>
+                <input
+                  type="password"
+                  value={pw2}
+                  onChange={(e) => setPw2(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  placeholder="••••••••"
+                  className={inputBase}
+                />
+              </div>
             )}
+            <p className="text-xs text-[var(--nx-text-muted)] font-mono pt-1">
+              {mode === "create" ? t("vault.create_hint") : t("vault.unlock_hint")}
+            </p>
+          </div>
+        )}
+
+        {mode === "manage" && (
+          <p className="text-sm text-[var(--nx-text-primary)] font-mono">
+            {t("vault.manage_body")}
+          </p>
+        )}
+
+        {error && (
+          <div className="text-[var(--nx-error)] text-sm font-mono break-all mt-3">
+            ✗ {error}
+          </div>
+        )}
+
+        <div className="flex gap-2 pt-5">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
+          >
+            {t("dialog.cancel")}
+          </button>
+          {mode === "manage" ? (
             <button
               type="button"
-              onClick={saveAndUnlock}
-              disabled={busy || !vaultPath || !keyPath}
-              className="flex-1 py-2 bg-[var(--nx-accent)] hover:bg-[var(--nx-accent)] disabled:opacity-50 disabled:cursor-not-allowed text-[var(--nx-bg-base)] font-mono font-bold rounded"
+              onClick={lock}
+              disabled={busy}
+              className="flex-1 py-2 bg-[var(--nx-warning)] disabled:opacity-50 text-[var(--nx-bg-base)] font-mono font-bold rounded"
             >
-              {busy ? "..." : t("vault.unlock")}
+              {t("vault.lock")}
             </button>
-          </div>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy || !pw}
+              className="flex-1 py-2 bg-[var(--nx-accent)] disabled:opacity-50 disabled:cursor-not-allowed text-[var(--nx-bg-base)] font-mono font-bold rounded"
+            >
+              {busy ? "..." : mode === "create" ? t("vault.create_btn") : t("vault.unlock")}
+            </button>
+          )}
         </div>
       </div>
     </div>

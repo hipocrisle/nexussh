@@ -1,4 +1,5 @@
 mod android_updater;
+mod cleanup;
 mod import_sources;
 mod sftp;
 mod ssh;
@@ -37,12 +38,15 @@ pub fn run() {
             sftp::sftp_rename,
             sftp::sftp_remove,
             sftp::sftp_disconnect,
-            vault::vault_set_paths,
             vault::vault_status,
+            vault::vault_create,
             vault::vault_unlock,
             vault::vault_lock,
             vault::vault_get,
+            vault::vault_set,
+            vault::vault_delete,
             vault::vault_keys,
+            cleanup::purge_legacy_sessions,
             sync::sync_set_config,
             sync::sync_status,
             sync::sync_unlock,

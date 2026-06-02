@@ -55,6 +55,11 @@ import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
+import { invoke } from "@tauri-apps/api/core";
+import {
+  findPlaintextPasswordHosts,
+  migratePlaintextToVault,
+} from "./secretsMigration";
 import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -1064,11 +1069,38 @@ function App() {
     return () => window.removeEventListener("contextmenu", onContextMenu);
   }, [t]);
 
-  // Poll vault + sync status on mount.
+  // Poll vault + sync status on mount; run one-time legacy cleanup +
+  // detect plaintext passwords that need migrating into the vault.
+  const [migrationPending, setMigrationPending] = useState(false);
   useEffect(() => {
     vaultStatus().then(setVault).catch(() => {});
     syncStatus().then(setSync).catch(() => {});
+    // Delete leftover session recordings (plaintext SSH output) from old
+    // versions — silent, one-shot, no-op once gone.
+    invoke<number>("purge_legacy_sessions").catch(() => {});
+    // If any host still has a plaintext saved password, force the vault
+    // open so we can move them into encrypted storage.
+    findPlaintextPasswordHosts()
+      .then((hosts) => {
+        if (hosts.length > 0) {
+          setMigrationPending(true);
+          setVaultPanelOpen(true);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // Once the vault is unlocked and a migration is pending, move every
+  // plaintext password into the vault and wipe it from hosts.json.
+  useEffect(() => {
+    if (!migrationPending || !vault?.unlocked) return;
+    // saveHost() inside the migration emits hosts-changed, so the sidebar
+    // refreshes on its own; we just clear the pending flag.
+    migratePlaintextToVault()
+      .then(() => setMigrationPending(false))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [migrationPending, vault?.unlocked]);
 
   // Vault auto-lock: after VAULT_IDLE_LOCK_MS of no user input (mouse/key),
   // call vault_lock so any cached master key is wiped from memory. Active

@@ -1,39 +1,40 @@
-//! Native cross-platform vault — age-encrypted key-value file.
+//! Native cross-platform vault — age-encrypted key-value secret store.
 //!
-//! Supports the same file format as our server-side `/matrix/secrets/vault.age`:
-//! age v1 encrypted payload, plaintext is `key.dotted.path = value\n` lines.
+//! Passphrase-protected (age scrypt): the master password is the only key,
+//! never written to disk. Without it the vault file is undecryptable, so
+//! host passwords are safe at rest even if the device is stolen.
 //!
-//! Unlock with an X25519 identity (private key file from `age-keygen`).
-//! Once unlocked, secrets live in RAM only; locked when app quits or via
-//! explicit `vault_lock` command. No external CLI dependency — works on
-//! Windows / macOS / Linux / Android wherever Tauri runs.
+//! Plaintext payload format: `key.dotted.path = value\n` lines.
+//! File lives in the app data dir as `vault.age` (created by `vault_create`).
+//! Once unlocked, secrets + the passphrase live in RAM only (needed to
+//! re-encrypt on writes); cleared on `vault_lock` or app quit.
 
-use age::{Decryptor, Identity, x25519};
+use age::secrecy::SecretString;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_store::StoreExt;
 
 const CONFIG_FILE: &str = "vault-config.json";
 const CFG_VAULT_PATH: &str = "vault_path";
-const CFG_KEY_PATH: &str = "key_path";
 
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
-    #[error("age key parse: {0}")]
-    KeyParse(String),
-    #[error("age decrypt: {0}")]
+    #[error("age encrypt: {0}")]
+    Encrypt(String),
+    #[error("age decrypt (wrong master password?): {0}")]
     Decrypt(String),
     #[error("vault payload is not UTF-8")]
     Utf8,
-    #[error("vault not configured — set vault & key paths first")]
+    #[error("vault not configured — create it first")]
     NotConfigured,
+    #[error("vault already exists")]
+    AlreadyExists,
     #[error("vault locked — call vault_unlock")]
     Locked,
     #[error("key not found: {0}")]
@@ -48,10 +49,16 @@ impl Serialize for VaultError {
     }
 }
 
+/// In-memory unlocked state. Holds the passphrase so writes can re-encrypt.
+struct Unlocked {
+    secrets: HashMap<String, String>,
+    passphrase: String,
+    vault_path: PathBuf,
+}
+
 #[derive(Default)]
 pub struct VaultState {
-    /// None when locked; Some(map) when unlocked.
-    secrets: Mutex<Option<HashMap<String, String>>>,
+    inner: Mutex<Option<Unlocked>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,44 +66,41 @@ pub struct VaultStatus {
     pub configured: bool,
     pub unlocked: bool,
     pub vault_path: Option<String>,
-    pub key_path: Option<String>,
 }
 
-fn read_age_identity(key_path: &PathBuf) -> Result<x25519::Identity, VaultError> {
-    let text = std::fs::read_to_string(key_path)?;
-    // Strip comment lines (starting with #) and blank lines; take the first
-    // AGE-SECRET-KEY-... line.
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with("AGE-SECRET-KEY-") {
-            return x25519::Identity::from_str(line)
-                .map_err(|e| VaultError::KeyParse(e.to_string()));
-        }
-    }
-    Err(VaultError::KeyParse(
-        "no AGE-SECRET-KEY- line found in key file".into(),
-    ))
-}
+// ---- crypto helpers ----
 
-fn decrypt_with(
-    vault_path: &PathBuf,
-    identity: &x25519::Identity,
-) -> Result<String, VaultError> {
-    let encrypted = std::fs::read(vault_path)?;
-    let decryptor =
-        Decryptor::new(&encrypted[..]).map_err(|e| VaultError::Decrypt(e.to_string()))?;
+fn encrypt_payload(plaintext: &str, passphrase: &str) -> Result<Vec<u8>, VaultError> {
+    let recipient = age::scrypt::Recipient::new(SecretString::from(passphrase.to_owned()));
+    let encryptor = age::Encryptor::with_recipients(
+        std::iter::once(&recipient as &dyn age::Recipient),
+    )
+    .map_err(|e| VaultError::Encrypt(e.to_string()))?;
     let mut out = vec![];
+    let mut writer = encryptor
+        .wrap_output(&mut out)
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    writer
+        .write_all(plaintext.as_bytes())
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    writer
+        .finish()
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    Ok(out)
+}
+
+fn decrypt_payload(encrypted: &[u8], passphrase: &str) -> Result<String, VaultError> {
+    let decryptor =
+        age::Decryptor::new(encrypted).map_err(|e| VaultError::Decrypt(e.to_string()))?;
+    let identity = age::scrypt::Identity::new(SecretString::from(passphrase.to_owned()));
     let mut reader = decryptor
-        .decrypt(std::iter::once(identity as &dyn Identity))
+        .decrypt(std::iter::once(&identity as &dyn age::Identity))
         .map_err(|e| VaultError::Decrypt(e.to_string()))?;
+    let mut out = vec![];
     reader.read_to_end(&mut out)?;
     String::from_utf8(out).map_err(|_| VaultError::Utf8)
 }
 
-/// Plaintext line format: `key.dotted.path = value`
 fn parse_kv_text(text: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     for line in text.lines() {
@@ -115,69 +119,132 @@ fn parse_kv_text(text: &str) -> HashMap<String, String> {
     m
 }
 
-fn config_paths(app: &tauri::AppHandle) -> Result<(Option<PathBuf>, Option<PathBuf>), VaultError> {
-    let store = app
-        .store(CONFIG_FILE)
-        .map_err(|e| VaultError::Other(e.to_string()))?;
-    let vault = store
-        .get(CFG_VAULT_PATH)
-        .and_then(|v| v.as_str().map(PathBuf::from));
-    let key = store
-        .get(CFG_KEY_PATH)
-        .and_then(|v| v.as_str().map(PathBuf::from));
-    Ok((vault, key))
+fn serialize_kv(map: &HashMap<String, String>) -> String {
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort();
+    let mut s = String::new();
+    for k in keys {
+        s.push_str(k);
+        s.push_str(" = ");
+        s.push_str(&map[k]);
+        s.push('\n');
+    }
+    s
 }
 
-#[tauri::command]
-pub async fn vault_set_paths(
-    app: tauri::AppHandle,
-    vault_path: String,
-    key_path: String,
-) -> Result<(), VaultError> {
+/// Re-encrypt the in-memory map and write it to disk, backing up the old
+/// file first so a crash mid-write can't lose the vault.
+fn persist(u: &Unlocked) -> Result<(), VaultError> {
+    let text = serialize_kv(&u.secrets);
+    let encrypted = encrypt_payload(&text, &u.passphrase)?;
+    if u.vault_path.exists() {
+        let bak = u.vault_path.with_extension("age.bak");
+        let _ = std::fs::copy(&u.vault_path, &bak);
+    }
+    if let Some(parent) = u.vault_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&u.vault_path, &encrypted)?;
+    Ok(())
+}
+
+fn config_vault_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let store = app.store(CONFIG_FILE).ok()?;
+    store
+        .get(CFG_VAULT_PATH)
+        .and_then(|v| v.as_str().map(PathBuf::from))
+}
+
+fn default_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, VaultError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| VaultError::Other(e.to_string()))?;
+    Ok(dir.join("vault.age"))
+}
+
+fn set_config_vault_path(app: &tauri::AppHandle, p: &PathBuf) -> Result<(), VaultError> {
     let store = app
         .store(CONFIG_FILE)
         .map_err(|e| VaultError::Other(e.to_string()))?;
-    store.set(CFG_VAULT_PATH, serde_json::Value::String(vault_path));
-    store.set(CFG_KEY_PATH, serde_json::Value::String(key_path));
-    store
-        .save()
-        .map_err(|e| VaultError::Other(e.to_string()))?;
+    store.set(
+        CFG_VAULT_PATH,
+        serde_json::Value::String(p.display().to_string()),
+    );
+    store.save().map_err(|e| VaultError::Other(e.to_string()))?;
     Ok(())
 }
+
+// ---- commands ----
 
 #[tauri::command]
 pub async fn vault_status(
     app: tauri::AppHandle,
     state: State<'_, VaultState>,
 ) -> Result<VaultStatus, VaultError> {
-    let (vp, kp) = config_paths(&app)?;
-    let unlocked = state.secrets.lock().unwrap().is_some();
+    let vp = config_vault_path(&app);
+    let configured = vp.as_ref().map(|p| p.exists()).unwrap_or(false);
+    let unlocked = state.inner.lock().unwrap().is_some();
     Ok(VaultStatus {
-        configured: vp.is_some() && kp.is_some(),
+        configured,
         unlocked,
         vault_path: vp.map(|p| p.display().to_string()),
-        key_path: kp.map(|p| p.display().to_string()),
     })
+}
+
+/// Create a brand-new empty vault encrypted with `master_password`, and
+/// leave it unlocked. Errors if a vault file already exists.
+#[tauri::command]
+pub async fn vault_create(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+    master_password: String,
+) -> Result<(), VaultError> {
+    if master_password.is_empty() {
+        return Err(VaultError::Other("master password is empty".into()));
+    }
+    let path = match config_vault_path(&app) {
+        Some(p) => p,
+        None => default_vault_path(&app)?,
+    };
+    if path.exists() {
+        return Err(VaultError::AlreadyExists);
+    }
+    let u = Unlocked {
+        secrets: HashMap::new(),
+        passphrase: master_password,
+        vault_path: path.clone(),
+    };
+    persist(&u)?;
+    set_config_vault_path(&app, &path)?;
+    *state.inner.lock().unwrap() = Some(u);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn vault_unlock(
     app: tauri::AppHandle,
     state: State<'_, VaultState>,
+    master_password: String,
 ) -> Result<(), VaultError> {
-    let (vp, kp) = config_paths(&app)?;
-    let vault_path = vp.ok_or(VaultError::NotConfigured)?;
-    let key_path = kp.ok_or(VaultError::NotConfigured)?;
-    let identity = read_age_identity(&key_path)?;
-    let plaintext = decrypt_with(&vault_path, &identity)?;
+    let path = config_vault_path(&app).ok_or(VaultError::NotConfigured)?;
+    if !path.exists() {
+        return Err(VaultError::NotConfigured);
+    }
+    let encrypted = std::fs::read(&path)?;
+    let plaintext = decrypt_payload(&encrypted, &master_password)?;
     let map = parse_kv_text(&plaintext);
-    *state.secrets.lock().unwrap() = Some(map);
+    *state.inner.lock().unwrap() = Some(Unlocked {
+        secrets: map,
+        passphrase: master_password,
+        vault_path: path,
+    });
     Ok(())
 }
 
 #[tauri::command]
 pub async fn vault_lock(state: State<'_, VaultState>) -> Result<(), VaultError> {
-    *state.secrets.lock().unwrap() = None;
+    *state.inner.lock().unwrap() = None;
     Ok(())
 }
 
@@ -186,25 +253,53 @@ pub async fn vault_get(
     state: State<'_, VaultState>,
     key: String,
 ) -> Result<String, VaultError> {
-    let guard = state.secrets.lock().unwrap();
-    let map = guard.as_ref().ok_or(VaultError::Locked)?;
-    map.get(&key)
-        .cloned()
-        .ok_or(VaultError::KeyMissing(key))
+    let guard = state.inner.lock().unwrap();
+    let u = guard.as_ref().ok_or(VaultError::Locked)?;
+    u.secrets.get(&key).cloned().ok_or(VaultError::KeyMissing(key))
 }
 
-/// Internal helper for other modules (e.g. ssh.rs) to fetch a secret synchronously.
-pub fn resolve(state: &VaultState, key: &str) -> Result<String, VaultError> {
-    let guard = state.secrets.lock().unwrap();
-    let map = guard.as_ref().ok_or(VaultError::Locked)?;
-    map.get(key).cloned().ok_or_else(|| VaultError::KeyMissing(key.to_string()))
+/// Store (or overwrite) a secret, then re-encrypt the vault to disk.
+#[tauri::command]
+pub async fn vault_set(
+    state: State<'_, VaultState>,
+    key: String,
+    value: String,
+) -> Result<(), VaultError> {
+    let mut guard = state.inner.lock().unwrap();
+    let u = guard.as_mut().ok_or(VaultError::Locked)?;
+    u.secrets.insert(key, value);
+    persist(u)?;
+    Ok(())
+}
+
+/// Remove a secret, then re-encrypt the vault to disk.
+#[tauri::command]
+pub async fn vault_delete(
+    state: State<'_, VaultState>,
+    key: String,
+) -> Result<(), VaultError> {
+    let mut guard = state.inner.lock().unwrap();
+    let u = guard.as_mut().ok_or(VaultError::Locked)?;
+    u.secrets.remove(&key);
+    persist(u)?;
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn vault_keys(state: State<'_, VaultState>) -> Result<Vec<String>, VaultError> {
-    let guard = state.secrets.lock().unwrap();
-    let map = guard.as_ref().ok_or(VaultError::Locked)?;
-    let mut keys: Vec<String> = map.keys().cloned().collect();
+    let guard = state.inner.lock().unwrap();
+    let u = guard.as_ref().ok_or(VaultError::Locked)?;
+    let mut keys: Vec<String> = u.secrets.keys().cloned().collect();
     keys.sort();
     Ok(keys)
+}
+
+/// Internal helper for other modules (e.g. ssh.rs) to fetch a secret synchronously.
+pub fn resolve(state: &VaultState, key: &str) -> Result<String, VaultError> {
+    let guard = state.inner.lock().unwrap();
+    let u = guard.as_ref().ok_or(VaultError::Locked)?;
+    u.secrets
+        .get(key)
+        .cloned()
+        .ok_or_else(|| VaultError::KeyMissing(key.to_string()))
 }

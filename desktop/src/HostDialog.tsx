@@ -6,7 +6,13 @@ import { X, Lock, KeyRound, Shield, ChevronDown, Folder } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { FolderPicker } from "./FolderPicker";
 import { useIsMobile } from "./useIsMobile";
-import { vaultKeys } from "./vault";
+import {
+  vaultKeys,
+  vaultStatus,
+  vaultSet,
+  vaultDelete,
+  hostPasswordKey,
+} from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
 import {
@@ -67,6 +73,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [keyPath, setKeyPath] = useState("");
   const [keyPass, setKeyPass] = useState("");
   const [vaultKey, setVaultKey] = useState("");
+  // Set when editing a host whose saved password lives in the vault under
+  // its per-host key; lets us keep it if the user doesn't retype.
+  const [savedVaultKey, setSavedVaultKey] = useState<string | null>(null);
   const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
   const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
   // Default: ask every connect. Inverted in UI as "save password" opt-in.
@@ -92,14 +101,29 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
-    setAuthKind(initial.auth.kind);
-    if (initial.auth.kind === "password") {
-      setPassword(initial.auth.password);
-    } else if (initial.auth.kind === "key") {
-      setKeyPath(initial.auth.path);
-      setKeyPass(initial.auth.passphrase ?? "");
-    } else if (initial.auth.kind === "vault") {
-      setVaultKey(initial.auth.key);
+    // A host whose secret lives in the vault under its own per-host key is
+    // shown as a normal "password (saved)" host — the vault is an
+    // implementation detail. Leave the field blank; keep the existing
+    // secret unless the user types a new one.
+    if (
+      initial.auth.kind === "vault" &&
+      initial.auth.key === hostPasswordKey(initial.id)
+    ) {
+      setAuthKind("password");
+      setAlwaysAskPassword(false);
+      setPassword("");
+      setSavedVaultKey(initial.auth.key);
+    } else {
+      setAuthKind(initial.auth.kind);
+      setSavedVaultKey(null);
+      if (initial.auth.kind === "password") {
+        setPassword(initial.auth.password);
+      } else if (initial.auth.kind === "key") {
+        setKeyPath(initial.auth.path);
+        setKeyPass(initial.auth.passphrase ?? "");
+      } else if (initial.auth.kind === "vault") {
+        setVaultKey(initial.auth.key);
+      }
     }
   }, [initial]);
 
@@ -124,18 +148,42 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     if (!host.trim()) return setError(t("dialog.err_host_required"));
     if (!user.trim()) return setError(t("dialog.err_user_required"));
     try {
-      // If "save password" is OFF, do NOT persist the password — even if
-      // the user previously had it saved. Otherwise the stale value
-      // sticks around in the sync file even though the UI says
-      // "ask each time".
-      const auth: HostRecord["auth"] =
-        authKind === "password"
-          ? { kind: "password", password: alwaysAskPassword ? "" : password }
-          : authKind === "key"
-            ? { kind: "key", path: keyPath, passphrase: keyPass || undefined }
-            : { kind: "vault", key: vaultKey };
+      const id = initial?.id ?? newHostId();
+      // Saved passwords NEVER touch hosts.json in plaintext — they go into
+      // the encrypted vault, and the host only references them by key.
+      // "always ask" stores nothing. The manual "vault" tab is unchanged.
+      let auth: HostRecord["auth"];
+      if (authKind === "key") {
+        auth = { kind: "key", path: keyPath, passphrase: keyPass || undefined };
+      } else if (authKind === "vault") {
+        auth = { kind: "vault", key: vaultKey };
+      } else if (alwaysAskPassword) {
+        // Not saving — drop any previously-vaulted secret for this host.
+        if (savedVaultKey) {
+          try {
+            await vaultDelete(savedVaultKey);
+          } catch {
+            /* best-effort */
+          }
+        }
+        auth = { kind: "password", password: "" };
+      } else if (password.trim() !== "") {
+        // Saving a (new/changed) password → vault. Requires it unlocked.
+        const st = await vaultStatus();
+        if (!st.unlocked) {
+          return setError(t("dialog.err_vault_locked"));
+        }
+        const key = hostPasswordKey(id);
+        await vaultSet(key, password);
+        auth = { kind: "vault", key };
+      } else if (savedVaultKey) {
+        // Editing, field left blank → keep the existing vaulted secret.
+        auth = { kind: "vault", key: savedVaultKey };
+      } else {
+        return setError(t("dialog.err_password_required"));
+      }
       const rec: HostRecord = {
-        id: initial?.id ?? newHostId(),
+        id,
         name: name.trim() || `${user}@${host}`,
         host: host.trim(),
         port,
@@ -144,7 +192,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         group: group.trim() || undefined,
         note: note.trim() || undefined,
         lastUsedAt: initial?.lastUsedAt,
-        alwaysAskPassword: authKind === "password" ? alwaysAskPassword : undefined,
+        alwaysAskPassword: auth.kind === "password" ? alwaysAskPassword : undefined,
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,

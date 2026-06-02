@@ -45,6 +45,53 @@ export async function historyReadEvents(
   return await invoke<CastEvent[]>("history_read_events", { sessionId });
 }
 
+/** Reconstruct scrollable history from a recorded cast.
+ *
+ *  For tmux / alt-screen sessions a plain `term.write(raw)` only ever shows
+ *  the final frame (alt-screen has no scrollback). To get *scrollable*
+ *  history we replay into a wide offscreen terminal with the alt-screen
+ *  toggles stripped, so every line tmux painted flows into scrollback,
+ *  then return the clean lines.
+ *
+ *  The single dominant noise is tmux's status bar, which it repaints every
+ *  second — hundreds of `[claude] 0:claude*  …  "host · Claude Code" 14:18
+ *  02-Jun` rows. We drop those (plus Claude Code's own spinner/footer) and
+ *  globally de-duplicate identical lines so nothing doubles. */
+export function reconstructHistory(raw: string): string {
+  const noAlt = raw.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
+  return noAlt;
+}
+
+/** A tmux status-bar row. Killer signal: the clock+date tmux pins to the
+ *  right edge (`14:18 02-Jun` / `14:18 02-Jun-26`). Also the window list
+ *  `0:claude*` when a `]` (session name bracket) is on the line. */
+export function isTmuxStatusRow(line: string): boolean {
+  if (
+    /\b\d{1,2}:\d{2}\s+\d{1,2}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(
+      line,
+    )
+  )
+    return true;
+  if (/\]\s*\d+:[\w.\-]+[*\-]/.test(line)) return true;
+  return false;
+}
+
+/** Claude Code chrome (spinner, status footer, prompt box) that repaints
+ *  in the bottom region and leaves frames in reconstructed scrollback. */
+export function isClaudeChrome(line: string): boolean {
+  // Spinner glyphs Claude Code cycles through.
+  if (/^\s*[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❄❅❆❇❈❉❊❋✢✣✤✥✦✧✩✪✫✬✭✮✯✰]/.test(line))
+    return true;
+  // Spinner / completion signatures, leading char agnostic.
+  if (/·\s*↓\s*[\d.]+k?\s*tokens/.test(line)) return true;
+  if (/\bfor \d+(?:\.\d+)?s\b\s*·/.test(line)) return true;
+  if (/\besc to interrupt\b/.test(line)) return true;
+  if (/accept edits on/.test(line)) return true;
+  if (/ctrl\+t to (?:hide|show) tasks/.test(line)) return true;
+  if (/⏵⏵/.test(line)) return true;
+  return false;
+}
+
 export async function historyDelete(sessionId: string): Promise<void> {
   await invoke("history_delete", { sessionId });
 }

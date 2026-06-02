@@ -18,7 +18,13 @@ import { X, ArrowDown } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { historyReadEvents, CastEvent } from "./history";
+import {
+  historyReadEvents,
+  reconstructHistory,
+  isTmuxStatusRow,
+  isClaudeChrome,
+  CastEvent,
+} from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
@@ -169,20 +175,45 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into xterm — FAITHFULLY. Write the raw recorded bytes
-  // straight into the terminal so it renders exactly what the live session
-  // showed (alt-screen, cursor moves, tmux, colours). The live session is
-  // already clean, so this is clean. No stripping / dedup / filtering —
-  // every one of those "fixes" only added garbage. See HistoryPanel for the
-  // full rationale (stripping tmux's alt-screen toggle was the culprit).
+  // Reconstruct SCROLLABLE history (see HistoryPanel for the full rationale).
+  // Replay into a wide offscreen terminal with alt-screen stripped so tmux
+  // content flows into scrollback, drop the tmux status bar + Claude Code
+  // chrome, globally de-dupe, then write the clean lines into the visible
+  // terminal so the user can scroll the whole conversation.
   useEffect(() => {
     const term = termRef.current;
     if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
     const full = events.map((e) => e.d).join("");
-    term.write(full);
-    requestAnimationFrame(() => term.scrollToBottom());
+    const off = new Terminal({
+      cols: 220,
+      rows: 50,
+      scrollback: 100000,
+      allowProposedApi: true,
+      convertEol: false,
+    });
+    off.write(reconstructHistory(full), () => {
+      const buf = off.buffer.active;
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (let i = 0; i < buf.length; i++) {
+        const ln = buf.getLine(i)?.translateToString(true) ?? "";
+        if (isTmuxStatusRow(ln) || isClaudeChrome(ln)) continue;
+        const key = ln.trimEnd();
+        if (key === "") {
+          if (out.length === 0 || out[out.length - 1] !== "") out.push("");
+          continue;
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(ln);
+      }
+      off.dispose();
+      while (out.length && !out[out.length - 1]) out.pop();
+      term.write(out.join("\r\n"));
+      requestAnimationFrame(() => term.scrollToBottom());
+    });
   }, [events]);
 
   // Apply theme/font changes live

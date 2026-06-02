@@ -37,6 +37,9 @@ import {
   historyExport,
   fmtTs,
   fmtBytes,
+  reconstructHistory,
+  isTmuxStatusRow,
+  isClaudeChrome,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -193,33 +196,53 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm — FAITHFULLY.
+  // Replay events into xterm — reconstruct SCROLLABLE history.
   //
-  // Size the terminal to the recording's own dimensions and write the raw
-  // bytes. xterm then renders exactly what the live session showed: alt-
-  // screen, cursor positioning, tmux, colours — all of it. The live
-  // session is already clean, so the faithful render is clean too.
-  //
-  // Everything we used to do here (strip alt-screen toggles, sliding-window
-  // dedup, chrome regex, conversation extraction, headless pre-render) only
-  // ADDED garbage — stripping tmux's alt-screen made every status-bar
-  // repaint pile into scrollback. Removed. For tmux/alt-screen sessions this
-  // shows the final frame (tmux keeps its own scrollback server-side; it is
-  // never sent over the wire, so it cannot be reconstructed here). For plain
-  // command output, full scrollback survives.
+  // A plain raw write only shows the final frame for tmux/alt-screen
+  // sessions (alt-screen has no scrollback). To get scrollable history we
+  // replay into a WIDE offscreen terminal with the alt-screen toggles
+  // stripped, so every line tmux painted flows into scrollback. Then we
+  // drop the one dominant noise source — tmux's once-a-second status bar —
+  // plus Claude Code's spinner/footer, and globally de-duplicate identical
+  // lines so nothing doubles. The cleaned lines go into the visible (panel-
+  // fitted) terminal, which scrolls normally.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
     if (!events) return;
+    fitRef.current?.fit();
 
     const full = events.map((e) => e.d).join("");
-    const meta = entries.find((e) => e.session_id === selectedId);
-    const cols = meta?.cols && meta.cols > 0 ? meta.cols : 80;
-    const rows = meta?.rows && meta.rows > 0 ? meta.rows : 24;
-    term.resize(cols, rows);
-    term.write(full);
-    requestAnimationFrame(() => term.scrollToTop());
+    const off = new Terminal({
+      cols: 220,
+      rows: 50,
+      scrollback: 100000,
+      allowProposedApi: true,
+      convertEol: false,
+    });
+    off.write(reconstructHistory(full), () => {
+      const buf = off.buffer.active;
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (let i = 0; i < buf.length; i++) {
+        const ln = buf.getLine(i)?.translateToString(true) ?? "";
+        if (isTmuxStatusRow(ln) || isClaudeChrome(ln)) continue;
+        const key = ln.trimEnd();
+        if (key === "") {
+          if (out.length === 0 || out[out.length - 1] !== "") out.push("");
+          continue;
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(ln);
+      }
+      off.dispose();
+      while (out.length && !out[out.length - 1]) out.pop();
+      term.write(out.join("\r\n"));
+      term.scrollToTop();
+      requestAnimationFrame(() => fitRef.current?.fit());
+    });
   }, [events, selectedId, entries]);
 
   // In-session search: highlight current match on submit

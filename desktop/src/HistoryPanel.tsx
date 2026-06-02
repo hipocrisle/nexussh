@@ -38,8 +38,7 @@ import {
   fmtTs,
   fmtBytes,
   reconstructHistory,
-  isTmuxStatusRow,
-  isClaudeChrome,
+  cleanReconstructedLines,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -223,23 +222,12 @@ export function HistoryPanel({ onClose }: Props) {
     });
     off.write(reconstructHistory(full), () => {
       const buf = off.buffer.active;
-      const seen = new Set<string>();
-      const out: string[] = [];
+      const rawLines: string[] = [];
       for (let i = 0; i < buf.length; i++) {
-        const ln = buf.getLine(i)?.translateToString(true) ?? "";
-        if (isTmuxStatusRow(ln) || isClaudeChrome(ln)) continue;
-        const key = ln.trimEnd();
-        if (key === "") {
-          if (out.length === 0 || out[out.length - 1] !== "") out.push("");
-          continue;
-        }
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(ln);
+        rawLines.push(buf.getLine(i)?.translateToString(true) ?? "");
       }
       off.dispose();
-      while (out.length && !out[out.length - 1]) out.pop();
-      term.write(out.join("\r\n"));
+      term.write(cleanReconstructedLines(rawLines).join("\r\n"));
       term.scrollToTop();
       requestAnimationFrame(() => fitRef.current?.fit());
     });

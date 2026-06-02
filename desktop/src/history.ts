@@ -89,7 +89,62 @@ export function isClaudeChrome(line: string): boolean {
   if (/accept edits on/.test(line)) return true;
   if (/ctrl\+t to (?:hide|show) tasks/.test(line)) return true;
   if (/⏵⏵/.test(line)) return true;
+  // Session-rating prompt: "● How is Claude doing this session?" and its
+  // "1: Bad  2: Fine  3: Good  0: Dismiss" answer row.
+  if (/How is Claude doing this session/.test(line)) return true;
+  if (/\b\d:\s*Bad\b/.test(line) && /\bDismiss\b/.test(line)) return true;
+  // Box-drawing rows: prompt-box frames / separators / Claude Code panels
+  // (`╭───╮`, `│`, `╰───╯`, `──────`). A line that is *only* box-drawing
+  // chars + whitespace is chrome, never content. Keeps real text that
+  // merely contains a stray `│` (e.g. a markdown table cell with words).
+  const stripped = line.replace(/[\s─│╭╮╰╯├┤┬┴┼━┃┏┓┗┛┣┫┳┻╋═║╔╗╚╝╠╣╦╩╬▌▐▏▕]/g, "");
+  if (line.trim() !== "" && stripped === "") return true;
   return false;
+}
+
+/** Turn the raw scrollback lines from the offscreen replay into clean,
+ *  de-duplicated history. Shared by HistoryPanel + TranscriptOverlay.
+ *
+ *  - drops tmux status bar + Claude Code chrome
+ *  - global exact de-dup (repaint frames repeat verbatim)
+ *  - prefix de-dup for `❯` input rows: while typing, Claude Code repaints
+ *    the input box on every keystroke, so partials (`❯ hel`, `❯ hello`)
+ *    leak into scrollback. We keep only the longest of any prefix chain. */
+export function cleanReconstructedLines(rawLines: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const ln of rawLines) {
+    if (isTmuxStatusRow(ln) || isClaudeChrome(ln)) continue;
+    const key = ln.trimEnd();
+    if (key === "") {
+      if (out.length === 0 || out[out.length - 1] !== "") out.push("");
+      continue;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ln);
+  }
+  // Prefix de-dup of `❯` input rows.
+  const prompts = out
+    .map((l, i) => ({ l: l.trimEnd(), i }))
+    .filter((x) => /^\s*❯\s/.test(x.l));
+  const drop = new Set<number>();
+  for (let a = 0; a < prompts.length; a++) {
+    for (let b = 0; b < prompts.length; b++) {
+      if (a === b) continue;
+      // prompts[a] is a strict prefix of prompts[b] → drop the shorter a.
+      if (
+        prompts[b].l.length > prompts[a].l.length &&
+        prompts[b].l.startsWith(prompts[a].l)
+      ) {
+        drop.add(prompts[a].i);
+        break;
+      }
+    }
+  }
+  const pruned = out.filter((_, i) => !drop.has(i));
+  while (pruned.length && !pruned[pruned.length - 1]) pruned.pop();
+  return pruned;
 }
 
 export async function historyDelete(sessionId: string): Promise<void> {

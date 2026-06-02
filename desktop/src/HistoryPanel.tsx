@@ -40,6 +40,7 @@ import {
   filterAltBuffer,
   isTmuxStatusLine,
   isClaudeChromeLine,
+  extractClaudeConversation,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -68,8 +69,9 @@ function searchDecorations(t: ThemePalette) {
 }
 
 const FULLSCREEN_LS_KEY = "nexussh.historyFullscreen";
-// Same key as TranscriptOverlay — one Plain toggle for both replay surfaces.
+// Same keys as TranscriptOverlay — one shared state for both replay surfaces.
 const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
+const CONV_LS_KEY = "nexussh.transcriptConvOnly";
 
 export function HistoryPanel({ onClose }: Props) {
   const { t } = useTranslation();
@@ -91,10 +93,21 @@ export function HistoryPanel({ onClose }: Props) {
     const v = localStorage.getItem(PLAIN_LS_KEY);
     return v === null ? true : v === "1";
   });
+  const [convOnly, setConvOnly] = useState<boolean>(() => {
+    const v = localStorage.getItem(CONV_LS_KEY);
+    return v === null ? true : v === "1";
+  });
   function togglePlain() {
     setPlainText((v) => {
       const next = !v;
       localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
+      return next;
+    });
+  }
+  function toggleConv() {
+    setConvOnly((v) => {
+      const next = !v;
+      localStorage.setItem(CONV_LS_KEY, next ? "1" : "0");
       return next;
     });
   }
@@ -270,7 +283,8 @@ export function HistoryPanel({ onClose }: Props) {
           }
         }
         while (out.length && !out[out.length - 1]) out.pop();
-        term.write(out.join("\r\n"));
+        const finalLines = convOnly ? extractClaudeConversation(out) : out;
+        term.write(finalLines.join("\r\n"));
         term.scrollToTop();
         requestAnimationFrame(() => fitRef.current?.fit());
       });
@@ -288,7 +302,7 @@ export function HistoryPanel({ onClose }: Props) {
     }
     term.scrollToTop();
     requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events, plainText, selectedId, entries]);
+  }, [events, plainText, convOnly, selectedId, entries]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -384,6 +398,19 @@ export function HistoryPanel({ onClose }: Props) {
             — {t("history.subtitle")}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
+            <button
+              onClick={toggleConv}
+              disabled={!plainText}
+              title={t("history.conv_hint")}
+              className={
+                "h-7 px-2 rounded text-meta font-mono border disabled:opacity-30 " +
+                (convOnly && plainText
+                  ? "border-nx-accent text-nx-accent bg-nx-accent/10"
+                  : "border-nx-divider text-nx-muted hover:text-nx-text")
+              }
+            >
+              {convOnly ? t("history.conv_on") : t("history.conv_off")}
+            </button>
             <button
               onClick={togglePlain}
               title={t("history.plain_text_hint")}

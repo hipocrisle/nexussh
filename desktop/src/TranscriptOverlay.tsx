@@ -24,6 +24,7 @@ import {
   filterAltBuffer,
   isTmuxStatusLine,
   isClaudeChromeLine,
+  extractClaudeConversation,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -75,6 +76,11 @@ export function TranscriptOverlay({
   // everything readably. User can flip back when they want colors and
   // know the recording is plain-shell.
   const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
+  const CONV_LS_KEY = "nexussh.transcriptConvOnly";
+  const [convOnly, setConvOnly] = useState<boolean>(() => {
+    const v = localStorage.getItem(CONV_LS_KEY);
+    return v === null ? true : v === "1";
+  });
   const [plainText, setPlainText] = useState<boolean>(() => {
     const v = localStorage.getItem(PLAIN_LS_KEY);
     return v === null ? true : v === "1";
@@ -257,7 +263,8 @@ export function TranscriptOverlay({
           }
         }
         while (out.length && !out[out.length - 1]) out.pop();
-        term.write(out.join("\r\n"));
+        const finalLines = convOnly ? extractClaudeConversation(out) : out;
+        term.write(finalLines.join("\r\n"));
         requestAnimationFrame(() => term.scrollToBottom());
       });
       return;
@@ -278,7 +285,7 @@ export function TranscriptOverlay({
     requestAnimationFrame(() => {
       term.scrollToBottom();
     });
-  }, [events, plainText]);
+  }, [events, plainText, convOnly]);
 
   // Apply theme/font changes live
   useEffect(() => {
@@ -333,13 +340,30 @@ export function TranscriptOverlay({
         </span>
         <button
           onClick={() => {
+            const next = !convOnly;
+            setConvOnly(next);
+            localStorage.setItem(CONV_LS_KEY, next ? "1" : "0");
+          }}
+          title={t("transcript.conv_hint")}
+          disabled={!plainText}
+          className={
+            "ml-auto mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border disabled:opacity-30 " +
+            (convOnly && plainText
+              ? "bg-[var(--nx-accent-glow)] text-[var(--nx-accent)] border-[var(--nx-accent)]"
+              : "border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-elevated)]")
+          }
+        >
+          {convOnly ? t("transcript.conv_on") : t("transcript.conv_off")}
+        </button>
+        <button
+          onClick={() => {
             const next = !plainText;
             setPlainText(next);
             localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
           }}
           title={t("transcript.plain_hint")}
           className={
-            "ml-auto mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border " +
+            "mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border " +
             (plainText
               ? "bg-[var(--nx-accent-glow)] text-[var(--nx-accent)] border-[var(--nx-accent)]"
               : "border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-elevated)]")

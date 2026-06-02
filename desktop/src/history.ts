@@ -130,6 +130,55 @@ export function isClaudeChromeLine(line: string): boolean {
   return false;
 }
 
+/** Extract ONLY Claude Code conversation blocks — user prompts (`❯ …`),
+ *  assistant turns / tool calls (`● …`), and tool results (`⎿ …`) along
+ *  with their indented continuations. Everything else (spinner debris,
+ *  task list, confirmations, prompt-box chrome) is dropped.
+ *
+ *  This is the "convo only" mode — addresses the user request «оставлять
+ *  только мои вводы и твои окончательные выводы». It works on the dump
+ *  produced by the headless xterm replay, so the lines are already in
+ *  rendering order. */
+export function extractClaudeConversation(lines: string[]): string[] {
+  const out: string[] = [];
+  let inBlock = false;
+  let blanks = 0;
+  for (const raw of lines) {
+    if (isClaudeChromeLine(raw)) {
+      inBlock = false;
+      blanks = 0;
+      continue;
+    }
+    const trimmed = raw.trimStart();
+    // Marker lines start a new block.
+    if (/^[●⎿]\s/.test(trimmed) || /^❯\s+\S/.test(trimmed)) {
+      // Don't pull in the chrome-y `❯ 1. Yes` confirmation choices.
+      if (/^❯\s*\d+\.\s+(Yes|No)\b/.test(trimmed)) {
+        inBlock = false;
+        continue;
+      }
+      inBlock = true;
+      blanks = 0;
+      out.push(raw);
+      continue;
+    }
+    if (!inBlock) continue;
+    // Inside a block: keep indented continuations and short blank runs.
+    if (raw.trim() === "") {
+      blanks++;
+      if (blanks >= 2) {
+        inBlock = false;
+        continue;
+      }
+      out.push("");
+      continue;
+    }
+    out.push(raw);
+    blanks = 0;
+  }
+  return out;
+}
+
 /** Detect a tmux status-bar line so REPLAY (transcript / history) can skip it.
  *  Each tmux redraw of the bottom status row gets captured to the cast; in
  *  long sessions that ends up as dozens of "[claude] 0:claude*" snapshots

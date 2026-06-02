@@ -220,6 +220,10 @@ const ru = {
     plain_off: "plain",
     plain_text_hint:
       "Plain-режим: убрать ANSI и схлопнуть одинаковые перерисовки. Лучше для Claude Code / vim / htop; выключи чтобы увидеть цвета.",
+    conv_on: "conv ✓",
+    conv_off: "conv",
+    conv_hint:
+      "Conv-only режим: оставить только реальный разговор (твои вводы ❯, мои ответы ●, результаты ⎿) — спиннер/таски/статус/prompt-box убираются. Только при включённом Plain.",
   },
   settings: {
     open: "настройки",
@@ -516,6 +520,9 @@ const ru = {
     plain_on: "plain ✓",
     plain_off: "plain",
     plain_hint: "Текстовый режим: убирает все ANSI-коды и схлопывает повторы. Включай если TUI-сессия (Claude Code / vim / htop) показывает кашу.",
+    conv_on: "conv ✓",
+    conv_off: "conv",
+    conv_hint: "Conv-only: оставить только реальный разговор (твои ❯, мои ●, результаты ⎿). Только при включённом Plain.",
   },
   term_menu: {
     copy: "Копировать (Ctrl+Shift+C)",
@@ -749,6 +756,10 @@ const en = {
     plain_off: "plain",
     plain_text_hint:
       "Plain-text mode: strip ANSI escapes and collapse identical redraws. Best for Claude Code / vim / htop sessions; turn off to see colors.",
+    conv_on: "conv ✓",
+    conv_off: "conv",
+    conv_hint:
+      "Conversation-only: keep just real conversation (your ❯, my ●, results ⎿) — drop spinner/tasks/status/prompt-box. Only when Plain is on.",
   },
   settings: {
     open: "settings",
@@ -1045,6 +1056,9 @@ const en = {
     plain_on: "plain ✓",
     plain_off: "plain",
     plain_hint: "Plain-text mode: strips all ANSI escapes and collapses duplicate lines. Flip on when a TUI session (Claude Code / vim / htop) renders as garbage.",
+    conv_on: "conv ✓",
+    conv_off: "conv",
+    conv_hint: "Conv-only: keep just real conversation (your ❯, my ●, results ⎿). Only when Plain is on.",
   },
   term_menu: {
     copy: "Copy (Ctrl+C)",

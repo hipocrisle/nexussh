@@ -117,6 +117,23 @@ export function removeProfile(id: string) {
   saveProfiles(loadProfiles().filter((p) => p.id !== id));
 }
 
+/** Merge imported profiles into local storage, deduping by subUrl (or name
+ *  when the URL is empty). Returns how many were newly added. */
+export function importProfiles(incoming: VpnProfile[]): number {
+  const list = loadProfiles();
+  const seen = new Set(list.map((p) => p.subUrl || p.name));
+  let added = 0;
+  for (const p of incoming) {
+    const key = p.subUrl || p.name;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({ ...p, id: newId() });
+    added += 1;
+  }
+  if (added) saveProfiles(list);
+  return added;
+}
+
 /**
  * Resolve a host's chosen exit into a concrete node. `exit` is a node tag, or
  * "auto"/empty to prefer an auto-selecting node (tag contains "auto"/"Авто")

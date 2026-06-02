@@ -1,4 +1,5 @@
 mod android_updater;
+mod bundle;
 mod cleanup;
 mod import_sources;
 mod sftp;
@@ -47,6 +48,8 @@ pub fn run() {
             vault::vault_delete,
             vault::vault_keys,
             cleanup::purge_legacy_sessions,
+            bundle::bundle_export,
+            bundle::bundle_import,
             sync::sync_set_config,
             sync::sync_status,
             sync::sync_unlock,
@@ -60,6 +63,7 @@ pub fn run() {
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
             import_sources::read_import_sources,
+            import_sources::read_text_file,
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
         ])

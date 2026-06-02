@@ -53,7 +53,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -2600,6 +2600,14 @@ function App() {
             allSessions.filter((s) => s.status === "connecting").length
           }
           syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
+          activeHost={
+            focusedSession
+              ? `${focusedSession.host.user}@${focusedSession.host.host}`
+              : null
+          }
+          activeStatus={focusedSession?.status ?? null}
+          activeVpn={!!focusedSession?.host.useVpn}
+          activeVpnExit={focusedSession?.host.vpnExit ?? null}
         />
       )}
 
@@ -2611,6 +2619,9 @@ function App() {
           onUnlocked={() => {
             setAppLocked(false);
             vaultStatus().then(setVault).catch(() => {});
+            // If the host list is encrypted it read empty while locked —
+            // nudge subscribers to re-read now that the vault is open.
+            refreshHosts();
           }}
         />
       )}

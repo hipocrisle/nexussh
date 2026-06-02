@@ -177,7 +177,7 @@ export function TabBar({
                     : undefined
               }
               className={
-                "nx-tab h-full px-3 flex items-center gap-2 cursor-pointer border-r border-nx-border min-w-0 shrink-0 " +
+                "nx-tab h-[calc(100%-4px)] mt-1 ml-1 px-3 flex items-center gap-2 cursor-pointer rounded-t-lg min-w-0 shrink-0 transition-colors " +
                 (active
                   ? "bg-nx-panel text-nx-text"
                   : "text-nx-muted hover:bg-nx-elevated hover:text-nx-text") +

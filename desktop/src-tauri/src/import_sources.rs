@@ -409,6 +409,12 @@ fn strip_jsonc(s: &str) -> String {
 // Aggregator + Tauri command
 // ---------------------------------------------------------------------------
 
+/// Read a UTF-8 text file the user picked (for bulk host-list import).
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn read_import_sources() -> Vec<ImportableHost> {
     let mut out = Vec::new();

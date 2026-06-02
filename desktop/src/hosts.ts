@@ -7,6 +7,7 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import { syncStatus, syncPush } from "./sync";
+import { vaultGet, vaultSet, vaultDelete } from "./vault";
 
 export interface HostRecord {
   id: string;
@@ -43,6 +44,17 @@ export interface HostRecord {
 const STORE_FILE = "hosts.json";
 const HOSTS_KEY = "hosts";
 
+// When the user opts in (Security settings), the whole host list — IPs,
+// usernames, folder structure — is moved out of plaintext hosts.json and into
+// the age-encrypted vault under this single reserved key. The flag lives in
+// localStorage so we know WHERE to read from before the vault is unlocked.
+const HOSTS_ENCRYPTED_LS = "nexussh.hostsEncrypted";
+const VAULT_HOSTLIST_KEY = "__hostlist__";
+
+export function hostsEncrypted(): boolean {
+  return localStorage.getItem(HOSTS_ENCRYPTED_LS) === "1";
+}
+
 let storePromise: Promise<Store> | null = null;
 
 async function getStore(): Promise<Store> {
@@ -52,10 +64,40 @@ async function getStore(): Promise<Store> {
   return storePromise;
 }
 
-export async function listHosts(): Promise<HostRecord[]> {
+// --- Storage source switch -------------------------------------------------
+// Every host read/write goes through readAll/writeAll, which route to either
+// the plaintext store or the encrypted vault based on the opt-in flag. This
+// keeps all the CRUD helpers below source-agnostic.
+
+async function readAll(): Promise<HostRecord[]> {
+  if (hostsEncrypted()) {
+    try {
+      const raw = await vaultGet(VAULT_HOSTLIST_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // Vault locked or key missing — caller (Sidebar) will show empty until
+      // unlock. Never fall back to the (now-empty) plaintext store.
+      return [];
+    }
+  }
   const s = await getStore();
-  const v = await s.get<HostRecord[]>(HOSTS_KEY);
-  return v ?? [];
+  return (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+}
+
+async function writeAll(all: HostRecord[]): Promise<void> {
+  if (hostsEncrypted()) {
+    await vaultSet(VAULT_HOSTLIST_KEY, JSON.stringify(all));
+    return;
+  }
+  const s = await getStore();
+  await s.set(HOSTS_KEY, all);
+  await s.save();
+}
+
+export async function listHosts(): Promise<HostRecord[]> {
+  return await readAll();
 }
 
 async function maybePushSync() {
@@ -82,36 +124,36 @@ export function onHostsChanged(cb: () => void): () => void {
   return () => window.removeEventListener(HOSTS_CHANGED_EVENT, cb);
 }
 
+/** Public trigger — used after a vault unlock so subscribers re-read hosts
+ *  that were unavailable (empty) while the encrypted list was locked. */
+export function refreshHosts() {
+  notifyHostsChanged();
+}
+
 export async function saveHost(rec: HostRecord): Promise<void> {
-  const s = await getStore();
-  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  const all = await readAll();
   const idx = all.findIndex((h) => h.id === rec.id);
   if (idx >= 0) all[idx] = rec;
   else all.push(rec);
-  await s.set(HOSTS_KEY, all);
-  await s.save();
+  await writeAll(all);
   notifyHostsChanged();
   maybePushSync();
 }
 
 export async function deleteHost(id: string): Promise<void> {
-  const s = await getStore();
-  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  const all = await readAll();
   const next = all.filter((h) => h.id !== id);
-  await s.set(HOSTS_KEY, next);
-  await s.save();
+  await writeAll(next);
   notifyHostsChanged();
   maybePushSync();
 }
 
 export async function bumpLastUsed(id: string): Promise<void> {
-  const s = await getStore();
-  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  const all = await readAll();
   const h = all.find((x) => x.id === id);
   if (!h) return;
   h.lastUsedAt = new Date().toISOString();
-  await s.set(HOSTS_KEY, all);
-  await s.save();
+  await writeAll(all);
 }
 
 export function newHostId(): string {
@@ -178,8 +220,7 @@ export async function reorderHosts(
   orderedIds: string[],
   folder: string | null,
 ): Promise<void> {
-  const s = await getStore();
-  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  const all = await readAll();
   orderedIds.forEach((id, i) => {
     const h = all.find((x) => x.id === id);
     if (h) {
@@ -187,8 +228,7 @@ export async function reorderHosts(
       h.group = folder ?? undefined;
     }
   });
-  await s.set(HOSTS_KEY, all);
-  await s.save();
+  await writeAll(all);
   notifyHostsChanged();
   maybePushSync();
 }
@@ -239,4 +279,44 @@ export function renameKnownFolder(oldName: string, newName: string) {
         : f,
   );
   localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+}
+
+// --- Host-list encryption migration ----------------------------------------
+// Move the whole list between plaintext store and encrypted vault. Both
+// directions require the vault to be UNLOCKED (caller guarantees it). On
+// failure the source is left intact — the flag is flipped only after the new
+// location holds the data, so a crash mid-migration can't lose hosts.
+
+/** Move host list from plaintext hosts.json into the encrypted vault. */
+export async function enableHostEncryption(): Promise<void> {
+  if (hostsEncrypted()) return;
+  const s = await getStore();
+  const all = (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
+  await vaultSet(VAULT_HOSTLIST_KEY, JSON.stringify(all)); // 1. write encrypted copy
+  localStorage.setItem(HOSTS_ENCRYPTED_LS, "1"); //            2. flip source flag
+  await s.delete(HOSTS_KEY); //                                3. wipe plaintext
+  await s.save();
+  notifyHostsChanged();
+}
+
+/** Move host list from the encrypted vault back into plaintext hosts.json. */
+export async function disableHostEncryption(): Promise<void> {
+  if (!hostsEncrypted()) return;
+  let all: HostRecord[] = [];
+  try {
+    const raw = await vaultGet(VAULT_HOSTLIST_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) all = parsed;
+    }
+  } catch {
+    /* vault read failed — abort without flipping the flag */
+    throw new Error("vault read failed");
+  }
+  const s = await getStore();
+  await s.set(HOSTS_KEY, all); //               1. write plaintext copy
+  await s.save();
+  localStorage.removeItem(HOSTS_ENCRYPTED_LS); // 2. flip source flag
+  await vaultDelete(VAULT_HOSTLIST_KEY); //      3. drop encrypted copy
+  notifyHostsChanged();
 }

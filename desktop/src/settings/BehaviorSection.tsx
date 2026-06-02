@@ -14,7 +14,16 @@ import {
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
 import { ImportHostsPanel } from "../ImportHostsPanel";
+import { BulkImportDialog } from "../BulkImportDialog";
+import { BundleExportDialog } from "../BundleExportDialog";
+import { BundleImportDialog } from "../BundleImportDialog";
 import { useIsMobile } from "../useIsMobile";
+import { vaultStatus } from "../vault";
+import {
+  hostsEncrypted,
+  enableHostEncryption,
+  disableHostEncryption,
+} from "../hosts";
 
 interface Props {
   s: NexuSettings;
@@ -25,7 +34,36 @@ interface Props {
 export function BehaviorSection({ s, set, t }: Props) {
   const { t: tr } = useTranslation();
   const [importOpen, setImportOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bundleExportOpen, setBundleExportOpen] = useState(false);
+  const [bundleImportOpen, setBundleImportOpen] = useState(false);
+  const [hostEnc, setHostEnc] = useState(hostsEncrypted());
+  const [encBusy, setEncBusy] = useState(false);
+  const [encErr, setEncErr] = useState<string | null>(null);
   const isMobile = useIsMobile();
+
+  async function toggleHostEncryption(on: boolean) {
+    setEncErr(null);
+    const st = await vaultStatus();
+    if (!st.configured) {
+      setEncErr(tr("settings.behavior.hostenc_need_vault"));
+      return;
+    }
+    if (!st.unlocked) {
+      setEncErr(tr("settings.behavior.hostenc_need_unlock"));
+      return;
+    }
+    setEncBusy(true);
+    try {
+      if (on) await enableHostEncryption();
+      else await disableHostEncryption();
+      setHostEnc(on);
+    } catch (e) {
+      setEncErr(String(e));
+    } finally {
+      setEncBusy(false);
+    }
+  }
 
   return (
     <Section
@@ -187,6 +225,35 @@ export function BehaviorSection({ s, set, t }: Props) {
       </Row>
 
       <Row
+        label={tr("settings.behavior.hostenc")}
+        hint={tr("settings.behavior.hostenc_hint")}
+        t={t}
+      >
+        <div className="space-y-2">
+          <Toggle
+            checked={hostEnc}
+            onChange={(v) => {
+              if (!encBusy) toggleHostEncryption(v);
+            }}
+            t={t}
+            label={tr("settings.behavior.hostenc_label")}
+            onLabel={tr("settings.nav.on")}
+            offLabel={tr("settings.nav.off")}
+            enabledLabel={tr("settings.toggle.enabled")}
+            disabledLabel={tr("settings.toggle.disabled")}
+          />
+          {encErr && (
+            <div
+              className="font-mono text-[11px]"
+              style={{ color: t.error }}
+            >
+              ✗ {encErr}
+            </div>
+          )}
+        </div>
+      </Row>
+
+      <Row
         label={tr("settings.behavior.reconnect")}
         hint={tr("settings.behavior.reconnect_hint")}
         t={t}
@@ -249,6 +316,73 @@ export function BehaviorSection({ s, set, t }: Props) {
         )}
       </Row>
       )}
+
+      <Row
+        label={tr("settings.behavior.bulk_import")}
+        hint={tr("settings.behavior.bulk_import_hint")}
+        t={t}
+      >
+        <button
+          type="button"
+          onClick={() => setBulkOpen(true)}
+          className="inline-flex items-center gap-2 px-3 py-2 font-mono text-xs rounded"
+          style={{
+            background: t.bgPanel,
+            border: `1px solid ${t.border}`,
+            color: t.textSoft,
+          }}
+        >
+          <FileText size={12} />
+          {tr("settings.behavior.bulk_import_btn")}
+        </button>
+        {bulkOpen && (
+          <BulkImportDialog
+            onClose={() => setBulkOpen(false)}
+            onImported={() => {}}
+          />
+        )}
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.bundle")}
+        hint={tr("settings.behavior.bundle_hint")}
+        t={t}
+      >
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setBundleExportOpen(true)}
+            className="inline-flex items-center gap-2 px-3 py-2 font-mono text-xs rounded"
+            style={{
+              background: t.bgPanel,
+              border: `1px solid ${t.border}`,
+              color: t.textSoft,
+            }}
+          >
+            <FileText size={12} />
+            {tr("settings.behavior.bundle_export_btn")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setBundleImportOpen(true)}
+            className="inline-flex items-center gap-2 px-3 py-2 font-mono text-xs rounded"
+            style={{
+              background: t.bgPanel,
+              border: `1px solid ${t.border}`,
+              color: t.textSoft,
+            }}
+          >
+            <FileText size={12} />
+            {tr("settings.behavior.bundle_import_btn")}
+          </button>
+        </div>
+        {bundleExportOpen && (
+          <BundleExportDialog onClose={() => setBundleExportOpen(false)} />
+        )}
+        {bundleImportOpen && (
+          <BundleImportDialog onClose={() => setBundleImportOpen(false)} />
+        )}
+      </Row>
 
       {!isMobile && (
       <Row

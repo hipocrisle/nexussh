@@ -10,12 +10,21 @@ interface Props {
   sessionCount: number;
   connectingCount: number;
   syncStatus?: "ok" | "pending" | "off";
+  /** Focused session, for the per-session segment. */
+  activeHost?: string | null;
+  activeStatus?: "connecting" | "connected" | "closed" | null;
+  activeVpn?: boolean;
+  activeVpnExit?: string | null;
 }
 
 export function StatusLine({
   sessionCount,
   connectingCount,
   syncStatus = "off",
+  activeHost = null,
+  activeStatus = null,
+  activeVpn = false,
+  activeVpnExit = null,
 }: Props) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => new Date());
@@ -40,6 +49,26 @@ export function StatusLine({
           </span>
         )}
       </span>
+
+      {activeHost && (
+        <span className="flex items-center gap-1.5 min-w-0 normal-case tracking-normal">
+          <span className="truncate max-w-[40ch] text-nx-text">{activeHost}</span>
+          <span
+            className={
+              activeStatus === "connected"
+                ? "text-nx-accent"
+                : activeStatus === "connecting"
+                  ? "text-nx-warning"
+                  : "text-nx-muted"
+            }
+          >
+            · {t(`status.conn_${activeStatus ?? "closed"}`)}
+          </span>
+          <span className={activeVpn ? "text-nx-accent" : "text-nx-muted"}>
+            · {activeVpn ? `⛨ ${t("status.via_vpn")}${activeVpnExit && activeVpnExit !== "auto" ? ` (${activeVpnExit})` : ""}` : t("status.direct")}
+          </span>
+        </span>
+      )}
 
       <span className="ml-auto flex items-center gap-4">
         {syncStatus !== "off" && (

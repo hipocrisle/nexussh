@@ -37,10 +37,6 @@ import {
   historyExport,
   fmtTs,
   fmtBytes,
-  filterAltBuffer,
-  isTmuxStatusLine,
-  isClaudeChromeLine,
-  extractClaudeConversation,
   CastEvent,
 } from "./history";
 import { useSettings } from "./settings/settings-store";
@@ -70,8 +66,6 @@ function searchDecorations(t: ThemePalette) {
 
 const FULLSCREEN_LS_KEY = "nexussh.historyFullscreen";
 // Same keys as TranscriptOverlay — one shared state for both replay surfaces.
-const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
-const CONV_LS_KEY = "nexussh.transcriptConvOnly";
 
 export function HistoryPanel({ onClose }: Props) {
   const { t } = useTranslation();
@@ -86,28 +80,6 @@ export function HistoryPanel({ onClose }: Props) {
     setFullscreen((v) => {
       const next = !v;
       localStorage.setItem(FULLSCREEN_LS_KEY, next ? "1" : "0");
-      return next;
-    });
-  }
-  const [plainText, setPlainText] = useState<boolean>(() => {
-    const v = localStorage.getItem(PLAIN_LS_KEY);
-    return v === null ? true : v === "1";
-  });
-  const [convOnly, setConvOnly] = useState<boolean>(() => {
-    const v = localStorage.getItem(CONV_LS_KEY);
-    return v === null ? true : v === "1";
-  });
-  function togglePlain() {
-    setPlainText((v) => {
-      const next = !v;
-      localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
-      return next;
-    });
-  }
-  function toggleConv() {
-    setConvOnly((v) => {
-      const next = !v;
-      localStorage.setItem(CONV_LS_KEY, next ? "1" : "0");
       return next;
     });
   }
@@ -221,91 +193,34 @@ export function HistoryPanel({ onClose }: Props) {
     });
   }, [fullscreen]);
 
-  // Replay events into xterm.
+  // Replay events into xterm — FAITHFULLY.
   //
-  // Two modes — same as TranscriptOverlay:
-  //   • Plain (default): stripAnsiString + dedup adjacent identical lines.
-  //     Best for TUI sessions (Claude Code / vim / htop), which redraw
-  //     via cursor positioning and produce a wall of overlapping moves
-  //     in colored replay.
-  //   • Color: drop the whole alt-screen window, let xterm render the
-  //     rest with SGR colors intact. Good for sessions that mostly stayed
-  //     in the main buffer.
+  // Size the terminal to the recording's own dimensions and write the raw
+  // bytes. xterm then renders exactly what the live session showed: alt-
+  // screen, cursor positioning, tmux, colours — all of it. The live
+  // session is already clean, so the faithful render is clean too.
+  //
+  // Everything we used to do here (strip alt-screen toggles, sliding-window
+  // dedup, chrome regex, conversation extraction, headless pre-render) only
+  // ADDED garbage — stripping tmux's alt-screen made every status-bar
+  // repaint pile into scrollback. Removed. For tmux/alt-screen sessions this
+  // shows the final frame (tmux keeps its own scrollback server-side; it is
+  // never sent over the wire, so it cannot be reconstructed here). For plain
+  // command output, full scrollback survives.
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
     term.reset();
     if (!events) return;
-    fitRef.current?.fit();
 
     const full = events.map((e) => e.d).join("");
     const meta = entries.find((e) => e.session_id === selectedId);
-    // Replay WIDE. The recorded `cols` is the SSH-PTY width NexuSSH set,
-    // but when the session runs in tmux the actual content width is tmux's
-    // window width — usually wider than a phone's PTY. Replaying narrower
-    // than the baked content re-wraps every line into garbage; replaying
-    // wider is always safe. Floor at 220, but honour a genuinely larger
-    // recorded width (desktop ultrawide) if present.
-    const sessionCols = Math.max(meta?.cols ?? 0, 220);
-    const sessionRows = 50;
-
-    if (plainText) {
-      const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
-      const off = new Terminal({
-        cols: sessionCols,
-        rows: sessionRows,
-        scrollback: 100000,
-        allowProposedApi: true,
-        convertEol: false,
-      });
-      off.write(noAlt, () => {
-        const buf = off.buffer.active;
-        const rawLines: string[] = [];
-        for (let i = 0; i < buf.length; i++) {
-          const ln = buf.getLine(i);
-          if (ln) rawLines.push(ln.translateToString(true));
-        }
-        off.dispose();
-        const WINDOW = 200;
-        const recentSet = new Set<string>();
-        const recentList: string[] = [];
-        const out: string[] = [];
-        for (const ln of rawLines) {
-          if (isClaudeChromeLine(ln)) continue;
-          if (ln.trim() === "") {
-            if (out.length === 0 || out[out.length - 1] !== "") out.push("");
-            continue;
-          }
-          if (recentSet.has(ln)) continue;
-          out.push(ln);
-          recentSet.add(ln);
-          recentList.push(ln);
-          if (recentList.length > WINDOW) {
-            const ev = recentList.shift()!;
-            recentSet.delete(ev);
-          }
-        }
-        while (out.length && !out[out.length - 1]) out.pop();
-        const finalLines = convOnly ? extractClaudeConversation(out) : out;
-        term.write(finalLines.join("\r\n"));
-        term.scrollToTop();
-        requestAnimationFrame(() => fitRef.current?.fit());
-      });
-      return;
-    }
-
-    // Color mode
-    const cleaned = filterAltBuffer(full);
-    const parts = cleaned.split(/(\r\n|\n)/);
-    for (let i = 0; i < parts.length; i += 2) {
-      const line = parts[i];
-      const sep = parts[i + 1] ?? "";
-      if (line && sep && isTmuxStatusLine(line)) continue;
-      term.write(line + sep);
-    }
-    term.scrollToTop();
-    requestAnimationFrame(() => fitRef.current?.fit());
-  }, [events, plainText, convOnly, selectedId, entries]);
+    const cols = meta?.cols && meta.cols > 0 ? meta.cols : 80;
+    const rows = meta?.rows && meta.rows > 0 ? meta.rows : 24;
+    term.resize(cols, rows);
+    term.write(full);
+    requestAnimationFrame(() => term.scrollToTop());
+  }, [events, selectedId, entries]);
 
   // In-session search: highlight current match on submit
   useEffect(() => {
@@ -401,31 +316,6 @@ export function HistoryPanel({ onClose }: Props) {
             — {t("history.subtitle")}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
-            <button
-              onClick={toggleConv}
-              disabled={!plainText}
-              title={t("history.conv_hint")}
-              className={
-                "h-7 px-2 rounded text-meta font-mono border disabled:opacity-30 " +
-                (convOnly && plainText
-                  ? "border-nx-accent text-nx-accent bg-nx-accent/10"
-                  : "border-nx-divider text-nx-muted hover:text-nx-text")
-              }
-            >
-              {convOnly ? t("history.conv_on") : t("history.conv_off")}
-            </button>
-            <button
-              onClick={togglePlain}
-              title={t("history.plain_text_hint")}
-              className={
-                "h-7 px-2 rounded text-meta font-mono border " +
-                (plainText
-                  ? "border-nx-accent text-nx-accent bg-nx-accent/10"
-                  : "border-nx-divider text-nx-muted hover:text-nx-text")
-              }
-            >
-              {plainText ? t("history.plain_on") : t("history.plain_off")}
-            </button>
             <IconButton icon={<RefreshCw size={13} />} onClick={refresh} title={t("history.refresh")} />
             <IconButton
               icon={fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}

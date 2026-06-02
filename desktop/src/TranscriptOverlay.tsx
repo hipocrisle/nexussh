@@ -7,9 +7,8 @@
 //     in the backend, bytes still flowing into the .cast file).
 //   * On open we call historyReadEvents(sessionId) to fetch every chunk
 //     the backend has logged so far for THIS session.
-//   * We feed those bytes through filterAltBuffer (strips ESC[?1049h/l etc.)
-//     into a hidden xterm.js instance, so all redraws accumulate in main
-//     buffer scrollback — wheel scroll works there.
+//   * We write those raw bytes straight into an xterm.js instance — a
+//     faithful replay that renders exactly what the live session showed.
 //   * Esc / Ctrl-Shift-Down dismisses the overlay; the live terminal is
 //     immediately visible again with its current state intact.
 
@@ -19,14 +18,7 @@ import { X, ArrowDown } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import {
-  historyReadEvents,
-  filterAltBuffer,
-  isTmuxStatusLine,
-  isClaudeChromeLine,
-  extractClaudeConversation,
-  CastEvent,
-} from "./history";
+import { historyReadEvents, CastEvent } from "./history";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
@@ -69,22 +61,6 @@ export function TranscriptOverlay({
   const fitRef = useRef<FitAddon | null>(null);
   const [events, setEvents] = useState<CastEvent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Default to plain-text mode — the ANSI replay strips alt-screen
-  // windows entirely (TUI redraws there can't be cleanly replayed into
-  // the main buffer), and almost every long session has Claude Code /
-  // vim / htop inside, so default-ANSI ends up empty. Plain text shows
-  // everything readably. User can flip back when they want colors and
-  // know the recording is plain-shell.
-  const PLAIN_LS_KEY = "nexussh.transcriptPlainText";
-  const CONV_LS_KEY = "nexussh.transcriptConvOnly";
-  const [convOnly, setConvOnly] = useState<boolean>(() => {
-    const v = localStorage.getItem(CONV_LS_KEY);
-    return v === null ? true : v === "1";
-  });
-  const [plainText, setPlainText] = useState<boolean>(() => {
-    const v = localStorage.getItem(PLAIN_LS_KEY);
-    return v === null ? true : v === "1";
-  });
 
   // Load events for this session
   useEffect(() => {
@@ -193,109 +169,21 @@ export function TranscriptOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Replay events into hidden xterm whenever events change.
-  //
-  // Concatenate ALL events first, then filter — alt-screen windows from
-  // Claude Code / vim / htop can easily span hundreds of small chunks,
-  // and per-event filtering can't see the closing `\x1b[?1049l` if it's
-  // in a later chunk. Once that whole alt-screen body is gone, we feed
-  // the remainder line-by-line (skipping tmux status redraws).
-  //
-  // The line-dedup that lived here ("if (line === prev) continue") was
-  // dropping legitimate consecutive identical output too aggressively —
-  // also removed.
+  // Replay events into xterm — FAITHFULLY. Write the raw recorded bytes
+  // straight into the terminal so it renders exactly what the live session
+  // showed (alt-screen, cursor moves, tmux, colours). The live session is
+  // already clean, so this is clean. No stripping / dedup / filtering —
+  // every one of those "fixes" only added garbage. See HistoryPanel for the
+  // full rationale (stripping tmux's alt-screen toggle was the culprit).
   useEffect(() => {
     const term = termRef.current;
     if (!term || !events) return;
     term.reset();
     fitRef.current?.fit();
     const full = events.map((e) => e.d).join("");
-
-    if (plainText) {
-      // Plain mode = REAL replay through an offscreen xterm.
-      //
-      // Why this beats regex stripping: Claude Code (and similar TUIs)
-      // animate the spinner character-by-character with cursor jumps
-      // between non-adjacent columns and colour escapes per cell. Any
-      // line-by-line stripper turns that into "lesенka / single-char
-      // fragments / weird columns of letters". A real terminal emulator
-      // just overwrites the same cells frame after frame, so the final
-      // buffer state is exactly what a human would see if they scrolled
-      // back in the live session.
-      //
-      // We strip the alt-screen toggles so the TUI paints into main
-      // buffer (with scrollback) instead of the small alt buffer that
-      // gets thrown away on exit.
-      const noAlt = full.replace(/\x1b\[\?(?:1049|1048|1047|47)[hl]/g, "");
-      // Replay at a deliberately WIDE width. The recorded bytes were laid
-      // out at the *server-side* render width — which, when the session
-      // runs inside tmux, is tmux's window width (often 80-120), NOT the
-      // narrow SSH-PTY width the phone reported. Replaying narrower than the
-      // baked content width re-wraps every line mid-word ("garbage");
-      // replaying wider is always safe (absolute cursor positions land
-      // correctly, baked newlines are preserved). 220 exceeds any realistic
-      // tmux window on phone/laptop. The visible terminal then soft-wraps
-      // these clean lines to the panel width.
-      const REPLAY_COLS = 220;
-      const off = new Terminal({
-        cols: REPLAY_COLS,
-        rows: 50,
-        scrollback: 100000,
-        allowProposedApi: true,
-        convertEol: false,
-      });
-      off.write(noAlt, () => {
-        const buf = off.buffer.active;
-        const rawLines: string[] = [];
-        for (let i = 0; i < buf.length; i++) {
-          const ln = buf.getLine(i);
-          if (ln) rawLines.push(ln.translateToString(true));
-        }
-        off.dispose();
-        // Sliding-window dedup + Claude Code chrome filter on top.
-        const WINDOW = 200;
-        const recentSet = new Set<string>();
-        const recentList: string[] = [];
-        const out: string[] = [];
-        for (const ln of rawLines) {
-          if (isClaudeChromeLine(ln)) continue;
-          if (ln.trim() === "") {
-            if (out.length === 0 || out[out.length - 1] !== "") out.push("");
-            continue;
-          }
-          if (recentSet.has(ln)) continue;
-          out.push(ln);
-          recentSet.add(ln);
-          recentList.push(ln);
-          if (recentList.length > WINDOW) {
-            const ev = recentList.shift()!;
-            recentSet.delete(ev);
-          }
-        }
-        while (out.length && !out[out.length - 1]) out.pop();
-        const finalLines = convOnly ? extractClaudeConversation(out) : out;
-        term.write(finalLines.join("\r\n"));
-        requestAnimationFrame(() => term.scrollToBottom());
-      });
-      return;
-    }
-
-    // Color mode: drop the whole alt-screen window and let xterm render
-    // the rest with color.
-    const cleaned = filterAltBuffer(full);
-    const parts = cleaned.split(/(\r\n|\n)/);
-    for (let i = 0; i < parts.length; i += 2) {
-      const line = parts[i];
-      const sep = parts[i + 1] ?? "";
-      if (line && sep && isTmuxStatusLine(line)) continue;
-      term.write(line + sep);
-    }
-    // Scroll to BOTTOM so user sees the latest output first; they can wheel
-    // up to inspect older content. Same UX as terminal scrollback.
-    requestAnimationFrame(() => {
-      term.scrollToBottom();
-    });
-  }, [events, plainText, convOnly]);
+    term.write(full);
+    requestAnimationFrame(() => term.scrollToBottom());
+  }, [events]);
 
   // Apply theme/font changes live
   useEffect(() => {
@@ -349,42 +237,9 @@ export function TranscriptOverlay({
           {t("transcript.hint")}
         </span>
         <button
-          onClick={() => {
-            const next = !convOnly;
-            setConvOnly(next);
-            localStorage.setItem(CONV_LS_KEY, next ? "1" : "0");
-          }}
-          title={t("transcript.conv_hint")}
-          disabled={!plainText}
-          className={
-            "ml-auto mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border disabled:opacity-30 " +
-            (convOnly && plainText
-              ? "bg-[var(--nx-accent-glow)] text-[var(--nx-accent)] border-[var(--nx-accent)]"
-              : "border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-elevated)]")
-          }
-        >
-          {convOnly ? t("transcript.conv_on") : t("transcript.conv_off")}
-        </button>
-        <button
-          onClick={() => {
-            const next = !plainText;
-            setPlainText(next);
-            localStorage.setItem(PLAIN_LS_KEY, next ? "1" : "0");
-          }}
-          title={t("transcript.plain_hint")}
-          className={
-            "mr-2 px-2 py-0.5 rounded font-mono text-[10px] uppercase tracking-wider border " +
-            (plainText
-              ? "bg-[var(--nx-accent-glow)] text-[var(--nx-accent)] border-[var(--nx-accent)]"
-              : "border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-elevated)]")
-          }
-        >
-          {plainText ? t("transcript.plain_on") : t("transcript.plain_off")}
-        </button>
-        <button
           onClick={onClose}
           title={t("transcript.return")}
-          className="px-2 py-0.5 rounded flex items-center gap-1.5 hover:bg-[var(--nx-bg-elevated)] text-[var(--nx-text-soft)]"
+          className="ml-auto px-2 py-0.5 rounded flex items-center gap-1.5 hover:bg-[var(--nx-bg-elevated)] text-[var(--nx-text-soft)]"
         >
           <ArrowDown size={12} />
           <span>{t("transcript.return_short")}</span>

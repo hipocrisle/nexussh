@@ -142,11 +142,12 @@ jobs:
           # tauri.android.conf.json strips externalBin (xray sidecar) — we
           # don't ship the desktop VPN proxy in the APK.
           NDK_HOME: ${{ env.NDK_HOME }}
-        # Release build (signed with the pinned keystore, minify OFF — see
-        # patch-android-manifest.sh): arm64-only, no debug symbols, ~half the
-        # debug size. arm64 covers every Android phone since ~2017.
+        # Release is the DEFAULT for `tauri android build` (debug needs
+        # --debug), so we just omit --debug. Signed with the pinned keystore,
+        # minify OFF (see patch-android-manifest.sh): arm64-only, no debug
+        # symbols, ~half the debug size. arm64 covers every phone since ~2017.
         run: |
-          npm run tauri android build -- --release --apk \
+          npm run tauri android build -- --apk \
             --target aarch64
           find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' -print
 

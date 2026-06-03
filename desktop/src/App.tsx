@@ -1298,11 +1298,14 @@ function App() {
     if (!found) return;
     const { pane } = found;
     const host = pane.session.host;
-    // Same "ask each time" logic as initial connect — without it, restart
-    // on a host that doesn't save its password retries with an empty string
-    // and fails authentication forever.
+    // Re-prompt for the password on every restart of a password-auth host whose
+    // password isn't securely saved. Saved passwords live in the vault (auth
+    // kind "vault"); a plain "password" kind means it's either ask-each-time or
+    // a quick-connect session holding the typed password in memory — in both
+    // cases reusing it would just retry the same (possibly wrong) password
+    // forever, so ask again.
     let auth = host.auth;
-    if (host.auth.kind === "password" && host.alwaysAskPassword) {
+    if (host.auth.kind === "password") {
       const entered = await askPassword(host);
       if (entered === null) return;
       auth = { kind: "password", password: entered };

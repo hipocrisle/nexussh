@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Server, ChevronRight, ChevronDown, Folder, Plus, X } from "lucide-react";
+import { Server, ChevronRight, ChevronDown, Folder, Plus, X, Zap } from "lucide-react";
 import { HostRecord, listHosts } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
@@ -20,7 +20,26 @@ import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
 interface Props {
   onPick: (h: HostRecord) => void;
   onCreateNew?: () => void;
+  /** PuTTY-style quick connect: open IP[:port] without saving a host. */
+  onQuickConnect?: (host: string, port: number) => void;
   onClose: () => void;
+}
+
+/** Parse a quick-connect entry: `host` or `host:port`. Returns null if empty.
+ *  Bare IPv6 (2+ colons) is taken whole with the default port. */
+function parseQuick(raw: string): { host: string; port: number } | null {
+  const s = raw.trim();
+  if (!s) return null;
+  if (s.split(":").length === 2) {
+    const [h, p] = s.split(":");
+    const port = parseInt(p, 10);
+    if (!h) return null;
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      return { host: h, port };
+    }
+    return null; // a colon was typed but the port is invalid
+  }
+  return { host: s, port: 22 };
 }
 
 function Highlighted({ text, query }: { text: string; query: string }) {
@@ -120,10 +139,11 @@ function persistExpanded(s: Set<string>) {
   } catch {}
 }
 
-export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
+export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [q, setQ] = useState("");
+  const [quick, setQuick] = useState("");
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -279,6 +299,37 @@ export function TabPicker({ onPick, onCreateNew, onClose }: Props) {
             <X size={14} />
           </button>
         </div>
+
+        {/* Quick connect (PuTTY-style) — only when not filtering existing hosts */}
+        {!q.trim() && onQuickConnect && (
+          <>
+            <div className="flex items-center gap-2.5 px-3.5 py-2 max-md:py-3">
+              <Zap size={14} className="shrink-0 text-nx-accent" />
+              <input
+                value={quick}
+                onChange={(e) => setQuick(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    const p = parseQuick(quick);
+                    if (p) {
+                      onQuickConnect(p.host, p.port);
+                      onClose();
+                    }
+                  } else if (e.key === "Escape") {
+                    onClose();
+                  }
+                  e.stopPropagation();
+                }}
+                placeholder={t("quick.field_placeholder")}
+                className="flex-1 bg-transparent border-none text-nx-text font-mono text-body outline-none placeholder-nx-muted"
+              />
+              <span className="text-micro uppercase tracking-wider text-nx-muted whitespace-nowrap">
+                {t("quick.hint")}
+              </span>
+            </div>
+            <PopoverDivider />
+          </>
+        )}
 
         {/* Create-new row, only when not searching */}
         {!q.trim() && onCreateNew && (

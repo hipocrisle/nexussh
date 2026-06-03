@@ -214,6 +214,13 @@ const ru = {
     done: "Добавлено: {{added}}, пропущено (дубли): {{skipped}}",
     close: "готово",
   },
+  quick: {
+    field_placeholder: "Быстрое подключение: IP[:порт]",
+    hint: "enter",
+    title: "Быстрое подключение",
+    login: "Логин",
+    password: "Пароль",
+  },
   bundle: {
     title: "Экспорт бандла",
     subtitle: "Выбери хосты для шифрованного файла. Пароли не экспортируются.",
@@ -604,6 +611,7 @@ const ru = {
     close_current_tab: "Закрыть текущую вкладку",
     move_to_new_tab: "Вынести в новую вкладку",
     rename_tab: "Переименовать вкладку…",
+    save_host: "Сохранить хост…",
     rename_tab_prompt: "Новое название (пусто — авто по хосту):",
     open_transcript: "Прокрутить историю (Ctrl+Shift+↑)",
     exit_transcript: "Вернуться в live (Esc)",
@@ -845,6 +853,13 @@ const en = {
     err_empty: "List is empty — paste at least one address",
     done: "Added: {{added}}, skipped (dupes): {{skipped}}",
     close: "done",
+  },
+  quick: {
+    field_placeholder: "Quick connect: IP[:port]",
+    hint: "enter",
+    title: "Quick connect",
+    login: "Login",
+    password: "Password",
   },
   bundle: {
     title: "Export bundle",
@@ -1236,6 +1251,7 @@ const en = {
     close_current_tab: "Close current tab",
     move_to_new_tab: "Move to new tab",
     rename_tab: "Rename tab…",
+    save_host: "Save host…",
     rename_tab_prompt: "New title (empty = auto from host):",
     open_transcript: "Scroll history (Ctrl+Shift+↑)",
     exit_transcript: "Back to live (Esc)",

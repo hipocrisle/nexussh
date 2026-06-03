@@ -37,6 +37,7 @@ import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { PasswordPrompt } from "./PasswordPrompt";
+import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
   import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
 );
@@ -53,7 +54,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -526,6 +527,9 @@ function App() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
+  const [quickConnect, setQuickConnect] = useState<{ host: string; port: number } | null>(null);
+  // Prefilled new-host dialog (e.g. "Save host" from a quick-connect session).
+  const [prefillHost, setPrefillHost] = useState<HostRecord | null>(null);
   // When set, the next host picked completes a split inside this workspace
   // rather than opening a new workspace.
   const [pendingSplit, setPendingSplit] = useState<{
@@ -1457,6 +1461,24 @@ function App() {
         label: t("tabmenu.rename_tab"),
         onClick: () => renameWorkspace(wsId),
       },
+      // Offer to persist a one-off quick-connect session as a saved host.
+      ...(focusedHost && focusedHost.id.startsWith("quick-")
+        ? [
+            {
+              label: t("tabmenu.save_host"),
+              onClick: () =>
+                setPrefillHost({
+                  id: newHostId(),
+                  name: focusedHost.host,
+                  host: focusedHost.host,
+                  port: focusedHost.port,
+                  user: focusedHost.user,
+                  auth: { kind: "password", password: "" },
+                  alwaysAskPassword: true,
+                }),
+            },
+          ]
+        : []),
     ];
     // Merge section — flat list of other workspaces under a header. Clicking
     // one moves its panes into this workspace (next to the focused pane,
@@ -2684,9 +2706,38 @@ function App() {
             // after invoking the callback.
             setCreateHostOpen(true);
           }}
+          onQuickConnect={(host, port) => {
+            setPickerOpen(false);
+            setPendingSplit(null);
+            setQuickConnect({ host, port });
+          }}
           onClose={() => {
             setPickerOpen(false);
             setPendingSplit(null);
+          }}
+        />
+      )}
+      {quickConnect && (
+        <QuickConnectDialog
+          host={quickConnect.host}
+          port={quickConnect.port}
+          defaultUser={settings.defaultUser}
+          onCancel={() => setQuickConnect(null)}
+          onSubmit={({ user, password }) => {
+            const qc = quickConnect;
+            setQuickConnect(null);
+            if (!qc) return;
+            // Ephemeral, never-saved host. Password is held only in memory for
+            // this session; alwaysAskPassword=false so openHost uses it directly.
+            openHost({
+              id: "quick-" + crypto.randomUUID(),
+              name: qc.host,
+              host: qc.host,
+              port: qc.port,
+              user,
+              auth: { kind: "password", password },
+              alwaysAskPassword: false,
+            });
           }}
         />
       )}
@@ -2723,6 +2774,16 @@ function App() {
           onSaved={(saved) => {
             setSelectedHost(saved);
             setCreateHostOpen(false);
+          }}
+        />
+      )}
+      {prefillHost && (
+        <HostDialog
+          initial={prefillHost}
+          onClose={() => setPrefillHost(null)}
+          onSaved={(saved) => {
+            setSelectedHost(saved);
+            setPrefillHost(null);
           }}
         />
       )}

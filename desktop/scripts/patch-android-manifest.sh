@@ -64,11 +64,18 @@ if [ -f "$GRADLE_KTS" ] && ! grep -q 'signingConfigs *{ *getByName("debug")' "$G
 import sys, re
 path = sys.argv[1]
 src = open(path).read()
-# Inject a signingConfigs { getByName("debug") { ... } } block as the
-# first statement inside the top-level `android { ... }`.
+# 1) Inject a signingConfigs block as the first statement inside `android {`.
+#    The same pinned keystore (gen/android/debug.keystore) signs BOTH debug and
+#    release, so a single signer means existing installs update cleanly.
 inject = (
     "\n    signingConfigs {\n"
     "        getByName(\"debug\") {\n"
+    "            storeFile = rootProject.file(\"debug.keystore\")\n"
+    "            storePassword = \"android\"\n"
+    "            keyAlias = \"androiddebugkey\"\n"
+    "            keyPassword = \"android\"\n"
+    "        }\n"
+    "        create(\"release\") {\n"
     "            storeFile = rootProject.file(\"debug.keystore\")\n"
     "            storePassword = \"android\"\n"
     "            keyAlias = \"androiddebugkey\"\n"
@@ -82,6 +89,19 @@ if not m:
     sys.exit(1)
 i = m.end()
 src = src[:i] + inject + src[i:]
+
+# 2) Wire the release buildType to that signing config, and disable R8/minify
+#    for now — minification on a Tauri/wry app risks stripping the JNI/webview
+#    bridge, and we can't device-test that here. A signed, un-minified release
+#    is still much smaller than the debug build and is the safe first ship.
+src = src.replace(
+    'getByName("release") {',
+    'getByName("release") {\n'
+    '            signingConfig = signingConfigs.getByName("release")',
+    1,
+)
+src = src.replace("isMinifyEnabled = true", "isMinifyEnabled = false", 1)
+
 open(path, "w").write(src)
 PY
 fi

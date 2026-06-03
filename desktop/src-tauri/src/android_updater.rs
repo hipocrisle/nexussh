@@ -34,12 +34,14 @@ pub struct AndroidUpdateInfo {
 #[tauri::command]
 pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdateInfo>, String> {
     let cur = app.package_info().version.to_string();
+    // The Android channel has its OWN manifest (produced by the android CI job),
+    // independent of the desktop latest.json — it carries the APK url + SHA-256.
     const ENDPOINT: &str =
-        "https://github.com/hipocrisle/nexussh/releases/latest/download/latest.json";
+        "https://github.com/hipocrisle/nexussh/releases/latest/download/latest-android.json";
     let body = tokio::task::spawn_blocking(|| -> Result<String, String> {
         ureq::get(ENDPOINT)
             .call()
-            .map_err(|e| format!("fetch latest.json: {e}"))?
+            .map_err(|e| format!("fetch latest-android.json: {e}"))?
             .into_string()
             .map_err(|e| format!("read body: {e}"))
     })
@@ -47,26 +49,25 @@ pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdate
     .map_err(|e| format!("join: {e}"))??;
 
     let v: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("parse latest.json: {e}"))?;
+        serde_json::from_str(&body).map_err(|e| format!("parse latest-android.json: {e}"))?;
     let remote = v
         .get("version")
         .and_then(|x| x.as_str())
-        .ok_or("latest.json: missing version field")?
+        .ok_or("latest-android.json: missing version field")?
         .to_string();
     if !is_newer(&remote, &cur) {
         return Ok(None);
     }
     let notes = v.get("notes").and_then(|x| x.as_str()).map(String::from);
-    // Published APK hash — accept either a top-level `android_sha256` or a
-    // nested `android.sha256` so the release pipeline can choose either shape.
     let sha256 = v
-        .get("android_sha256")
+        .get("sha256")
         .and_then(|x| x.as_str())
-        .or_else(|| v.get("android").and_then(|a| a.get("sha256")).and_then(|x| x.as_str()))
         .map(|s| s.trim().to_lowercase());
-    let url = format!(
-        "https://github.com/hipocrisle/nexussh/releases/download/v{remote}/app-universal-release.apk"
-    );
+    let url = v
+        .get("url")
+        .and_then(|x| x.as_str())
+        .ok_or("latest-android.json: missing url field")?
+        .to_string();
     Ok(Some(AndroidUpdateInfo {
         version: remote,
         current_version: cur,

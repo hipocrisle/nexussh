@@ -9,11 +9,12 @@
 //! Once unlocked, secrets + the passphrase live in RAM only (needed to
 //! re-encrypt on writes); cleared on `vault_lock` or app quit.
 
-use age::secrecy::SecretString;
+use age::secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tauri_plugin_store::StoreExt;
@@ -49,11 +50,18 @@ impl Serialize for VaultError {
     }
 }
 
-/// In-memory unlocked state. Holds the passphrase so writes can re-encrypt.
+/// In-memory unlocked state. Envelope encryption: the slow scrypt KDF runs only
+/// to wrap/unwrap a random data key (`dek`); every write re-encrypts the content
+/// with that data key via fast X25519, NOT scrypt. So saving a host is now a few
+/// ms instead of ~1s. `wrapped_dek` is the cached scrypt-wrapped data key (it's
+/// rebuilt only on create / password-change), written verbatim into every file.
 struct Unlocked {
     secrets: HashMap<String, String>,
     passphrase: String,
     vault_path: PathBuf,
+    dek: age::x25519::Identity,
+    dek_recipient: age::x25519::Recipient,
+    wrapped_dek: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -101,6 +109,88 @@ fn decrypt_payload(encrypted: &[u8], passphrase: &str) -> Result<String, VaultEr
     String::from_utf8(out).map_err(|_| VaultError::Utf8)
 }
 
+// ---- envelope encryption ----
+// File layout for the new format:
+//   b"NXV1" | u32-LE len(wrapped_dek) | wrapped_dek | content
+// `wrapped_dek` is the data key, scrypt-wrapped with the master password (slow,
+// built once per unlock/create/password-change). `content` is the kv-JSON
+// encrypted to the data key's X25519 recipient (fast, every write). Legacy
+// vaults (a bare age-scrypt blob, no magic) still decrypt and migrate on the
+// next write.
+
+const ENVELOPE_MAGIC: &[u8; 4] = b"NXV1";
+
+fn build_envelope(wrapped_dek: &[u8], content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + wrapped_dek.len() + content.len());
+    out.extend_from_slice(ENVELOPE_MAGIC);
+    out.extend_from_slice(&(wrapped_dek.len() as u32).to_le_bytes());
+    out.extend_from_slice(wrapped_dek);
+    out.extend_from_slice(content);
+    out
+}
+
+/// Split an NXV1 file into (wrapped_dek, content). Returns None for the legacy
+/// (bare age-scrypt) format.
+fn parse_envelope(bytes: &[u8]) -> Option<(&[u8], &[u8])> {
+    if bytes.len() < 8 || &bytes[0..4] != ENVELOPE_MAGIC {
+        return None;
+    }
+    let n = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as usize;
+    let end = 8usize.checked_add(n)?;
+    if bytes.len() < end {
+        return None;
+    }
+    Some((&bytes[8..end], &bytes[end..]))
+}
+
+fn encrypt_to_recipient(
+    plaintext: &str,
+    recipient: &age::x25519::Recipient,
+) -> Result<Vec<u8>, VaultError> {
+    let encryptor =
+        age::Encryptor::with_recipients(std::iter::once(recipient as &dyn age::Recipient))
+            .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    let mut out = vec![];
+    let mut writer = encryptor
+        .wrap_output(&mut out)
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    writer
+        .write_all(plaintext.as_bytes())
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    writer
+        .finish()
+        .map_err(|e| VaultError::Encrypt(e.to_string()))?;
+    Ok(out)
+}
+
+fn decrypt_with_identity(
+    encrypted: &[u8],
+    identity: &age::x25519::Identity,
+) -> Result<String, VaultError> {
+    let decryptor =
+        age::Decryptor::new(encrypted).map_err(|e| VaultError::Decrypt(e.to_string()))?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(identity as &dyn age::Identity))
+        .map_err(|e| VaultError::Decrypt(e.to_string()))?;
+    let mut out = vec![];
+    reader.read_to_end(&mut out)?;
+    String::from_utf8(out).map_err(|_| VaultError::Utf8)
+}
+
+/// Generate a fresh random data key and scrypt-wrap it with `passphrase`. The
+/// scrypt cost is paid HERE (once per unlock/create/password-change), not on
+/// every write. Returns the identity, its public recipient, and the wrapped
+/// blob to embed in the file.
+fn new_data_key(
+    passphrase: &str,
+) -> Result<(age::x25519::Identity, age::x25519::Recipient, Vec<u8>), VaultError> {
+    let dek = age::x25519::Identity::generate();
+    let recipient = dek.to_public();
+    let secret = dek.to_string();
+    let wrapped = encrypt_payload(secret.expose_secret(), passphrase)?;
+    Ok((dek, recipient, wrapped))
+}
+
 /// Parse the decrypted payload. Current format is JSON (lossless for any
 /// value — passwords with newlines, `=`, leading spaces, etc.). Falls back to
 /// the legacy `key = value` line format so vaults written by older builds still
@@ -142,7 +232,10 @@ fn serialize_kv(map: &HashMap<String, String>) -> String {
 /// retains deleted secrets a generation longer.
 fn persist(u: &Unlocked) -> Result<(), VaultError> {
     let text = serialize_kv(&u.secrets);
-    let encrypted = encrypt_payload(&text, &u.passphrase)?;
+    // Fast path: encrypt the content to the cached data key (no scrypt), then
+    // prepend the already-wrapped data key. scrypt is NOT touched here.
+    let content = encrypt_to_recipient(&text, &u.dek_recipient)?;
+    let encrypted = build_envelope(&u.wrapped_dek, &content);
     if let Some(parent) = u.vault_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -214,10 +307,14 @@ pub async fn vault_create(
     if path.exists() {
         return Err(VaultError::AlreadyExists);
     }
+    let (dek, dek_recipient, wrapped_dek) = new_data_key(&master_password)?;
     let u = Unlocked {
         secrets: HashMap::new(),
         passphrase: master_password,
         vault_path: path.clone(),
+        dek,
+        dek_recipient,
+        wrapped_dek,
     };
     persist(&u)?;
     set_config_vault_path(&app, &path)?;
@@ -236,12 +333,32 @@ pub async fn vault_unlock(
         return Err(VaultError::NotConfigured);
     }
     let encrypted = std::fs::read(&path)?;
-    let plaintext = decrypt_payload(&encrypted, &master_password)?;
-    let map = parse_kv_text(&plaintext);
+    let (map, dek, dek_recipient, wrapped_dek) = match parse_envelope(&encrypted) {
+        // New format: scrypt-unwrap the data key once, then content is fast.
+        Some((wrapped, content)) => {
+            let dek_str = decrypt_payload(wrapped, &master_password)?;
+            let dek = age::x25519::Identity::from_str(dek_str.trim())
+                .map_err(|e| VaultError::Decrypt(e.to_string()))?;
+            let recipient = dek.to_public();
+            let plaintext = decrypt_with_identity(content, &dek)?;
+            (parse_kv_text(&plaintext), dek, recipient, wrapped.to_vec())
+        }
+        // Legacy bare age-scrypt vault: decrypt with the passphrase, then mint a
+        // data key so the NEXT write upgrades the file to the envelope format.
+        None => {
+            let plaintext = decrypt_payload(&encrypted, &master_password)?;
+            let map = parse_kv_text(&plaintext);
+            let (dek, recipient, wrapped) = new_data_key(&master_password)?;
+            (map, dek, recipient, wrapped)
+        }
+    };
     *state.inner.lock().unwrap() = Some(Unlocked {
         secrets: map,
         passphrase: master_password,
         vault_path: path,
+        dek,
+        dek_recipient,
+        wrapped_dek,
     });
     Ok(())
 }
@@ -339,7 +456,11 @@ pub async fn vault_change_password(
     if u.passphrase != old_password {
         return Err(VaultError::Decrypt("current password is wrong".into()));
     }
+    // Re-wrap the SAME data key under the new password (the only scrypt pass);
+    // the content key is unchanged, so secrets don't need re-encrypting.
+    let rewrapped = encrypt_payload(u.dek.to_string().expose_secret(), &new_password)?;
     u.passphrase = new_password;
+    u.wrapped_dek = rewrapped;
     persist(u)?;
     Ok(())
 }
@@ -440,4 +561,58 @@ pub async fn vault_reset(
     };
     *state.inner.lock().unwrap() = None;
     Ok(backup)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Full envelope round-trip: wrap a data key with scrypt, encrypt content to
+    // it, reassemble the file, then parse + decrypt back to the original.
+    #[test]
+    fn envelope_round_trip() {
+        let pass = "correct horse battery staple";
+        let (dek, recipient, wrapped) = new_data_key(pass).unwrap();
+        let content = encrypt_to_recipient("{\"host.x.password\":\"hunter2\"}", &recipient).unwrap();
+        let file = build_envelope(&wrapped, &content);
+
+        let (w2, c2) = parse_envelope(&file).expect("should parse as NXV1");
+        assert_eq!(w2, wrapped.as_slice());
+        // Unwrap the data key via the password, then decrypt the content.
+        let dek_str = decrypt_payload(w2, pass).unwrap();
+        let dek2 = age::x25519::Identity::from_str(dek_str.trim()).unwrap();
+        assert_eq!(dek2.to_public().to_string(), recipient.to_string());
+        let got = decrypt_with_identity(c2, &dek).unwrap();
+        assert_eq!(got, "{\"host.x.password\":\"hunter2\"}");
+    }
+
+    // A wrong master password can't unwrap the data key.
+    #[test]
+    fn envelope_wrong_password_fails() {
+        let (_dek, recipient, wrapped) = new_data_key("right").unwrap();
+        let _ = encrypt_to_recipient("{}", &recipient).unwrap();
+        assert!(decrypt_payload(&wrapped, "wrong").is_err());
+    }
+
+    // Legacy bare age-scrypt vaults have no NXV1 magic, so they take the
+    // migration path (parse_envelope → None) and still decrypt by password.
+    #[test]
+    fn legacy_blob_is_not_envelope_but_decrypts() {
+        let pass = "legacy-pass";
+        let blob = encrypt_payload("{\"a\":\"b\"}", pass).unwrap();
+        assert!(parse_envelope(&blob).is_none());
+        let text = decrypt_payload(&blob, pass).unwrap();
+        assert_eq!(parse_kv_text(&text).get("a").map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn parse_envelope_rejects_garbage() {
+        assert!(parse_envelope(b"").is_none());
+        assert!(parse_envelope(b"NXV1").is_none()); // no length/body
+        // magic + length claiming more than is present
+        let mut bad = Vec::from(*ENVELOPE_MAGIC);
+        bad.extend_from_slice(&999u32.to_le_bytes());
+        bad.extend_from_slice(b"short");
+        assert!(parse_envelope(&bad).is_none());
+    }
 }

@@ -74,6 +74,20 @@ const HAS_TAURI =
   typeof window !== "undefined" &&
   // @ts-expect-error — Tauri marker, not in DOM lib types
   typeof window.__TAURI_INTERNALS__ !== "undefined";
+
+// The first/default window is labelled "main"; a second launch opens additional
+// windows ("main-1", …) in the SAME process (see single-instance in lib.rs).
+// Only the primary window restores and persists the saved tab/workspace layout,
+// so secondary windows start empty instead of cloning the primary's sessions
+// and fighting over the shared localStorage layout key.
+const IS_PRIMARY_WINDOW = (() => {
+  if (!HAS_TAURI) return true;
+  try {
+    return getCurrentWindow().label === "main";
+  } catch {
+    return true;
+  }
+})();
 import {
   Minus,
   Square,
@@ -777,6 +791,8 @@ function App() {
     if (!vaultChecked || appLocked) return;
     restoredRef.current = true;
     if (!settings.restoreSession) return;
+    // Secondary windows start empty — only the primary restores the layout.
+    if (!IS_PRIMARY_WINDOW) return;
     const { rawV1, rawV0 } = restoreSnapshotRef.current!;
     if (!rawV1 && !rawV0) return;
     (async () => {
@@ -809,6 +825,7 @@ function App() {
   // active workspace). Survives across restarts.
   useEffect(() => {
     if (!settings.restoreSession) return;
+    if (!IS_PRIMARY_WINDOW) return; // only the primary owns the saved layout
     if (!restoredRef.current) return; // don't overwrite before restore ran
     const data: PersistedRoot = {
       v: 1,

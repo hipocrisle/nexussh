@@ -1,14 +1,21 @@
 // Smart key bar — the strip above the on-screen keyboard giving access to keys
-// Android's soft keyboard doesn't surface. Layout (variant A, after competitor
-// research — Termius/Termux/ConnectBot):
+// Android's soft keyboard doesn't surface. Redesign (after Termius/Termux/
+// ConnectBot research): TWO fixed rows, buttons stretch to full width so they
+// are large tap targets, and — crucially — NO horizontal scroll. Horizontal
+// scroll fights Android's edge-swipe gesture (swiping past the scrollbar end
+// switches apps), which Termius avoids by keeping everything on one screen.
 //
-//   Primary row:  Esc Tab Ctrl Alt | ← ↑ ↓ → | ⌃C | Fn | ⋯
-//   Fn toggles the row into F1–F12 (e.g. F10 to quit htop).
-//   ⋯ expands a compact grid above the bar with the long tail: Home/End,
-//   PgUp/PgDn, Ins/Del, ⌃D ⌃Z ⌃L, symbols, and paste-from-clipboard.
+//   Row 1:  Esc  Ctrl  Alt  Tab  Fn  ⋯  ⌨
+//   Row 2:  ⌃C   ←    ↑    ↓    →   ↵
+//   Fn  → reveals F1–F12 (two rows of 6) in a panel above (e.g. F10 quits htop).
+//   ⋯   → reveals the long tail (Home/End, PgUp/PgDn, Ins/Del, symbols, paste).
+//   ⌨   → show/hide the soft keyboard (focus/blur the terminal).
 //
 // Ctrl/Alt are STICKY modifiers: tap to arm, the next key includes them, then
-// they auto-disarm. Output goes through `onSend` (active terminal send-bytes).
+// they auto-disarm. Every button fires on pointer-DOWN and preventDefault()s so
+// it never steals focus from the terminal textarea — that keeps the on-screen
+// keyboard up while you use the bar (tapping a focus-stealing button would
+// dismiss it). Output goes through `onSend` (active terminal send-bytes).
 
 import { useState } from "react";
 
@@ -30,10 +37,42 @@ const FKEYS: [string, string][] = [
   ["F9", "\x1b[20~"], ["F10", "\x1b[21~"], ["F11", "\x1b[23~"], ["F12", "\x1b[24~"],
 ];
 
+const KEY =
+  "flex-1 min-w-0 h-11 text-[15px] leading-none font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text active:bg-nx-bg-2 active:translate-y-px flex items-center justify-center";
+const KEY_ARMED =
+  "flex-1 min-w-0 h-11 text-[15px] leading-none font-mono rounded-nx border bg-[var(--nx-accent)]/15 border-nx-accent text-nx-accent flex items-center justify-center";
+
+/** A bar key. Fires on pointer-down and preventDefault()s so it never steals
+ *  focus from the terminal — the soft keyboard stays up while you tap. */
+function Key({
+  label,
+  onTap,
+  armed,
+  title,
+}: {
+  label: React.ReactNode;
+  onTap: () => void;
+  armed?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      className={armed ? KEY_ARMED : KEY}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        onTap();
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 export function SmartKeyBar({ onSend, visible }: Props) {
   const [mods, setMods] = useState<Set<Mod>>(new Set());
-  const [fnMode, setFnMode] = useState(false);
-  const [gridOpen, setGridOpen] = useState(false);
+  const [panel, setPanel] = useState<null | "fn" | "more">(null);
 
   if (!visible) return null;
 
@@ -73,89 +112,106 @@ export function SmartKeyBar({ onSend, visible }: Props) {
     }
   }
 
+  // Show/hide the soft keyboard by focusing/blurring the terminal's hidden
+  // textarea. Because every key preventDefault()s, the textarea keeps focus
+  // while the bar is used, so activeElement reliably tells us the current state.
+  function toggleKeyboard() {
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && ae.tagName === "TEXTAREA") {
+      ae.blur();
+      return;
+    }
+    const tas = Array.from(
+      document.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea"),
+    );
+    // The visible terminal's textarea has a non-null offsetParent (not hidden).
+    (tas.find((t) => t.offsetParent !== null) ?? tas[0])?.focus();
+  }
+
   const ctrlArmed = mods.has("ctrl");
   const altArmed = mods.has("alt");
 
-  const base =
-    "shrink-0 min-w-[34px] px-2.5 py-1.5 text-[13px] font-mono rounded-nx bg-nx-panel border border-nx-border text-nx-text active:bg-nx-bg-2 active:translate-y-px";
-  const armed =
-    "shrink-0 min-w-[34px] px-2.5 py-1.5 text-[13px] font-mono rounded-nx bg-[var(--nx-accent)]/15 border border-nx-accent text-nx-accent";
-  const sep = <span className="shrink-0 mx-1 w-px h-5 bg-nx-border" />;
-
   return (
-    <>
-      {/* Expandable grid (the "⋯" tail) — sits above the key row. */}
-      {gridOpen && (
-        <div className="shrink-0 grid grid-cols-4 gap-1.5 px-2 py-2 bg-nx-bg-2 border-t border-nx-border">
-          <button className={base} onClick={() => emitRaw("\x1b[H")}>Home</button>
-          <button className={base} onClick={() => emitRaw("\x1b[F")}>End</button>
-          <button className={base} onClick={() => emitRaw("\x1b[5~")}>PgUp</button>
-          <button className={base} onClick={() => emitRaw("\x1b[6~")}>PgDn</button>
-          <button className={base} onClick={() => emitRaw("\x1b[2~")}>Ins</button>
-          <button className={base} onClick={() => emitRaw("\x1b[3~")}>Del</button>
-          <button className={base} onClick={() => onSend("\x04")}>⌃D</button>
-          <button className={base} onClick={() => onSend("\x1a")}>⌃Z</button>
-          <button className={base} onClick={() => emit("|")}>|</button>
-          <button className={base} onClick={() => emit("~")}>~</button>
-          <button className={base} onClick={() => emit("/")}>/</button>
-          <button className={base} onClick={() => emit("-")}>-</button>
-          <button className={base} onClick={() => onSend("\x0c")}>⌃L</button>
-          <button className={base + " col-span-3"} onClick={paste}>📋 вставить</button>
+    <div
+      className="shrink-0 bg-nx-bg-2 border-t border-nx-border select-none"
+      style={{ touchAction: "manipulation" }}
+    >
+      {/* Fn panel — F1–F12 in two rows of six. */}
+      {panel === "fn" && (
+        <div className="flex flex-col gap-1.5 px-2 pt-2 border-b border-nx-border">
+          <div className="flex gap-1.5">
+            {FKEYS.slice(0, 6).map(([label, seq]) => (
+              <Key key={label} label={label} onTap={() => emitRaw(seq)} />
+            ))}
+          </div>
+          <div className="flex gap-1.5 pb-2">
+            {FKEYS.slice(6).map(([label, seq]) => (
+              <Key key={label} label={label} onTap={() => emitRaw(seq)} />
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Key row */}
-      <div
-        className="shrink-0 h-10 flex items-center gap-1.5 px-2 overflow-x-auto bg-nx-bg-2 border-t border-nx-border select-none"
-        style={{ touchAction: "pan-x" }}
-      >
-        {fnMode ? (
-          <>
-            <button
-              className={armed}
-              onClick={() => setFnMode(false)}
-              title="Back to letters"
-            >
-              abc
-            </button>
-            {sep}
-            {FKEYS.map(([label, seq]) => (
-              <button key={label} className={base} onClick={() => emitRaw(seq)}>
-                {label}
-              </button>
-            ))}
-          </>
-        ) : (
-          <>
-            <button className={base} onClick={() => emitRaw(ESC)}>Esc</button>
-            <button className={base} onClick={() => emitRaw("\t")}>Tab</button>
-            <button className={ctrlArmed ? armed : base} onClick={() => toggleMod("ctrl")}>Ctrl</button>
-            <button className={altArmed ? armed : base} onClick={() => toggleMod("alt")}>Alt</button>
-            {sep}
-            <button className={base} onClick={() => emitRaw(ARROWS.left)}>←</button>
-            <button className={base} onClick={() => emitRaw(ARROWS.up)}>↑</button>
-            <button className={base} onClick={() => emitRaw(ARROWS.down)}>↓</button>
-            <button className={base} onClick={() => emitRaw(ARROWS.right)}>→</button>
-            <button className={base} onClick={() => onSend("\r")} title="Enter">↵</button>
-            {sep}
-            <button className={base} onClick={() => onSend("\x03")} title="Ctrl+C">⌃C</button>
-            <button
-              className={fnMode ? armed : base}
-              onClick={() => setFnMode(true)}
-              title="Function keys"
-            >
-              Fn
-            </button>
-            <button
-              className={gridOpen ? armed : base}
-              onClick={() => setGridOpen((v) => !v)}
-              title="More keys"
-            >
-              ⋯
-            </button>
-          </>
-        )}
+      {/* More panel — the long tail. */}
+      {panel === "more" && (
+        <div className="flex flex-col gap-1.5 px-2 pt-2 border-b border-nx-border">
+          <div className="flex gap-1.5">
+            <Key label="Home" onTap={() => emitRaw("\x1b[H")} />
+            <Key label="End" onTap={() => emitRaw("\x1b[F")} />
+            <Key label="PgUp" onTap={() => emitRaw("\x1b[5~")} />
+            <Key label="PgDn" onTap={() => emitRaw("\x1b[6~")} />
+            <Key label="Ins" onTap={() => emitRaw("\x1b[2~")} />
+            <Key label="Del" onTap={() => emitRaw("\x1b[3~")} />
+          </div>
+          <div className="flex gap-1.5">
+            <Key label="⌃D" onTap={() => onSend("\x04")} title="Ctrl+D" />
+            <Key label="⌃Z" onTap={() => onSend("\x1a")} title="Ctrl+Z" />
+            <Key label="⌃L" onTap={() => onSend("\x0c")} title="Ctrl+L (clear)" />
+            <Key label="|" onTap={() => emit("|")} />
+            <Key label="~" onTap={() => emit("~")} />
+            <Key label="/" onTap={() => emit("/")} />
+          </div>
+          <div className="flex gap-1.5 pb-2">
+            <Key label="-" onTap={() => emit("-")} />
+            <Key label="`" onTap={() => emit("`")} />
+            <Key label="*" onTap={() => emit("*")} />
+            <Key label="&" onTap={() => emit("&")} />
+            <Key label="$" onTap={() => emit("$")} />
+            <Key label="📋" onTap={paste} title="Вставить" />
+          </div>
+        </div>
+      )}
+
+      {/* Row 1 — Esc, modifiers, panels, keyboard toggle. */}
+      <div className="flex gap-1.5 px-2 pt-1.5">
+        <Key label="Esc" onTap={() => emitRaw(ESC)} />
+        <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} />
+        <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} />
+        <Key label="Tab" onTap={() => emitRaw("\t")} />
+        <Key
+          label="Fn"
+          armed={panel === "fn"}
+          title="Функциональные клавиши"
+          onTap={() => setPanel((p) => (p === "fn" ? null : "fn"))}
+        />
+        <Key
+          label="⋯"
+          armed={panel === "more"}
+          title="Ещё клавиши"
+          onTap={() => setPanel((p) => (p === "more" ? null : "more"))}
+        />
+        <Key label="⌨" title="Показать/скрыть клавиатуру" onTap={toggleKeyboard} />
       </div>
-    </>
+
+      {/* Row 2 — Ctrl+C, arrows, Enter. */}
+      <div className="flex gap-1.5 px-2 py-1.5">
+        <Key label="⌃C" onTap={() => onSend("\x03")} title="Ctrl+C" />
+        <Key label="←" onTap={() => emitRaw(ARROWS.left)} />
+        <Key label="↑" onTap={() => emitRaw(ARROWS.up)} />
+        <Key label="↓" onTap={() => emitRaw(ARROWS.down)} />
+        <Key label="→" onTap={() => emitRaw(ARROWS.right)} />
+        <Key label="↵" onTap={() => onSend("\r")} title="Enter" />
+      </div>
+    </div>
   );
 }

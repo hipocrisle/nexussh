@@ -56,3 +56,10 @@ winreg = "0.52"
 # installer.
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
+# Desktop-only: collapse a second launch into a NEW WINDOW of the already-
+# running instance, so every window shares one process (shared Rust state +
+# working cross-window events). Without this, double-launching forks a second
+# process that races the same hosts.json / vault.age files and can clobber edits.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+

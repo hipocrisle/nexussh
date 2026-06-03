@@ -108,26 +108,54 @@ async function getStore(): Promise<Store> {
 // the plaintext store or the encrypted vault based on the opt-in flag. This
 // keeps all the CRUD helpers below source-agnostic.
 
+// Where the host list lives is decided by the VAULT's own state in Rust, which
+// is shared across every window — NOT by the per-window localStorage flag. A
+// localStorage flag diverges between windows (and even survives a restart in a
+// stale state), which made edits in one window invisible to another. The vault
+// file existing on disk is the single, global source of truth: once a vault
+// exists, the host list belongs in it; until it exists, plaintext hosts.json.
+async function vaultSource(): Promise<{ inVault: boolean; unlocked: boolean }> {
+  try {
+    const st = await vaultStatus();
+    return { inVault: st.configured, unlocked: st.unlocked };
+  } catch {
+    return { inVault: false, unlocked: false };
+  }
+}
+
 async function readAll(): Promise<HostRecord[]> {
-  if (hostsEncrypted()) {
+  const { inVault, unlocked } = await vaultSource();
+  if (inVault) {
+    // Vault exists → it owns the list. Locked: show empty until unlock.
+    if (!unlocked) return [];
     try {
       const raw = await vaultGet(VAULT_HOSTLIST_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
     } catch {
-      // Vault locked or key missing — caller (Sidebar) will show empty until
-      // unlock. Never fall back to the (now-empty) plaintext store.
-      return [];
+      /* key not migrated into the vault yet — fall through to plaintext */
     }
+    // Vault unlocked but the list hasn't been moved in yet (vault created for
+    // passwords only). Read the plaintext copy; the next write migrates it in.
+    const s = await getStore();
+    return (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
   }
   const s = await getStore();
   return (await s.get<HostRecord[]>(HOSTS_KEY)) ?? [];
 }
 
 async function writeAll(all: HostRecord[]): Promise<void> {
-  if (hostsEncrypted()) {
+  const { inVault, unlocked } = await vaultSource();
+  if (inVault) {
+    if (!unlocked) {
+      // Refuse to fork a divergent plaintext copy while the vault is locked.
+      throw new Error("vault locked");
+    }
     await vaultSet(VAULT_HOSTLIST_KEY, JSON.stringify(all));
+    // Keep the legacy flag in sync for any code still reading it.
+    localStorage.setItem(HOSTS_ENCRYPTED_LS, "1");
     return;
   }
   const s = await getStore();

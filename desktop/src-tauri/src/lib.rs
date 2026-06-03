@@ -12,9 +12,37 @@ mod vpn;
 
 use std::sync::Arc;
 
+/// A second launch of the app is collapsed into the already-running instance by
+/// the single-instance plugin; instead of forking a second process that would
+/// race the same hosts.json / vault.age files, we open a fresh window in THIS
+/// process. All windows then share Rust state and cross-window events.
+#[cfg(desktop)]
+fn open_extra_window(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(1);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let label = format!("main-{n}");
+    let _ = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
+        .title("NexuSSH")
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(800.0, 500.0)
+        .decorations(false)
+        .build();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    // Single-instance must be registered first. Desktop only — mobile is always
+    // a single process with one window.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            open_extra_window(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())

@@ -35,6 +35,9 @@ age = { version = "0.11.3", features = ["armor"] }
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# Clipboard read/write that actually works on Android — the WebView's
+# navigator.clipboard is unreliable/blocked there (paste returned nothing).
+tauri-plugin-clipboard-manager = "2"
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"

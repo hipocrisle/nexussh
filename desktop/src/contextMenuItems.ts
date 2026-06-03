@@ -2,6 +2,7 @@
 // app-wide right-click handler (non-terminal areas).
 
 import type { MenuItem } from "./ContextMenu";
+import { readClipboard, writeClipboard } from "./clipboard";
 
 type Editable = HTMLInputElement | HTMLTextAreaElement;
 
@@ -73,7 +74,7 @@ export function buildAppContextMenu(
               (target as Editable).selectionEnd ?? 0,
             )
           : selection;
-        if (text) navigator.clipboard.writeText(text).catch(() => {});
+        if (text) writeClipboard(text);
       },
     });
   }
@@ -87,7 +88,7 @@ export function buildAppContextMenu(
           const s = el.selectionStart ?? 0;
           const e = el.selectionEnd ?? 0;
           const sel = el.value.slice(s, e);
-          if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+          if (sel) writeClipboard(sel);
           deleteSelection(el);
         },
       });
@@ -95,12 +96,8 @@ export function buildAppContextMenu(
     items.push({
       label: t("ctx.paste"),
       onClick: async () => {
-        try {
-          const text = await navigator.clipboard.readText();
-          if (text) insertAtCursor(target as Editable, text);
-        } catch {
-          /* clipboard denied */
-        }
+        const text = await readClipboard();
+        if (text) insertAtCursor(target as Editable, text);
       },
     });
     items.push({

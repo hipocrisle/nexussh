@@ -55,7 +55,7 @@ import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
-import { VaultStatus, vaultStatus, vaultLock } from "./vault";
+import { VaultStatus, vaultStatus, vaultLock, VAULT_LOCKED_EVENT } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
   findPlaintextPasswordHosts,
@@ -1121,6 +1121,31 @@ function App() {
         vaultStatus().then(setVault).catch(() => {});
       });
   }
+
+  // When ANOTHER window locks the vault, re-gate THIS window too: the vault is
+  // locked globally in Rust, but each window keeps its own appLocked flag and
+  // cached host list, so without this the second window stays browsable.
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    let un: (() => void) | null = null;
+    let disposed = false;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen(VAULT_LOCKED_EVENT, () => {
+          setAppLocked(true);
+          vaultStatus().then(setVault).catch(() => {});
+          refreshHosts(); // drop the now-locked (empty) host list
+        }).then((u) => {
+          if (disposed) u();
+          else un = u;
+        }),
+      )
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      if (un) un();
+    };
+  }, []);
 
   // Poll vault + sync status on mount; run one-time legacy cleanup +
   // detect plaintext passwords that need migrating into the vault.
@@ -2836,6 +2861,7 @@ function App() {
           onConnect={() => {
             const h = selectedHost;
             setSelectedHost(null);
+            setMobileDrawerOpen(false); // close the drawer so the terminal shows
             openHost(h);
           }}
           onEdit={() => {

@@ -6,6 +6,15 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+const HAS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Broadcast so OTHER windows in this process re-gate their UI when the vault
+ *  is locked here. Locking is global in Rust, but each window keeps its own
+ *  `appLocked` flag + cached host list, so without this the second window
+ *  stays unlocked and its host contents remain visible. */
+export const VAULT_LOCKED_EVENT = "nexussh:vault-locked";
+
 export interface VaultStatus {
   configured: boolean;
   unlocked: boolean;
@@ -28,6 +37,11 @@ export async function vaultUnlock(masterPassword: string): Promise<void> {
 
 export async function vaultLock(): Promise<void> {
   await invoke("vault_lock");
+  if (HAS_TAURI) {
+    import("@tauri-apps/api/event")
+      .then(({ emit }) => emit(VAULT_LOCKED_EVENT))
+      .catch(() => {});
+  }
 }
 
 export async function vaultGet(key: string): Promise<string> {

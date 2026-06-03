@@ -631,8 +631,8 @@ const ru = {
     conv_hint: "Conv-only: оставить только реальный разговор (твои ❯, мои ●, результаты ⎿). Только при включённом Plain.",
   },
   term_menu: {
-    copy: "Копировать (Ctrl+Shift+C)",
-    paste: "Вставить (Ctrl+Shift+V)",
+    copy: "Копировать",
+    paste: "Вставить",
     select_all: "Выделить всё",
     clear: "Очистить терминал",
   },
@@ -1273,8 +1273,8 @@ const en = {
     conv_hint: "Conv-only: keep just real conversation (your ❯, my ●, results ⎿). Only when Plain is on.",
   },
   term_menu: {
-    copy: "Copy (Ctrl+C)",
-    paste: "Paste (Ctrl+V)",
+    copy: "Copy",
+    paste: "Paste",
     select_all: "Select all",
     clear: "Clear terminal",
   },

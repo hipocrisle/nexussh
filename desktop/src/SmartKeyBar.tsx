@@ -17,7 +17,8 @@
 // keyboard up while you use the bar (tapping a focus-stealing button would
 // dismiss it). Output goes through `onSend` (active terminal send-bytes).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { readClipboard } from "./clipboard";
 
 interface Props {
   onSend: (bytes: string) => void;
@@ -70,9 +71,60 @@ function Key({
   );
 }
 
+type PwState = {
+  status: "idle" | "loading" | "locked" | "ready";
+  items: { id: string; name: string }[];
+};
+
 export function SmartKeyBar({ onSend, visible }: Props) {
   const [mods, setMods] = useState<Set<Mod>>(new Set());
-  const [panel, setPanel] = useState<null | "fn" | "more">(null);
+  const [panel, setPanel] = useState<null | "fn" | "more" | "pw">(null);
+  const [pw, setPw] = useState<PwState>({ status: "idle", items: [] });
+
+  // The "✱✱✱" panel lists hosts that have a password saved IN THE VAULT, so the
+  // password is fetched and typed straight into the terminal — never shown,
+  // never stored in plaintext. Load lazily when the panel opens; reset on close
+  // so a re-open re-reads the vault (it may have been locked/unlocked since).
+  useEffect(() => {
+    if (panel !== "pw") {
+      if (pw.status !== "idle") setPw({ status: "idle", items: [] });
+      return;
+    }
+    if (pw.status !== "idle") return;
+    setPw({ status: "loading", items: [] });
+    (async () => {
+      try {
+        const [hosts, vault] = await Promise.all([
+          import("./hosts"),
+          import("./vault"),
+        ]);
+        const st = await vault.vaultStatus();
+        if (!st.unlocked) {
+          setPw({ status: "locked", items: [] });
+          return;
+        }
+        const keys = new Set(await vault.vaultKeys());
+        const all = await hosts.listHosts();
+        const items = all
+          .filter((h) => keys.has(vault.hostPasswordKey(h.id)))
+          .map((h) => ({ id: h.id, name: h.name }));
+        setPw({ status: "ready", items });
+      } catch {
+        setPw({ status: "ready", items: [] });
+      }
+    })();
+  }, [panel]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function insertPassword(id: string) {
+    try {
+      const vault = await import("./vault");
+      const secret = await vault.vaultGet(vault.hostPasswordKey(id));
+      if (secret) onSend(secret);
+    } catch {
+      /* vault locked or key gone — ignore */
+    }
+    setPanel(null);
+  }
 
   if (!visible) return null;
 
@@ -104,12 +156,8 @@ export function SmartKeyBar({ onSend, visible }: Props) {
   }
 
   async function paste() {
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) onSend(text);
-    } catch {
-      /* clipboard blocked — ignore */
-    }
+    const text = await readClipboard();
+    if (text) onSend(text);
   }
 
   // Show/hide the soft keyboard by focusing/blurring the terminal's hidden
@@ -182,6 +230,40 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         </div>
       )}
 
+      {/* Passwords panel — saved-in-vault host passwords, typed on tap. */}
+      {panel === "pw" && (
+        <div className="flex flex-col gap-1.5 px-2 pt-2 pb-2 border-b border-nx-border max-h-[42vh] overflow-y-auto">
+          {pw.status === "loading" && (
+            <div className="px-1 py-2 text-[13px] text-nx-muted">Загрузка…</div>
+          )}
+          {pw.status === "locked" && (
+            <div className="px-1 py-2 text-[13px] text-nx-muted">
+              Вольт заблокирован — разблокируйте, чтобы вставить пароль.
+            </div>
+          )}
+          {pw.status === "ready" && pw.items.length === 0 && (
+            <div className="px-1 py-2 text-[13px] text-nx-muted">
+              Нет паролей, сохранённых в вольте.
+            </div>
+          )}
+          {pw.status === "ready" &&
+            pw.items.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                className="w-full h-11 px-3 flex items-center gap-2 text-left text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text active:bg-nx-bg-2"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  insertPassword(it.id);
+                }}
+              >
+                <span className="text-nx-accent shrink-0">🔑</span>
+                <span className="truncate">{it.name}</span>
+              </button>
+            ))}
+        </div>
+      )}
+
       {/* Row 1 — Esc, modifiers, panels, keyboard toggle. */}
       <div className="flex gap-1.5 px-2 pt-1.5">
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
@@ -203,8 +285,14 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         <Key label="⌨" title="Показать/скрыть клавиатуру" onTap={toggleKeyboard} />
       </div>
 
-      {/* Row 2 — Ctrl+C, arrows, Enter. */}
+      {/* Row 2 — passwords, Ctrl+C, arrows, Enter. */}
       <div className="flex gap-1.5 px-2 py-1.5">
+        <Key
+          label="✱✱✱"
+          armed={panel === "pw"}
+          title="Сохранённые пароли (из вольта)"
+          onTap={() => setPanel((p) => (p === "pw" ? null : "pw"))}
+        />
         <Key label="⌃C" onTap={() => onSend("\x03")} title="Ctrl+C" />
         <Key label="←" onTap={() => emitRaw(ARROWS.left)} />
         <Key label="↑" onTap={() => emitRaw(ARROWS.up)} />

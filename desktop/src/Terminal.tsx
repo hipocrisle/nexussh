@@ -19,6 +19,7 @@ import {
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
+import { readClipboard, writeClipboard } from "./clipboard";
 
 export interface TerminalAction {
   label: string;
@@ -140,7 +141,7 @@ export function TerminalView({
       // 0-ms timer lets xterm finalize its selection model first.
       setTimeout(() => {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) writeClipboard(sel);
       }, 0);
     };
     containerRef.current.addEventListener("mouseup", mouseupHandler);
@@ -152,10 +153,7 @@ export function TerminalView({
     const ctxHandler = (ev: MouseEvent) => {
       ev.preventDefault();
       if (settingsRef.current.puttyMouse && !ev.shiftKey) {
-        navigator.clipboard
-          .readText()
-          .then((text) => text && term.paste(text))
-          .catch(() => {});
+        readClipboard().then((text) => text && term.paste(text));
         return;
       }
       const tr = tRef.current;
@@ -166,18 +164,14 @@ export function TerminalView({
           disabled: !selection,
           onClick: () => {
             if (!selection) return;
-            navigator.clipboard.writeText(selection).catch(console.error);
+            writeClipboard(selection);
           },
         },
         {
           label: tr("term_menu.paste"),
           onClick: async () => {
-            try {
-              const text = await navigator.clipboard.readText();
-              if (text) term.paste(text);
-            } catch (e) {
-              console.error("paste failed:", e);
-            }
+            const text = await readClipboard();
+            if (text) term.paste(text);
           },
         },
         { separator: true, label: "", onClick: () => {} },
@@ -212,14 +206,11 @@ export function TerminalView({
       const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
       if (ctrlShift && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        if (sel) writeClipboard(sel);
         return false;
       }
       if (ctrlShift && ev.key.toLowerCase() === "v") {
-        navigator.clipboard
-          .readText()
-          .then((text) => text && term.paste(text))
-          .catch(() => {});
+        readClipboard().then((text) => text && term.paste(text));
         return false;
       }
       if (ctrlShift && (ev.key === "ArrowUp" || ev.key === "Up")) {

@@ -54,7 +54,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -527,7 +527,7 @@ function App() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
-  const [quickConnect, setQuickConnect] = useState<{ host: string; port: number } | null>(null);
+  const [quickConnect, setQuickConnect] = useState<{ host: string; port: number; save: boolean } | null>(null);
   // Prefilled new-host dialog (e.g. "Save host" from a quick-connect session).
   const [prefillHost, setPrefillHost] = useState<HostRecord | null>(null);
   // When set, the next host picked completes a split inside this workspace
@@ -2706,10 +2706,10 @@ function App() {
             // after invoking the callback.
             setCreateHostOpen(true);
           }}
-          onQuickConnect={(host, port) => {
+          onQuickConnect={(host, port, save) => {
             setPickerOpen(false);
             setPendingSplit(null);
-            setQuickConnect({ host, port });
+            setQuickConnect({ host, port, save });
           }}
           onClose={() => {
             setPickerOpen(false);
@@ -2727,8 +2727,9 @@ function App() {
             const qc = quickConnect;
             setQuickConnect(null);
             if (!qc) return;
-            // Ephemeral, never-saved host. Password is held only in memory for
-            // this session; alwaysAskPassword=false so openHost uses it directly.
+            // Quick connect enables legacy algorithms by default so it "just
+            // works" with old gear (Cisco/ESXi) — no per-host toggle to fuss
+            // with in the fast path.
             openHost({
               id: "quick-" + crypto.randomUUID(),
               name: qc.host,
@@ -2737,7 +2738,21 @@ function App() {
               user,
               auth: { kind: "password", password },
               alwaysAskPassword: false,
+              allowLegacy: true,
             });
+            // "Save host" was ticked → persist it (always-ask, no password).
+            if (qc.save) {
+              saveHost({
+                id: newHostId(),
+                name: qc.host,
+                host: qc.host,
+                port: qc.port,
+                user,
+                auth: { kind: "password", password: "" },
+                alwaysAskPassword: true,
+                allowLegacy: true,
+              }).catch(() => {});
+            }
           }}
         />
       )}

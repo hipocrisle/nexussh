@@ -18,12 +18,6 @@ import { BulkImportDialog } from "../BulkImportDialog";
 import { BundleExportDialog } from "../BundleExportDialog";
 import { BundleImportDialog } from "../BundleImportDialog";
 import { useIsMobile } from "../useIsMobile";
-import { vaultStatus } from "../vault";
-import {
-  hostsEncrypted,
-  enableHostEncryption,
-  disableHostEncryption,
-} from "../hosts";
 
 interface Props {
   s: NexuSettings;
@@ -37,35 +31,7 @@ export function BehaviorSection({ s, set, t }: Props) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bundleExportOpen, setBundleExportOpen] = useState(false);
   const [bundleImportOpen, setBundleImportOpen] = useState(false);
-  const [hostEnc, setHostEnc] = useState(hostsEncrypted());
-  const [encBusy, setEncBusy] = useState(false);
-  const [encErr, setEncErr] = useState<string | null>(null);
   const isMobile = useIsMobile();
-
-  async function toggleHostEncryption(on: boolean) {
-    setEncErr(null);
-    const st = await vaultStatus();
-    if (!st.configured) {
-      setEncErr(tr("settings.behavior.hostenc_need_vault"));
-      return;
-    }
-    if (!st.unlocked) {
-      setEncErr(tr("settings.behavior.hostenc_need_unlock"));
-      return;
-    }
-    setEncBusy(true);
-    try {
-      if (on) await enableHostEncryption();
-      else await disableHostEncryption();
-    } catch (e) {
-      setEncErr(String(e));
-    } finally {
-      // Re-derive the checkbox from the source of truth, so a partial failure
-      // can't leave the UI claiming a state the storage doesn't have.
-      setHostEnc(hostsEncrypted());
-      setEncBusy(false);
-    }
-  }
 
   return (
     <Section
@@ -224,35 +190,6 @@ export function BehaviorSection({ s, set, t }: Props) {
           max={240}
           t={t}
         />
-      </Row>
-
-      <Row
-        label={tr("settings.behavior.hostenc")}
-        hint={tr("settings.behavior.hostenc_hint")}
-        t={t}
-      >
-        <div className="space-y-2">
-          <Toggle
-            checked={hostEnc}
-            onChange={(v) => {
-              if (!encBusy) toggleHostEncryption(v);
-            }}
-            t={t}
-            label={tr("settings.behavior.hostenc_label")}
-            onLabel={tr("settings.nav.on")}
-            offLabel={tr("settings.nav.off")}
-            enabledLabel={tr("settings.toggle.enabled")}
-            disabledLabel={tr("settings.toggle.disabled")}
-          />
-          {encErr && (
-            <div
-              className="font-mono text-[11px]"
-              style={{ color: t.error }}
-            >
-              ✗ {encErr}
-            </div>
-          )}
-        </div>
       </Row>
 
       <Row

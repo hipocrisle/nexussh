@@ -12,6 +12,7 @@ import {
   vaultRestoreBackup,
   VaultBackup,
 } from "./vault";
+import { ensureHostsInVault } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
@@ -100,8 +101,15 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
     }
     setBusy(true);
     try {
-      if (mode === "create") await vaultCreate(pw);
-      else await vaultUnlock(pw);
+      if (mode === "create") {
+        await vaultCreate(pw);
+        // A vault now exists → move all host data into it by default.
+        await ensureHostsInVault();
+      } else {
+        await vaultUnlock(pw);
+        // Route host reads to the vault (and migrate the list in if needed).
+        await ensureHostsInVault();
+      }
       setPw("");
       setPw2("");
       await refresh();

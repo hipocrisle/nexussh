@@ -8,7 +8,7 @@
 import { load, Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { syncStatus, syncPush } from "./sync";
-import { vaultGet, vaultSet, vaultDelete, vaultStatus } from "./vault";
+import { vaultGet, vaultSet, vaultDelete, vaultStatus, vaultKeys } from "./vault";
 
 export interface HostRecord {
   id: string;
@@ -64,6 +64,34 @@ export function hostsEncrypted(): boolean {
  *  host list is gone and reads must fall back to the (empty) plaintext store. */
 export function clearHostsEncryptedFlag(): void {
   localStorage.removeItem(HOSTS_ENCRYPTED_LS);
+}
+
+/** Once a vault exists, ALL host data (addresses, logins, passwords) lives in
+ *  it — there is no separate user toggle. Call after every unlock/create/
+ *  restore: if the unlocked vault already holds the host list, route reads to
+ *  it; if it doesn't yet (a vault that predates this, or a freshly created
+ *  one), migrate the plaintext list in now. Fires a refresh so the sidebar
+ *  reloads from the right source. */
+export async function ensureHostsInVault(): Promise<void> {
+  try {
+    const st = await vaultStatus();
+    if (!st.unlocked) {
+      notifyHostsChanged();
+      return;
+    }
+    const keys = await vaultKeys();
+    if (keys.includes(VAULT_HOSTLIST_KEY)) {
+      localStorage.setItem(HOSTS_ENCRYPTED_LS, "1");
+    } else {
+      // Vault exists but the list isn't in it yet — move it in (clear the flag
+      // first so enableHostEncryption doesn't early-return on a stale value).
+      localStorage.removeItem(HOSTS_ENCRYPTED_LS);
+      await enableHostEncryption();
+    }
+  } catch {
+    /* vault locked or unreadable — leave reads as-is */
+  }
+  notifyHostsChanged();
 }
 
 let storePromise: Promise<Store> | null = null;
@@ -270,6 +298,12 @@ export function addKnownFolder(name: string) {
     list.push(n);
     localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
   }
+}
+
+/** Wipe all remembered (empty) folders — used on vault reset so the tree is a
+ *  clean slate, not a list of folders with no hosts in them. */
+export function clearKnownFolders() {
+  localStorage.removeItem(KNOWN_FOLDERS_LS);
 }
 
 export function removeKnownFolder(name: string) {

@@ -10,7 +10,11 @@ import { useTranslation } from "react-i18next";
 import { Lock, Minus, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { vaultUnlock, vaultReset } from "./vault";
-import { clearHostsEncryptedFlag } from "./hosts";
+import {
+  clearHostsEncryptedFlag,
+  clearKnownFolders,
+  ensureHostsInVault,
+} from "./hosts";
 
 interface Props {
   onUnlocked: () => void;
@@ -32,6 +36,8 @@ export function VaultLockScreen({ onUnlocked }: Props) {
     setBusy(true);
     try {
       await vaultUnlock(pw);
+      // Make sure all host data is read from (and lives in) the vault.
+      await ensureHostsInVault();
       setPw("");
       onUnlocked();
     } catch (e) {
@@ -47,8 +53,9 @@ export function VaultLockScreen({ onUnlocked }: Props) {
     try {
       const backup = await vaultReset();
       // The encrypted host list (if any) is gone with the vault — reads fall
-      // back to the empty plaintext store.
+      // back to the empty plaintext store, and empty folders shouldn't linger.
       clearHostsEncryptedFlag();
+      clearKnownFolders();
       setResetDone(backup ?? "");
     } catch (e) {
       setError(String(e));

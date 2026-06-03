@@ -51,6 +51,8 @@ pub fn run() {
             vault::vault_keys,
             vault::vault_change_password,
             vault::vault_reset,
+            vault::vault_list_backups,
+            vault::vault_restore_backup,
             cleanup::purge_legacy_sessions,
             bundle::bundle_export,
             bundle::bundle_import,

@@ -160,6 +160,10 @@ const ru = {
     reset_done_body: "Можешь создать новый мастер-пароль. Старый зашифрованный вольт сохранён в бэкап.",
     reset_backup: "Бэкап",
     reset_continue: "продолжить",
+    restore_btn: "Восстановить из бэкапа",
+    restore_subtitle: "Выбери бэкап. Откроется тем мастер-паролем, под которым он был создан.",
+    restore_none: "Бэкапов не найдено.",
+    back: "назад",
   },
   sync: {
     title: "sync",
@@ -788,6 +792,10 @@ const en = {
     reset_done_body: "You can set a new master password. The old encrypted vault was kept as a backup.",
     reset_backup: "Backup",
     reset_continue: "continue",
+    restore_btn: "Restore from backup",
+    restore_subtitle: "Pick a backup. It opens with the master password it was created under.",
+    restore_none: "No backups found.",
+    back: "back",
   },
   sync: {
     title: "sync",

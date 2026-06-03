@@ -344,6 +344,76 @@ pub async fn vault_change_password(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct VaultBackup {
+    /// Absolute path to the backup file.
+    pub path: String,
+    /// Unix seconds parsed from the `vault.age.backup-<ts>` name (0 if unknown).
+    pub created: u64,
+}
+
+/// List vault backups (`vault.age.backup-*`) sitting next to the vault file,
+/// newest first, so the user can restore one after a reset.
+#[tauri::command]
+pub async fn vault_list_backups(app: tauri::AppHandle) -> Result<Vec<VaultBackup>, VaultError> {
+    let base = match config_vault_path(&app) {
+        Some(p) => p,
+        None => default_vault_path(&app)?,
+    };
+    let dir = match base.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return Ok(vec![]),
+    };
+    let mut out = vec![];
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if let Some(ts) = name.strip_prefix("vault.age.backup-") {
+                out.push(VaultBackup {
+                    path: entry.path().display().to_string(),
+                    created: ts.parse().unwrap_or(0),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.created.cmp(&a.created)); // newest first
+    Ok(out)
+}
+
+/// Restore a chosen backup: copy it over the vault path and lock. The user then
+/// unlocks it with the master password it was created under. Only files that
+/// look like our own backups (in the vault dir, `vault.age.backup-` prefix) are
+/// accepted, so this can't be turned into an arbitrary file copy.
+#[tauri::command]
+pub async fn vault_restore_backup(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+    path: String,
+) -> Result<(), VaultError> {
+    let src = std::path::PathBuf::from(&path);
+    let target = match config_vault_path(&app) {
+        Some(p) => p,
+        None => default_vault_path(&app)?,
+    };
+    let dir = target.parent().map(|d| d.to_path_buf());
+    let valid = src
+        .file_name()
+        .map(|n| n.to_string_lossy().starts_with("vault.age.backup-"))
+        .unwrap_or(false)
+        && src.parent().map(|p| p.to_path_buf()) == dir
+        && src.exists();
+    if !valid {
+        return Err(VaultError::Other("not a vault backup".into()));
+    }
+    if let Some(d) = &dir {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::copy(&src, &target)?;
+    set_config_vault_path(&app, &target)?;
+    *state.inner.lock().unwrap() = None; // locked — unlock with the old password
+    Ok(())
+}
+
 /// Reset the vault: back up the (still-encrypted) vault file so a remembered
 /// password can later recover it, then delete it and lock. After this the app
 /// reports the vault as "not created" and the user can set a new one. Any

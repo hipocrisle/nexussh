@@ -8,6 +8,9 @@ import {
   vaultCreate,
   vaultUnlock,
   vaultChangePassword,
+  vaultListBackups,
+  vaultRestoreBackup,
+  VaultBackup,
 } from "./vault";
 import { useBackdropClose } from "./useBackdropClose";
 
@@ -31,7 +34,24 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
   const [newPw, setNewPw] = useState("");
   const [newPw2, setNewPw2] = useState("");
   const [changedOk, setChangedOk] = useState(false);
+  // Restore-from-backup sub-flow (shown in create mode when backups exist).
+  const [backups, setBackups] = useState<VaultBackup[]>([]);
+  const [restoreMode, setRestoreMode] = useState(false);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
+
+  async function restore(path: string) {
+    setError(null);
+    setBusy(true);
+    try {
+      await vaultRestoreBackup(path);
+      setRestoreMode(false);
+      await refresh(); // now configured + locked → switches to unlock mode
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function changePassword() {
     setError(null);
@@ -60,6 +80,7 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
 
   useEffect(() => {
     refresh();
+    vaultListBackups().then(setBackups).catch(() => {});
   }, []);
 
   // Three modes: create (not configured), unlock (configured+locked), manage (unlocked).
@@ -130,7 +151,38 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
           </div>
         )}
 
-        {mode !== "manage" && (
+        {restoreMode && (
+          <div className="space-y-2">
+            <p className="text-xs text-[var(--nx-text-muted)] font-mono mb-2">
+              {t("vault.restore_subtitle")}
+            </p>
+            {backups.length === 0 && (
+              <p className="text-sm text-[var(--nx-text-muted)] font-mono">
+                {t("vault.restore_none")}
+              </p>
+            )}
+            {backups.map((b) => (
+              <button
+                key={b.path}
+                type="button"
+                disabled={busy}
+                onClick={() => restore(b.path)}
+                className="w-full text-left px-3 py-2 rounded border border-[var(--nx-border)] bg-[var(--nx-bg-panel)] hover:border-[var(--nx-accent)] font-mono text-xs disabled:opacity-50"
+              >
+                <span className="text-[var(--nx-text-primary)]">
+                  {b.created
+                    ? new Date(b.created * 1000).toLocaleString()
+                    : b.path.split(/[\\/]/).pop()}
+                </span>
+                <span className="block text-[10px] text-[var(--nx-text-muted)] break-all">
+                  {b.path.split(/[\\/]/).pop()}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mode !== "manage" && !restoreMode && (
           <div className="space-y-3">
             <div>
               <label className={labelBase}>
@@ -164,6 +216,18 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
             <p className="text-xs text-[var(--nx-text-muted)] font-mono pt-1">
               {mode === "create" ? t("vault.create_hint") : t("vault.unlock_hint")}
             </p>
+            {mode === "create" && backups.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setRestoreMode(true);
+                }}
+                className="text-xs font-mono text-[var(--nx-accent)] hover:underline"
+              >
+                {t("vault.restore_btn")} ({backups.length}) →
+              </button>
+            )}
           </div>
         )}
 
@@ -235,7 +299,18 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
         )}
 
         <div className="flex gap-2 pt-5">
-          {mode === "manage" && changing ? (
+          {restoreMode ? (
+            <button
+              type="button"
+              onClick={() => {
+                setRestoreMode(false);
+                setError(null);
+              }}
+              className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
+            >
+              {t("vault.back")}
+            </button>
+          ) : mode === "manage" && changing ? (
             <>
               <button
                 type="button"

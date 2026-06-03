@@ -62,6 +62,22 @@ export async function vaultReset(): Promise<string | null> {
   return await invoke<string | null>("vault_reset");
 }
 
+export interface VaultBackup {
+  path: string;
+  created: number; // unix seconds
+}
+
+/** List available vault backups (from prior resets), newest first. */
+export async function vaultListBackups(): Promise<VaultBackup[]> {
+  return await invoke<VaultBackup[]>("vault_list_backups");
+}
+
+/** Restore a backup over the vault file and lock. Unlock afterwards with the
+ *  master password the backup was created under. */
+export async function vaultRestoreBackup(path: string): Promise<void> {
+  await invoke("vault_restore_backup", { path });
+}
+
 /** Conventional vault key for a host's saved password. */
 export function hostPasswordKey(hostId: string): string {
   return `host.${hostId}.password`;

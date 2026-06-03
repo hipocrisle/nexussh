@@ -192,6 +192,10 @@ export function Sidebar({
   );
   const refreshFolders = useCallback(() => setKnownFolders(loadKnownFolders()), []);
 
+  // Re-read the remembered-folders list on the same global event as hosts, so a
+  // vault reset (which clears them) leaves a truly empty tree, not stale folders.
+  useEffect(() => onHostsChanged(refreshFolders), [refreshFolders]);
+
   const { root, ungrouped } = useMemo(() => {
     const root: FolderNode = { path: "", name: "", children: new Map(), hosts: [] };
     const ensure = (path: string): FolderNode => {

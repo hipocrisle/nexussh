@@ -2730,8 +2730,26 @@ function App() {
             // Quick connect enables legacy algorithms by default so it "just
             // works" with old gear (Cisco/ESXi) — no per-host toggle to fuss
             // with in the fast path.
+            //
+            // When "Save host" is ticked, connect under the SAVED host's id (not
+            // an ephemeral "quick-" id) so the sidebar matches it: live badge,
+            // active caret, and a name that updates with renames. Otherwise use
+            // a throwaway id that never persists.
+            const id = qc.save ? newHostId() : "quick-" + crypto.randomUUID();
+            if (qc.save) {
+              saveHost({
+                id,
+                name: qc.host,
+                host: qc.host,
+                port: qc.port,
+                user,
+                auth: { kind: "password", password: "" }, // never store the pw
+                alwaysAskPassword: true,
+                allowLegacy: true,
+              }).catch(() => {});
+            }
             openHost({
-              id: "quick-" + crypto.randomUUID(),
+              id,
               name: qc.host,
               host: qc.host,
               port: qc.port,
@@ -2740,19 +2758,6 @@ function App() {
               alwaysAskPassword: false,
               allowLegacy: true,
             });
-            // "Save host" was ticked → persist it (always-ask, no password).
-            if (qc.save) {
-              saveHost({
-                id: newHostId(),
-                name: qc.host,
-                host: qc.host,
-                port: qc.port,
-                user,
-                auth: { kind: "password", password: "" },
-                alwaysAskPassword: true,
-                allowLegacy: true,
-              }).catch(() => {});
-            }
           }}
         />
       )}

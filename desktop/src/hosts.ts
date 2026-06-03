@@ -150,17 +150,45 @@ async function maybePushSync() {
   }
 }
 
-/** Fire a window event so subscribers (Sidebar, TabPicker, future SFTP
- *  browser) can refresh after any host-list mutation. Cheap pub-sub
- *  without pulling in a global store. */
+/** Fire an event so subscribers (Sidebar, TabPicker, …) re-read after any
+ *  host-list mutation. Two channels:
+ *   - a same-window DOM CustomEvent (instant, no IPC), and
+ *   - a Tauri app event that crosses to OTHER windows, so a second window
+ *     editing hosts is reflected live in this one (the store itself is shared
+ *     in Rust; the other window just needs the nudge to re-read).
+ */
 const HOSTS_CHANGED_EVENT = "nexussh:hosts-changed";
+const HAS_TAURI =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 function notifyHostsChanged() {
   window.dispatchEvent(new CustomEvent(HOSTS_CHANGED_EVENT));
+  if (HAS_TAURI) {
+    import("@tauri-apps/api/event")
+      .then(({ emit }) => emit(HOSTS_CHANGED_EVENT))
+      .catch(() => {});
+  }
 }
 
 export function onHostsChanged(cb: () => void): () => void {
   window.addEventListener(HOSTS_CHANGED_EVENT, cb);
-  return () => window.removeEventListener(HOSTS_CHANGED_EVENT, cb);
+  let unlistenTauri: (() => void) | null = null;
+  let disposed = false;
+  if (HAS_TAURI) {
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen(HOSTS_CHANGED_EVENT, () => cb()).then((un) => {
+          if (disposed) un();
+          else unlistenTauri = un;
+        }),
+      )
+      .catch(() => {});
+  }
+  return () => {
+    disposed = true;
+    window.removeEventListener(HOSTS_CHANGED_EVENT, cb);
+    if (unlistenTauri) unlistenTauri();
+  };
 }
 
 /** Public trigger — used after a vault unlock so subscribers re-read hosts

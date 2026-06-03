@@ -67,10 +67,20 @@ export function TabBar({
   onDragCancel,
 }: Props) {
   const [dragId, setDragId] = useState<string | null>(null);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     id: string;
     before: boolean;
   } | null>(null);
+
+  function endDragStyles() {
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    (document.body.style as CSSStyleDeclaration & {
+      webkitUserSelect?: string;
+    }).webkitUserSelect = "";
+    setDragPos(null);
+  }
   // Set on drag-start, read by the click handler to swallow the click that
   // fires at the end of a drag (so reordering never selects by accident).
   const dragRef = useRef<{ id: string; startX: number; started: boolean } | null>(
@@ -89,7 +99,7 @@ export function TabBar({
       dragRef.current = null;
       setDragId(null);
       setDropTarget(null);
-      document.body.style.cursor = "";
+      endDragStyles();
       if (id) onDragCancel?.(id);
     };
     const onMove = (e: MouseEvent) => {
@@ -106,8 +116,15 @@ export function TabBar({
         d.started = true;
         setDragId(d.id);
         document.body.style.cursor = "grabbing";
+        document.body.style.userSelect = "none";
+        (document.body.style as CSSStyleDeclaration & {
+          webkitUserSelect?: string;
+        }).webkitUserSelect = "none";
+        window.getSelection?.()?.removeAllRanges();
       }
       if (!d.started) return;
+      setDragPos({ x: e.clientX, y: e.clientY });
+      window.getSelection?.()?.removeAllRanges();
       onDragMove?.(d.id, e.clientX, e.clientY);
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       const tabEl = el?.closest("[data-tab-id]") as HTMLElement | null;
@@ -122,7 +139,7 @@ export function TabBar({
     const onUp = (e: MouseEvent) => {
       const d = dragRef.current;
       dragRef.current = null;
-      document.body.style.cursor = "";
+      endDragStyles();
       if (d?.started) {
         // A tab was under the cursor → reorder/cross-pane move; otherwise let
         // the parent decide (e.g. drag-to-edge split).
@@ -177,7 +194,7 @@ export function TabBar({
                     : undefined
               }
               className={
-                "nx-tab h-[calc(100%-4px)] mt-1 ml-1 px-3 flex items-center gap-2 cursor-pointer rounded-t-lg min-w-0 shrink-0 transition-colors " +
+                "nx-tab h-[calc(100%-4px)] mt-1 ml-1 px-3 flex items-center gap-2 cursor-pointer rounded-t-lg min-w-0 shrink-0 transition-colors select-none " +
                 (active
                   ? "bg-nx-panel text-nx-text"
                   : "text-nx-muted hover:bg-nx-elevated hover:text-nx-text") +
@@ -237,6 +254,16 @@ export function TabBar({
       </button>
       {/* Draggable filler — empty tab-strip space moves the window, browser-style */}
       <div data-tauri-drag-region className="flex-1 h-full" />
+
+      {/* Floating drag ghost — shows which tab you're holding. */}
+      {dragId && dragPos && (
+        <div
+          className="fixed z-[200] pointer-events-none px-2.5 py-1 rounded-nx bg-nx-panel border border-nx-accent shadow-elev-modal font-mono text-body text-nx-text max-w-[200px] truncate"
+          style={{ left: dragPos.x + 12, top: dragPos.y + 8 }}
+        >
+          {tabs.find((t) => t.id === dragId)?.title ?? ""}
+        </div>
+      )}
     </div>
   );
 }

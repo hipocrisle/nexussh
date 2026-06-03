@@ -12,7 +12,7 @@ import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { DialogHost } from "./DialogHost";
-import { askConfirm, askPrompt } from "./dialogs";
+import { askConfirm } from "./dialogs";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 // Heavy panels are conditionally rendered — code-split them so the initial
 // bundle drops from ~775KB to ~500KB. React.lazy + Suspense unloads them
@@ -54,7 +54,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -1460,27 +1460,42 @@ function App() {
         },
         disabled: !focusedHost,
       },
-      {
-        label: t("tabmenu.rename_tab"),
-        onClick: () => renameWorkspace(wsId),
-      },
-      // Offer to persist a one-off quick-connect session as a saved host.
-      ...(focusedHost && focusedHost.id.startsWith("quick-")
-        ? [
-            {
-              label: t("tabmenu.save_host"),
-              onClick: () =>
-                setPrefillHost({
-                  id: newHostId(),
-                  name: focusedHost.host,
-                  host: focusedHost.host,
-                  port: focusedHost.port,
-                  user: focusedHost.user,
-                  auth: { kind: "password", password: "" },
-                  alwaysAskPassword: true,
-                }),
-            },
-          ]
+      // Edit the underlying host (handy when the sidebar is collapsed). A
+      // one-off quick-connect session has no saved host yet → offer "Save host"
+      // instead. (No "rename tab" — the title is transient and reverts to the
+      // real host name on reconnect anyway.)
+      ...(focusedHost
+        ? focusedHost.id.startsWith("quick-")
+          ? [
+              {
+                label: t("tabmenu.save_host"),
+                onClick: () =>
+                  setPrefillHost({
+                    id: newHostId(),
+                    name: focusedHost.host,
+                    host: focusedHost.host,
+                    port: focusedHost.port,
+                    user: focusedHost.user,
+                    auth: { kind: "password", password: "" },
+                    alwaysAskPassword: true,
+                  }),
+              },
+            ]
+          : [
+              {
+                label: t("tabmenu.edit_host"),
+                onClick: () => {
+                  // Edit the live saved record (the session holds a snapshot
+                  // that may be stale after edits elsewhere).
+                  const id = focusedHost.id;
+                  listHosts()
+                    .then((all) =>
+                      setEditHost(all.find((h) => h.id === id) ?? focusedHost),
+                    )
+                    .catch(() => setEditHost(focusedHost));
+                },
+              },
+            ]
         : []),
     ];
     // Merge section — flat list of other workspaces under a header. Clicking
@@ -1519,23 +1534,6 @@ function App() {
 
   // Prompt to rename the workspace tab title. Empty string clears it (back to
   // auto-derived from focused pane's host).
-  async function renameWorkspace(wsId: string) {
-    const ws = workspaces.find((w) => w.id === wsId);
-    if (!ws) return;
-    const fp = ws.panes.find((p) => p.id === ws.focusedPaneId);
-    const current = ws.title ?? fp?.session.host.name ?? "";
-    const next = await askPrompt(t("tabmenu.rename_tab_prompt"), {
-      defaultValue: current,
-    });
-    if (next === null) return;
-    const trimmed = next.trim();
-    setWorkspaces((wss) =>
-      wss.map((w) =>
-        w.id === wsId ? { ...w, title: trimmed === "" ? undefined : trimmed } : w,
-      ),
-    );
-  }
-
   // Merge `fromWsId` INTO `intoWsId`: panes are appended and the layout is
   // wrapped in a row-split with the existing layout on the left and the merged
   // workspace's layout on the right. The source workspace is removed.

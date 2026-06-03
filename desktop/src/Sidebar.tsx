@@ -440,6 +440,8 @@ export function Sidebar({
   // ---------------------------------------------------------------------
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
   const [draggingHost, setDraggingHost] = useState<HostRecord | null>(null);
+  // Cursor position for the floating drag ghost (so you can see what you hold).
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   // When hovering another host row: where the dragged host would land.
   const [dropTarget, setDropTarget] = useState<{
     hostId: string;
@@ -472,8 +474,17 @@ export function Sidebar({
         d.started = true;
         setDraggingHost(d.host);
         document.body.style.cursor = "grabbing";
+        // Kill text selection of the rows we drag across (was selecting host
+        // names — "дико бесит").
+        document.body.style.userSelect = "none";
+        (document.body.style as CSSStyleDeclaration & {
+          webkitUserSelect?: string;
+        }).webkitUserSelect = "none";
+        window.getSelection?.()?.removeAllRanges();
       }
       if (!d.started) return;
+      setDragPos({ x: e.clientX, y: e.clientY });
+      window.getSelection?.()?.removeAllRanges();
       const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       // Reorder intent: hovering another host row → insert before/after it.
       const hostEl = el?.closest("[data-host-id]") as HTMLElement | null;
@@ -495,6 +506,11 @@ export function Sidebar({
       const d = dragRef.current;
       dragRef.current = null;
       document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      (document.body.style as CSSStyleDeclaration & {
+        webkitUserSelect?: string;
+      }).webkitUserSelect = "";
+      setDragPos(null);
       if (d && d.started) {
         if (dropTarget) {
           const tgt = hosts.find((h) => h.id === dropTarget.hostId);
@@ -581,7 +597,7 @@ export function Sidebar({
             : {}),
         }}
         className={
-          "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pr-3 py-1.5 cursor-pointer " +
+          "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pr-3 py-1.5 cursor-pointer select-none " +
           (draggingHost?.id === h.id ? "opacity-50" : "")
         }
       >
@@ -838,6 +854,16 @@ export function Sidebar({
             reload();
           }}
         />
+      )}
+
+      {/* Floating drag ghost — shows what you're holding while reordering. */}
+      {draggingHost && dragPos && (
+        <div
+          className="fixed z-[200] pointer-events-none px-2.5 py-1 rounded-nx bg-nx-panel border border-nx-accent shadow-elev-modal font-mono text-meta text-nx-text"
+          style={{ left: dragPos.x + 12, top: dragPos.y + 8 }}
+        >
+          {draggingHost.name}
+        </div>
       )}
     </aside>
   );

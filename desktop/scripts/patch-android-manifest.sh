@@ -50,6 +50,136 @@ if ! grep -q 'androidx.core.content.FileProvider' "$MANIFEST"; then
   sed -i "s|</application>|${PROVIDER_XML}\n    </application>|" "$MANIFEST"
 fi
 
+# 2b. Keep-alive foreground service — permissions + <service> + the Kotlin
+#     class itself. gen/android is regenerated on every CI run, so the .kt has
+#     to be (re)written here, next to MainActivity.kt. Keeps SSH sessions alive
+#     when the app is backgrounded or the screen is locked (a partial wake lock
+#     + a dataSync foreground service stop Android from freezing the process).
+for PERM in FOREGROUND_SERVICE FOREGROUND_SERVICE_DATA_SYNC WAKE_LOCK POST_NOTIFICATIONS; do
+  # The trailing quote in the grep keeps FOREGROUND_SERVICE from matching the
+  # longer FOREGROUND_SERVICE_DATA_SYNC line.
+  if ! grep -q "android.permission.${PERM}\"" "$MANIFEST"; then
+    sed -i "s|</manifest>|    <uses-permission android:name=\"android.permission.${PERM}\"/>\n</manifest>|" "$MANIFEST"
+  fi
+done
+
+if ! grep -q 'KeepAliveService' "$MANIFEST"; then
+  SERVICE_XML="        <service\n            android:name=\".KeepAliveService\"\n            android:exported=\"false\"\n            android:foregroundServiceType=\"dataSync\"/>"
+  sed -i "s|</application>|${SERVICE_XML}\n    </application>|" "$MANIFEST"
+fi
+
+PKG_DIR=$(dirname "$(find "$ANDROID_DIR/app/src/main/java" -name MainActivity.kt | head -1)")
+if [ -n "$PKG_DIR" ] && [ -d "$PKG_DIR" ]; then
+  cat > "$PKG_DIR/KeepAliveService.kt" <<'KT'
+package org.hipogas.nexussh
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+
+// Foreground service that keeps an active SSH session alive while the app is
+// backgrounded or the screen is locked. Started/stopped from Rust (JNI) as the
+// connected-session count crosses 0<->N. See android_keepalive.rs.
+class KeepAliveService : Service() {
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startForegroundCompat()
+        if (wakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nexussh:session").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startForegroundCompat() {
+        val channelId = "nexussh_sessions"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.getNotificationChannel(channelId) == null) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        channelId,
+                        "Active sessions",
+                        NotificationManager.IMPORTANCE_LOW
+                    ).apply { setShowBadge(false) }
+                )
+            }
+        }
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+        var piFlags = PendingIntent.FLAG_UPDATE_CURRENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            piFlags = piFlags or PendingIntent.FLAG_IMMUTABLE
+        }
+        val pi = PendingIntent.getActivity(this, 0, launch, piFlags)
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, channelId)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        val notif = builder
+            .setContentTitle("NexuSSH")
+            .setContentText("SSH session active")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setContentIntent(pi)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notif)
+        }
+    }
+
+    override fun onDestroy() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val NOTIF_ID = 20088
+
+        @JvmStatic
+        fun start(ctx: Context) {
+            val i = Intent(ctx, KeepAliveService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ctx.startForegroundService(i)
+            } else {
+                ctx.startService(i)
+            }
+        }
+
+        @JvmStatic
+        fun stop(ctx: Context) {
+            ctx.stopService(Intent(ctx, KeepAliveService::class.java))
+        }
+    }
+}
+KT
+  echo "patch-android-manifest: wrote KeepAliveService.kt to $PKG_DIR"
+fi
+
 # 3. Force AGP to sign debug builds with the keystore we placed in
 #    `gen/android/debug.keystore`. By default AGP looks at
 #    `~/.android/debug.keystore`, but on the CI runner something between

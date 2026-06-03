@@ -14,6 +14,10 @@ const HAS_TAURI =
  *  `appLocked` flag + cached host list, so without this the second window
  *  stays unlocked and its host contents remain visible. */
 export const VAULT_LOCKED_EVENT = "nexussh:vault-locked";
+/** Counterpart of VAULT_LOCKED_EVENT: unlocking is also global in Rust, so a
+ *  second window sitting on the lock screen should drop it without making the
+ *  user re-enter the same master password. */
+export const VAULT_UNLOCKED_EVENT = "nexussh:vault-unlocked";
 
 export interface VaultStatus {
   configured: boolean;
@@ -33,6 +37,11 @@ export async function vaultCreate(masterPassword: string): Promise<void> {
 
 export async function vaultUnlock(masterPassword: string): Promise<void> {
   await invoke("vault_unlock", { masterPassword });
+  if (HAS_TAURI) {
+    import("@tauri-apps/api/event")
+      .then(({ emit }) => emit(VAULT_UNLOCKED_EVENT))
+      .catch(() => {});
+  }
 }
 
 export async function vaultLock(): Promise<void> {

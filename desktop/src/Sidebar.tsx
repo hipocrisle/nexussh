@@ -616,8 +616,6 @@ export function Sidebar({
             {isActiveTab && <span className="nx-caret ml-1" />}
           </div>
           <div className="font-mono text-meta text-nx-muted truncate">
-            {h.user}
-            <span className="text-nx-soft">@</span>
             {h.host}:{h.port}
           </div>
         </div>

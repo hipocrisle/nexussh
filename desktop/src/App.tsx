@@ -55,7 +55,13 @@ import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
-import { VaultStatus, vaultStatus, vaultLock, VAULT_LOCKED_EVENT } from "./vault";
+import {
+  VaultStatus,
+  vaultStatus,
+  vaultLock,
+  VAULT_LOCKED_EVENT,
+  VAULT_UNLOCKED_EVENT,
+} from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
   findPlaintextPasswordHosts,
@@ -425,6 +431,12 @@ function App() {
   // Hosts that have an open pane → "live" badge in the sidebar; the focused
   // pane's host additionally gets the blinking caret.
   const openHostIds = new Set(allSessions.map((s) => s.host.id));
+
+  // Any live session? Drives the Android keep-alive foreground service so the
+  // connection survives backgrounding / screen lock (no-op on desktop).
+  const hasLiveSession = allSessions.some(
+    (s) => s.status === "connected" || s.status === "connecting",
+  );
 
   // Walk all workspaces to find which workspace + pane owns a given session id.
   function findPane(
@@ -1122,28 +1134,41 @@ function App() {
       });
   }
 
-  // When ANOTHER window locks the vault, re-gate THIS window too: the vault is
-  // locked globally in Rust, but each window keeps its own appLocked flag and
-  // cached host list, so without this the second window stays browsable.
+  // Start/stop the Android keep-alive foreground service as sessions come and
+  // go, so the connection isn't killed when the app is backgrounded or the
+  // screen locks. Harmless no-op on desktop (the command returns Ok there).
   useEffect(() => {
     if (!HAS_TAURI) return;
-    let un: (() => void) | null = null;
+    invoke("android_keepalive", { on: hasLiveSession }).catch(() => {});
+  }, [hasLiveSession]);
+
+  // Vault lock/unlock is global in Rust, but each window keeps its own
+  // appLocked flag + cached host list. Mirror BOTH directions across windows:
+  // locking one re-gates the others (so host contents aren't left browsable);
+  // unlocking one drops the others' lock screens (so you don't re-type the same
+  // master password per window).
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    const uns: Array<() => void> = [];
     let disposed = false;
+    const track = (u: () => void) => (disposed ? u() : uns.push(u));
     import("@tauri-apps/api/event")
-      .then(({ listen }) =>
+      .then(({ listen }) => {
         listen(VAULT_LOCKED_EVENT, () => {
           setAppLocked(true);
           vaultStatus().then(setVault).catch(() => {});
           refreshHosts(); // drop the now-locked (empty) host list
-        }).then((u) => {
-          if (disposed) u();
-          else un = u;
-        }),
-      )
+        }).then(track);
+        listen(VAULT_UNLOCKED_EVENT, () => {
+          setAppLocked(false);
+          vaultStatus().then(setVault).catch(() => {});
+          refreshHosts(); // re-read hosts now that the vault is open
+        }).then(track);
+      })
       .catch(() => {});
     return () => {
       disposed = true;
-      if (un) un();
+      uns.forEach((u) => u());
     };
   }, []);
 

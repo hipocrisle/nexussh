@@ -28,16 +28,28 @@ export function QuickConnectDialog({
   const [user, setUser] = useState(defaultUser);
   const [pw, setPw] = useState("");
   const { backdropProps, contentProps } = useBackdropClose(onCancel);
-  const pwRef = useRef<HTMLDivElement>(null);
+  const loginRef = useRef<HTMLInputElement>(null);
+  // The same Enter that opened this dialog (from the picker's host field) must
+  // NOT auto-submit it — otherwise quick connect silently fires as the default
+  // user with an empty password. Ignore submits until armed a tick later.
+  const armed = useRef(false);
 
   useEffect(() => {
-    // Username is usually the default — focus the password straight away.
-    pwRef.current?.querySelector("input")?.focus();
+    // Focus the login so the default user is visible and editable (select it so
+    // typing replaces it), instead of jumping past it to the password.
+    loginRef.current?.focus();
+    loginRef.current?.select();
+    const armTimer = window.setTimeout(() => {
+      armed.current = true;
+    }, 200);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(armTimer);
+    };
   }, [onCancel]);
 
   return (
@@ -46,6 +58,7 @@ export function QuickConnectDialog({
         {...contentProps}
         onSubmit={(e) => {
           e.preventDefault();
+          if (!armed.current) return; // swallow the Enter that opened the dialog
           onSubmit({ user: user.trim() || defaultUser, password: pw });
         }}
         className="nx-modal-enter relative w-[420px] max-w-[92vw] bg-nx-panel rounded-nx-lg p-6 shadow-elev-modal"
@@ -62,10 +75,10 @@ export function QuickConnectDialog({
 
         <label className="text-meta text-nx-soft font-mono">
           {t("quick.login")}
-          <Input value={user} onChange={setUser} placeholder="root" />
+          <Input ref={loginRef} value={user} onChange={setUser} placeholder="root" />
         </label>
 
-        <div ref={pwRef} className="mt-3">
+        <div className="mt-3">
           <label className="text-meta text-nx-soft font-mono">
             {t("quick.password")}
           </label>

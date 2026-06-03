@@ -83,6 +83,10 @@ pub struct ConnectArgs {
     /// user explicitly flagged.
     #[serde(default)]
     pub allow_legacy: bool,
+    /// When true (host-list encryption is on), store/verify the host-key pin in
+    /// the encrypted vault rather than plaintext known_hosts.json.
+    #[serde(default)]
+    pub encrypt_known_hosts: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -137,10 +141,18 @@ impl SessionManager {
 /// key only if it still matches; a mismatch returns `false` so russh aborts the
 /// handshake (the user sees a connection error rather than transparently
 /// talking to a possibly-MITM'd peer).
+/// Reserved vault key holding the known_hosts pin map (JSON) when host-list
+/// encryption is on, so connected-host addresses don't sit in plaintext on disk.
+pub(crate) const KNOWN_HOSTS_VAULT_KEY: &str = "__known_hosts__";
+
 pub(crate) struct TofuHandler {
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) store_path: std::path::PathBuf,
+    /// When set, pins live in the encrypted vault (key `__known_hosts__`)
+    /// instead of the plaintext file — used when host-list encryption is on.
+    pub(crate) app: AppHandle,
+    pub(crate) use_vault: bool,
 }
 
 fn fingerprint_sha256(key: &PublicKey) -> String {
@@ -201,12 +213,83 @@ pub(crate) fn verify_known_host(
     }
 }
 
+/// TOFU verification against the encrypted vault (`__known_hosts__` JSON map)
+/// instead of the plaintext file. Used when host-list encryption is on, so the
+/// addresses of hosts you've connected to aren't left readable on disk.
+pub(crate) fn verify_known_host_vault(
+    app: &AppHandle,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+) -> std::io::Result<bool> {
+    use tauri::Manager;
+    let vault = app.state::<crate::vault::VaultState>();
+    let id = format!("{host}:{port}");
+    let fp = fingerprint_sha256(key);
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map: HashMap<String, String> = crate::vault::get_opt(&vault, KNOWN_HOSTS_VAULT_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    match map.get(&id) {
+        Some(known) if known == &fp => Ok(true),
+        Some(_) => Ok(false),
+        None => {
+            map.insert(id, fp);
+            let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());
+            crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, json)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            Ok(true)
+        }
+    }
+}
+
 impl Handler for TofuHandler {
     type Error = russh::Error;
     async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
-        verify_known_host(&self.store_path, &self.host, self.port, key)
-            .map_err(russh::Error::from)
+        let r = if self.use_vault {
+            verify_known_host_vault(&self.app, &self.host, self.port, key)
+        } else {
+            verify_known_host(&self.store_path, &self.host, self.port, key)
+        };
+        r.map_err(russh::Error::from)
     }
+}
+
+/// Move the plaintext known_hosts.json into the encrypted vault (called when
+/// host-list encryption is turned on), then delete the file. Idempotent.
+#[tauri::command]
+pub async fn known_hosts_to_vault(
+    app: AppHandle,
+    vault: State<'_, crate::vault::VaultState>,
+) -> Result<(), SshError> {
+    let path = known_hosts_path(&app);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(SshError::Io(e)),
+    };
+    crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, contents)
+        .map_err(|e| SshError::Other(e.to_string()))?;
+    let _ = std::fs::remove_file(&path);
+    Ok(())
+}
+
+/// Move known_hosts back from the vault to the plaintext file (called when
+/// host-list encryption is turned off). Idempotent.
+#[tauri::command]
+pub async fn known_hosts_from_vault(
+    app: AppHandle,
+    vault: State<'_, crate::vault::VaultState>,
+) -> Result<(), SshError> {
+    if let Some(s) = crate::vault::get_opt(&vault, KNOWN_HOSTS_VAULT_KEY) {
+        let path = known_hosts_path(&app);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, s)?;
+        let _ = crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, String::new());
+    }
+    Ok(())
 }
 
 pub(crate) fn known_hosts_path(app: &AppHandle) -> std::path::PathBuf {
@@ -357,6 +440,8 @@ pub async fn ssh_connect(
         host: args.host.clone(),
         port: args.port,
         store_path: known_hosts_path(&app),
+        app: app.clone(),
+        use_vault: args.encrypt_known_hosts,
     };
     let (mut session, xray_child) = if let Some(node) = &args.vpn {
         let socks_port = free_local_port()?;

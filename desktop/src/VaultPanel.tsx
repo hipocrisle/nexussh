@@ -7,6 +7,7 @@ import {
   vaultStatus,
   vaultCreate,
   vaultUnlock,
+  vaultChangePassword,
 } from "./vault";
 import { useBackdropClose } from "./useBackdropClose";
 
@@ -24,7 +25,32 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
   const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Change-password sub-flow (manage mode).
+  const [changing, setChanging] = useState(false);
+  const [oldPw, setOldPw] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [changedOk, setChangedOk] = useState(false);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
+
+  async function changePassword() {
+    setError(null);
+    if (newPw.length < 6) return setError(t("vault.err_short"));
+    if (newPw !== newPw2) return setError(t("vault.err_mismatch"));
+    setBusy(true);
+    try {
+      await vaultChangePassword(oldPw, newPw);
+      setOldPw("");
+      setNewPw("");
+      setNewPw2("");
+      setChanging(false);
+      setChangedOk(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const refresh = async () => {
     const s = await vaultStatus();
@@ -141,10 +167,65 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
           </div>
         )}
 
-        {mode === "manage" && (
-          <p className="text-sm text-[var(--nx-text-primary)] font-mono">
-            {t("vault.manage_body")}
-          </p>
+        {mode === "manage" && !changing && (
+          <div className="space-y-3">
+            <p className="text-sm text-[var(--nx-text-primary)] font-mono">
+              {t("vault.manage_body")}
+            </p>
+            {changedOk && (
+              <p className="text-xs text-[var(--nx-accent)] font-mono">
+                ✓ {t("vault.change_done")}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setChangedOk(false);
+                setChanging(true);
+              }}
+              className="text-xs font-mono text-[var(--nx-accent)] hover:underline"
+            >
+              {t("vault.change_btn")} →
+            </button>
+          </div>
+        )}
+
+        {mode === "manage" && changing && (
+          <div className="space-y-3">
+            <div>
+              <label className={labelBase}>{t("vault.old_master")}</label>
+              <input
+                type="password"
+                value={oldPw}
+                onChange={(e) => setOldPw(e.target.value)}
+                placeholder="••••••••"
+                autoFocus
+                className={inputBase}
+              />
+            </div>
+            <div>
+              <label className={labelBase}>{t("vault.new_master")}</label>
+              <input
+                type="password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                placeholder="••••••••"
+                className={inputBase}
+              />
+            </div>
+            <div>
+              <label className={labelBase}>{t("vault.confirm_master")}</label>
+              <input
+                type="password"
+                value={newPw2}
+                onChange={(e) => setNewPw2(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && changePassword()}
+                placeholder="••••••••"
+                className={inputBase}
+              />
+            </div>
+          </div>
         )}
 
         {error && (
@@ -154,7 +235,28 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
         )}
 
         <div className="flex gap-2 pt-5">
-          {mode === "manage" ? (
+          {mode === "manage" && changing ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setChanging(false);
+                  setError(null);
+                }}
+                className="flex-1 py-2 bg-[var(--nx-bg-panel)] hover:bg-[var(--nx-border)] text-[var(--nx-text-soft)] font-mono rounded border border-[var(--nx-border)]"
+              >
+                {t("dialog.cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={changePassword}
+                disabled={busy || !oldPw || !newPw}
+                className="flex-1 py-2 bg-[var(--nx-accent)] disabled:opacity-50 text-[var(--nx-bg-base)] font-mono font-bold rounded"
+              >
+                {busy ? "..." : t("vault.change_save")}
+              </button>
+            </>
+          ) : mode === "manage" ? (
             <>
               <button
                 type="button"

@@ -127,6 +127,8 @@ pub async fn sftp_connect(
         host: args.host.clone(),
         port: args.port,
         store_path: known_hosts_path(&app),
+        app: app.clone(),
+        use_vault: args.encrypt_known_hosts,
     };
 
     // Route through the built-in VPN (xray SOCKS) when the host is flagged,

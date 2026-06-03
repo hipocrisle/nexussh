@@ -6,6 +6,7 @@
 // AES-256-GCM encryption before writing to the user-chosen sync folder.
 
 import { load, Store } from "@tauri-apps/plugin-store";
+import { invoke } from "@tauri-apps/api/core";
 import { syncStatus, syncPush } from "./sync";
 import { vaultGet, vaultSet, vaultDelete, vaultStatus } from "./vault";
 
@@ -57,6 +58,12 @@ const VAULT_HOSTLIST_KEY = "__hostlist__";
 
 export function hostsEncrypted(): boolean {
   return localStorage.getItem(HOSTS_ENCRYPTED_LS) === "1";
+}
+
+/** Clear the encryption flag — used after a vault reset, when the encrypted
+ *  host list is gone and reads must fall back to the (empty) plaintext store. */
+export function clearHostsEncryptedFlag(): void {
+  localStorage.removeItem(HOSTS_ENCRYPTED_LS);
 }
 
 let storePromise: Promise<Store> | null = null;
@@ -305,6 +312,9 @@ export async function enableHostEncryption(): Promise<void> {
   localStorage.setItem(HOSTS_ENCRYPTED_LS, "1"); //            2. reads → vault
   await s.delete(HOSTS_KEY); //                                3. scrub plaintext
   await s.save();
+  // Move the host-key pins into the vault too, so connected-host addresses
+  // don't linger in plaintext known_hosts.json.
+  await invoke("known_hosts_to_vault").catch(() => {});
   notifyHostsChanged();
 }
 
@@ -319,6 +329,8 @@ export async function reconcileHostEncryption(): Promise<void> {
       await s.delete(HOSTS_KEY);
       await s.save();
     }
+    // Also fold any plaintext known_hosts.json into the vault (idempotent).
+    await invoke("known_hosts_to_vault").catch(() => {});
   } catch {
     /* best-effort */
   }
@@ -343,6 +355,8 @@ export async function disableHostEncryption(): Promise<void> {
     // proceed with an empty plaintext list rather than getting stuck ON forever.
     all = [];
   }
+  // Restore host-key pins to the plaintext file before flipping the flag.
+  await invoke("known_hosts_from_vault").catch(() => {});
   const s = await getStore();
   await s.set(HOSTS_KEY, all); //               1. write plaintext copy
   await s.save();

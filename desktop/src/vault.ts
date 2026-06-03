@@ -47,6 +47,21 @@ export async function vaultKeys(): Promise<string[]> {
   return await invoke<string[]>("vault_keys");
 }
 
+/** Change the master password (vault must be unlocked). */
+export async function vaultChangePassword(
+  oldPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await invoke("vault_change_password", { oldPassword, newPassword });
+}
+
+/** Reset the vault: back up the encrypted file, delete it, and lock. Returns
+ *  the backup path (if any). All secrets — and the encrypted host list, if it
+ *  lived here — are gone. The escape hatch for a forgotten master password. */
+export async function vaultReset(): Promise<string | null> {
+  return await invoke<string | null>("vault_reset");
+}
+
 /** Conventional vault key for a host's saved password. */
 export function hostPasswordKey(hostId: string): string {
   return `host.${hostId}.password`;

@@ -53,7 +53,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted } from "./hosts";
 import { VaultStatus, vaultStatus, vaultLock } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -892,6 +892,7 @@ function App() {
         auth,
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
+        encrypt_known_hosts: hostsEncrypted(),
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
@@ -1219,6 +1220,7 @@ function App() {
         auth,
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
+        encrypt_known_hosts: hostsEncrypted(),
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
@@ -1248,6 +1250,7 @@ function App() {
         auth,
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
+        encrypt_known_hosts: hostsEncrypted(),
       },
       title: `${h.user}@${h.host}`,
     });
@@ -1316,6 +1319,7 @@ function App() {
         auth,
         vpn: resolveHostVpn(host),
         allow_legacy: host.allowLegacy,
+        encrypt_known_hosts: hostsEncrypted(),
       });
       bumpLastUsed(host.id).catch(() => {});
       // promoteSession keeps focus where it is (no focus-steal on auto-reconnect
@@ -1395,6 +1399,7 @@ function App() {
         auth,
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
+        encrypt_known_hosts: hostsEncrypted(),
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");

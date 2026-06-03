@@ -21,6 +21,8 @@ export interface ConnectArgs {
   vpn?: VpnNode | null;
   /** Opt-in to weak legacy algorithms for old gear. OFF by default. */
   allow_legacy?: boolean;
+  /** When host-list encryption is on, pin host keys in the vault not the file. */
+  encrypt_known_hosts?: boolean;
 }
 
 export interface DataEvent {

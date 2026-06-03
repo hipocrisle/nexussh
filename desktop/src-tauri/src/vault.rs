@@ -307,3 +307,67 @@ pub fn resolve(state: &VaultState, key: &str) -> Result<String, VaultError> {
         .cloned()
         .ok_or_else(|| VaultError::KeyMissing(key.to_string()))
 }
+
+/// Like `resolve` but returns None instead of erroring when the key is missing
+/// or the vault is locked. Used by the TOFU handler for known_hosts-in-vault.
+pub fn get_opt(state: &VaultState, key: &str) -> Option<String> {
+    let guard = state.inner.lock().unwrap();
+    guard.as_ref()?.secrets.get(key).cloned()
+}
+
+/// Insert/overwrite a value and persist. Errors if the vault is locked.
+pub fn put(state: &VaultState, key: &str, value: String) -> Result<(), VaultError> {
+    let mut guard = state.inner.lock().unwrap();
+    let u = guard.as_mut().ok_or(VaultError::Locked)?;
+    u.secrets.insert(key.to_string(), value);
+    persist(u)
+}
+
+/// Change the master password of the unlocked vault: verify the old one, swap
+/// in the new, and re-encrypt to disk. The vault must be unlocked.
+#[tauri::command]
+pub async fn vault_change_password(
+    state: State<'_, VaultState>,
+    old_password: String,
+    new_password: String,
+) -> Result<(), VaultError> {
+    if new_password.is_empty() {
+        return Err(VaultError::Other("new password is empty".into()));
+    }
+    let mut guard = state.inner.lock().unwrap();
+    let u = guard.as_mut().ok_or(VaultError::Locked)?;
+    if u.passphrase != old_password {
+        return Err(VaultError::Decrypt("current password is wrong".into()));
+    }
+    u.passphrase = new_password;
+    persist(u)?;
+    Ok(())
+}
+
+/// Reset the vault: back up the (still-encrypted) vault file so a remembered
+/// password can later recover it, then delete it and lock. After this the app
+/// reports the vault as "not created" and the user can set a new one. Any
+/// secrets — and the encrypted host list, if it lived here — are gone (that's
+/// the point: it's the "forgot my master password" escape hatch). Returns the
+/// backup file path, if one was made.
+#[tauri::command]
+pub async fn vault_reset(
+    app: tauri::AppHandle,
+    state: State<'_, VaultState>,
+) -> Result<Option<String>, VaultError> {
+    let backup = match config_vault_path(&app) {
+        Some(path) if path.exists() => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let bak = path.with_extension(format!("age.backup-{ts}"));
+            std::fs::copy(&path, &bak)?;
+            std::fs::remove_file(&path)?;
+            Some(bak.display().to_string())
+        }
+        _ => None,
+    };
+    *state.inner.lock().unwrap() = None;
+    Ok(backup)
+}

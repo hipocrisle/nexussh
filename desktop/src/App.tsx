@@ -2338,7 +2338,7 @@ function App() {
                   className="flex items-center justify-center p-6"
                 >
                   <div
-                    className="max-w-md font-mono text-sm border rounded-nx p-4"
+                    className="max-w-2xl font-mono text-sm border rounded-nx p-4"
                     style={{
                       borderColor: theme.error,
                       background: theme.bgPanel,
@@ -2350,12 +2350,12 @@ function App() {
                         host: p.session.host.host,
                       })}
                     </div>
-                    <div
-                      className="mb-3 break-words"
-                      style={{ color: theme.textSoft }}
+                    <pre
+                      className="mb-3 whitespace-pre-wrap break-words max-h-72 overflow-auto text-meta leading-relaxed"
+                      style={{ color: theme.textSoft, userSelect: "text" }}
                     >
                       {p.session.error}
-                    </div>
+                    </pre>
                     <button
                       type="button"
                       onClick={() => restartSession(p.session.id)}

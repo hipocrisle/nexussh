@@ -482,6 +482,8 @@ pub async fn ssh_connect(
     vault: State<'_, crate::vault::VaultState>,
     args: ConnectArgs,
 ) -> Result<ConnectResult, SshError> {
+    // Fresh protocol trace for this attempt so a failure shows just its lines.
+    crate::sshlog::clear();
     let session_id = Uuid::new_v4().to_string();
     // Keepalive keeps the tunnel warm so idle middleboxes (e.g. a WS proxy in
     // front of a VPN entry) don't close an idle session. keepalive_max = 0 is

@@ -7,6 +7,7 @@ mod import_sources;
 mod sftp;
 mod ssh;
 mod ssh_config;
+mod sshlog;
 mod sync;
 mod updater;
 mod vault;
@@ -34,6 +35,19 @@ fn open_extra_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Capture russh's handshake/auth tracing into an in-memory ring so a failed
+    // connect can show why (KEX mismatch, host-key reject, disconnect reason).
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
+        let _ = tracing_subscriber::registry()
+            .with(sshlog::RingLayer.with_filter(tracing_subscriber::filter::EnvFilter::new(
+                "russh=debug,russh_keys=debug,russh_sftp=info",
+            )))
+            .try_init();
+    }
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
     // Single-instance must be registered first. Desktop only — mobile is always
@@ -103,6 +117,7 @@ pub fn run() {
             biometric::vault_biometric_enroll,
             biometric::vault_biometric_unlock,
             biometric::vault_biometric_disable,
+            sshlog::ssh_debug_log,
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
             import_sources::read_import_sources,

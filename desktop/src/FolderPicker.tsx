@@ -202,6 +202,7 @@ export function FolderPicker({
             className="flex-1 bg-transparent border-none text-nx-text font-mono text-lead outline-none placeholder-nx-muted"
           />
           <button
+            type="button"
             onClick={onClose}
             aria-label={t("folderpicker.close")}
             className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text hover:bg-nx-elevated"
@@ -265,12 +266,14 @@ export function FolderPicker({
                 className="bg-transparent border border-nx-border rounded-nx-sm px-2 py-1 text-nx-text font-mono text-meta outline-none focus:border-nx-accent"
               />
               <button
+                type="button"
                 onClick={commitNew}
                 className="px-2 py-1 text-meta rounded-nx-sm border border-nx-accent text-nx-accent hover:bg-[var(--nx-accent)]/10"
               >
                 ✓
               </button>
               <button
+                type="button"
                 onClick={() => {
                   setCreating(null);
                   setNewName("");
@@ -305,6 +308,7 @@ export function FolderPicker({
                 >
                   {childCount > 0 ? (
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         toggle(n.path);
@@ -329,6 +333,7 @@ export function FolderPicker({
                   </span>
                   {allowCreate && (
                     <button
+                      type="button"
                       title={t("folderpicker.new_under_short")}
                       onClick={(e) => {
                         e.stopPropagation();

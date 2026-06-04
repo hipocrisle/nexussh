@@ -36,10 +36,22 @@ export interface ClosedEvent {
 }
 
 export async function sshConnect(args: ConnectArgs): Promise<string> {
-  const { session_id } = await invoke<{ session_id: string }>("ssh_connect", {
-    args,
-  });
-  return session_id;
+  try {
+    const { session_id } = await invoke<{ session_id: string }>("ssh_connect", {
+      args,
+    });
+    return session_id;
+  } catch (e) {
+    // Attach the captured SSH protocol trace (KEX / host-key / auth / disconnect)
+    // so a cryptic failure like "Channel send error" shows what actually happened.
+    let log = "";
+    try {
+      log = await invoke<string>("ssh_debug_log");
+    } catch {
+      /* logging unavailable — keep the bare error */
+    }
+    throw log ? `${e}\n\n— SSH-протокол —\n${log}` : String(e);
+  }
 }
 
 export async function sshSend(sessionId: string, data: Uint8Array): Promise<void> {

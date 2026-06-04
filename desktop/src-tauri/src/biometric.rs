@@ -200,9 +200,11 @@ fn call_biometric(
                 .l()
                 .map_err(|e| check(env, "poll.l", e))?;
             let jstr: jni::objects::JString = s.into();
-            env.get_string(&jstr)
+            let val: String = env
+                .get_string(&jstr)
                 .map_err(|e| check(env, "poll str", e))?
-                .into()
+                .into();
+            val
         }
         JniOp::DeleteKey => {
             env.call_static_method(

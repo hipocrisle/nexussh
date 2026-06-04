@@ -86,29 +86,24 @@ jobs:
         shell: bash
         run: rm -rf target/${{ matrix.target }}/release/bundle
 
+      # Tauri's default AppImage embeds an OLD runtime that needs system libfuse2
+      # — fresh Ubuntu doesn't ship it, so a plain double-click fails. The static
+      # type2-runtime has libfuse linked in, so the AppImage runs with NO system
+      # dependency. linuxdeploy-plugin-appimage picks it up via LDAI_RUNTIME_FILE.
+      - name: Fetch static AppImage runtime (no system FUSE needed)
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          curl -fSL -o /tmp/appimage-runtime \
+            "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
+          chmod +x /tmp/appimage-runtime
+
       - name: Build Tauri app
         working-directory: desktop
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          LDAI_RUNTIME_FILE: /tmp/appimage-runtime
         run: npm run tauri build -- --target ${{ matrix.target }}
-
-      # Tauri auto-signs the AppImage for the updater but NOT the .deb. We ship
-      # deb only, and the updater verifies the downloaded .deb against this sig,
-      # so sign it explicitly with the same minisign key.
-      - name: Sign Linux .deb for updater
-        if: matrix.os == 'ubuntu-22.04'
-        working-directory: desktop
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          deb=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb | head -1)
-          npm run tauri -- signer sign \
-            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
-            "$deb"
-          ls -la "$deb" "$deb.sig"
 
       - name: Upload Windows installer
         if: matrix.os == 'windows-latest'
@@ -127,8 +122,8 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb.sig
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
           retention-days: 14
 
       - name: Upload release assets (tag push only)
@@ -139,8 +134,8 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb.sig
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
           # Keep DRAFT until latest.json is uploaded — otherwise the release
           # becomes "latest" while /releases/latest/download/latest.json is
           # still 404, and the in-app updater errors "Could not fetch a valid
@@ -170,15 +165,15 @@ jobs:
           gh release download "$TAG" --repo "${{ github.repository }}" -p "*.sig" || true
           # The signature is a base64 blob — base64-encode the sig file content.
           WIN_SIG=$(cat *.exe.sig 2>/dev/null | head -1 || true)
-          LINUX_SIG=$(cat *.deb.sig 2>/dev/null | head -1 || true)
+          LINUX_SIG=$(cat *.AppImage.sig 2>/dev/null | head -1 || true)
           cd "$GITHUB_WORKSPACE"
 
           BASE="https://github.com/${{ github.repository }}/releases/download/$TAG"
-          # Discover the actual exe/deb file names by listing the release.
+          # Discover the actual exe/AppImage file names by listing the release.
           # Filter by version embedded in the filename so stale cached artifacts
           # from a previous build don't sneak in.
           WIN_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq ".assets[] | select(.name | contains(\"$VERSION\") and endswith(\".exe\")) | .name" | head -1)
-          LINUX_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq ".assets[] | select(.name | contains(\"$VERSION\") and endswith(\".deb\")) | .name" | head -1)
+          LINUX_FILE=$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets --jq ".assets[] | select(.name | contains(\"$VERSION\") and endswith(\".AppImage\")) | .name" | head -1)
 
           cat > latest.json <<EOF
           {

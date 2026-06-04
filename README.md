@@ -10,13 +10,15 @@
 
 ## Install
 
-Download from the [latest release](https://github.com/hipocrisle/nexussh/releases/latest) and double-click:
+Download from the [latest release](https://github.com/hipocrisle/nexussh/releases/latest) and run it:
 
-- **Windows** — `NexuSSH_*_x64-setup.exe`
-- **Linux (Debian/Ubuntu)** — `NexuSSH_*_amd64.deb`
+- **Windows** — `NexuSSH_*_x64-setup.exe` — double-click.
+- **Linux (any distro)** — `NexuSSH_*_amd64.AppImage` — right-click → Properties →
+  *Allow executing as program*, then double-click. No install, no dependencies
+  (the runtime is self-contained, so it works without `libfuse2`).
 
 One file per OS, nothing else to set up. The in-app **"Install and restart"**
-keeps it up to date (on Linux it asks for your password, like any system package).
+keeps it current, in place.
 
 ## Why
 

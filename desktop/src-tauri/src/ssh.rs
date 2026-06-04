@@ -447,32 +447,43 @@ async fn try_keyboard_interactive<H: russh::client::Handler>(
     Ok(false)
 }
 
-/// Authenticate with both password and keyboard-interactive. Old gear (Cisco
-/// SX550, some IOS) offers ONLY keyboard-interactive and often allows just ONE
-/// auth attempt before dropping the connection — so trying password first there
-/// got the session killed ("Channel send error"). For legacy hosts we therefore
-/// try keyboard-interactive FIRST; for everything else password first, with the
-/// other method as a fallback only if the first cleanly returns "not authed".
-async fn auth_password_or_keyboard<H: russh::client::Handler>(
+/// Password / keyboard-interactive auth, the RFC 4252 way: probe with "none"
+/// first to learn the methods the server actually accepts, then use them.
+///
+/// This is what fixed old Cisco (SX550): sending a method UNSOLICITED (no "none"
+/// probe) made the switch reply with an empty method set and drop the session
+/// ("Channel send error" — confirmed via the protocol log). With the "none"
+/// probe it advertises its real methods and we pick the right one.
+async fn authenticate<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
     user: &str,
     password: &str,
-    prefer_keyboard: bool,
 ) -> Result<bool, russh::Error> {
-    if prefer_keyboard {
-        if try_keyboard_interactive(session, user, password).await? {
-            return Ok(true);
-        }
-        Ok(session
-            .authenticate_password(user, password)
-            .await?
-            .success())
-    } else {
-        if session.authenticate_password(user, password).await?.success() {
-            return Ok(true);
-        }
-        try_keyboard_interactive(session, user, password).await
+    use russh::client::AuthResult;
+    let methods = match session.authenticate_none(user).await? {
+        AuthResult::Success => return Ok(true), // server allows no-auth
+        AuthResult::Failure {
+            remaining_methods, ..
+        } => remaining_methods,
+    };
+    // MethodKind isn't nameable (private module), so match by its wire name.
+    // Empty set → server didn't list anything useful; try both as a last resort.
+    let offers = |name: &str| {
+        methods.is_empty()
+            || methods.iter().any(|m| {
+                let s: &str = m.into();
+                s == name
+            })
+    };
+    if offers("password")
+        && session.authenticate_password(user, password).await?.success()
+    {
+        return Ok(true);
     }
+    if offers("keyboard-interactive") {
+        return try_keyboard_interactive(session, user, password).await;
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -529,8 +540,7 @@ pub async fn ssh_connect(
 
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => {
-            auth_password_or_keyboard(&mut session, &args.user, password, args.allow_legacy)
-                .await?
+            authenticate(&mut session, &args.user, password).await?
         }
         AuthMethod::Key { path, passphrase } => {
             let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
@@ -549,8 +559,7 @@ pub async fn ssh_connect(
             // Resolve secret from our in-memory vault (must be unlocked).
             let secret = crate::vault::resolve(&vault, key)
                 .map_err(|e| SshError::Other(e.to_string()))?;
-            auth_password_or_keyboard(&mut session, &args.user, &secret, args.allow_legacy)
-                .await?
+            authenticate(&mut session, &args.user, &secret).await?
         }
     };
     if !auth_ok {

@@ -143,12 +143,13 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       });
   }, [authKind]);
 
-  const canSave = host.trim().length > 0 && user.trim().length > 0;
+  // Login is optional — an address-only host asks for the login on connect
+  // (like quick-connect). Only the address is required.
+  const canSave = host.trim().length > 0;
 
   async function doSave() {
     setError(null);
     if (!host.trim()) return setError(t("dialog.err_host_required"));
-    if (!user.trim()) return setError(t("dialog.err_user_required"));
     try {
       const id = initial?.id ?? newHostId();
       // Saved passwords NEVER touch hosts.json in plaintext — they go into
@@ -186,7 +187,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       }
       const rec: HostRecord = {
         id,
-        name: name.trim() || `${user}@${host}`,
+        name: name.trim() || (user.trim() ? `${user.trim()}@${host.trim()}` : host.trim()),
         host: host.trim(),
         port,
         user: user.trim(),
@@ -291,12 +292,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               </div>
             </div>
 
-            <RowLabel className="mt-4">{t("dialog.user")}</RowLabel>
+            <RowLabel className="mt-4">{t("dialog.user_optional")}</RowLabel>
             <Input
               value={user}
               onChange={setUser}
-              placeholder={t("dialog.user_ph")}
-              invalid={!user.trim() && !!error}
+              placeholder={t("dialog.user_ph_optional")}
             />
 
             <RowLabel className="mt-4">{t("dialog.group")}</RowLabel>

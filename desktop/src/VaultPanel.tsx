@@ -11,6 +11,10 @@ import {
   vaultListBackups,
   vaultRestoreBackup,
   VaultBackup,
+  biometricAvailable,
+  biometricEnrolled,
+  biometricEnroll,
+  biometricDisable,
 } from "./vault";
 import { ensureHostsInVault } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
@@ -38,7 +42,37 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
   // Restore-from-backup sub-flow (shown in create mode when backups exist).
   const [backups, setBackups] = useState<VaultBackup[]>([]);
   const [restoreMode, setRestoreMode] = useState(false);
+  // Biometric unlock (Android): null = checking / unsupported, else on/off.
+  const [bioOn, setBioOn] = useState<boolean | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
+
+  useEffect(() => {
+    (async () => {
+      if (!(await biometricAvailable())) {
+        setBioOn(null);
+        return;
+      }
+      setBioOn(await biometricEnrolled());
+    })();
+  }, [status?.unlocked]);
+
+  async function toggleBiometric() {
+    setError(null);
+    setBusy(true);
+    try {
+      if (bioOn) {
+        await biometricDisable();
+        setBioOn(false);
+      } else {
+        await biometricEnroll(); // prompts for a fingerprint
+        setBioOn(true);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function restore(path: string) {
     setError(null);
@@ -260,6 +294,26 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
             >
               {t("vault.change_btn")} →
             </button>
+            {bioOn !== null && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={toggleBiometric}
+                  disabled={busy}
+                  className="text-xs font-mono text-[var(--nx-accent)] hover:underline disabled:opacity-50"
+                >
+                  {bioOn
+                    ? t("vault.biometric_disable")
+                    : t("vault.biometric_enable")}{" "}
+                  →
+                </button>
+                {bioOn && (
+                  <p className="text-[11px] text-[var(--nx-text-muted)] font-mono mt-1">
+                    ✓ {t("vault.biometric_on")}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
 

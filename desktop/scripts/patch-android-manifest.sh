@@ -180,6 +180,183 @@ KT
   echo "patch-android-manifest: wrote KeepAliveService.kt to $PKG_DIR"
 fi
 
+# 2c. Biometric vault unlock — USE_BIOMETRIC permission, the androidx.biometric
+#     Gradle dependency, and the Kotlin helper (Keystore + BiometricPrompt). The
+#     vault's data key is wrapped by a hardware-backed, fingerprint-gated key.
+if ! grep -q "android.permission.USE_BIOMETRIC\"" "$MANIFEST"; then
+  sed -i 's|</manifest>|    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n</manifest>|' "$MANIFEST"
+fi
+
+GRADLE_DEP="$ANDROID_DIR/app/build.gradle.kts"
+if [ -f "$GRADLE_DEP" ] && ! grep -q "androidx.biometric:biometric" "$GRADLE_DEP"; then
+  python3 - "$GRADLE_DEP" <<'PY'
+import sys, re
+path = sys.argv[1]
+src = open(path).read()
+m = re.search(r"^dependencies\s*\{", src, re.M)
+if m:
+    i = m.end()
+    src = src[:i] + '\n    implementation("androidx.biometric:biometric:1.1.0")' + src[i:]
+    open(path, "w").write(src)
+else:
+    sys.stderr.write("dependencies { } block not found in build.gradle.kts\n")
+PY
+fi
+
+if [ -n "$PKG_DIR" ] && [ -d "$PKG_DIR" ]; then
+  cat > "$PKG_DIR/BiometricVault.kt" <<'KT'
+package org.hipogas.nexussh
+
+import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import android.util.Base64
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+// Wraps the vault data key with a hardware-backed, biometric-gated Keystore key.
+// The Rust side starts an op then drains poll() until it settles. status is one
+// of: "idle", "pending", "ok:<payload>", "err:<message>".
+object BiometricVault {
+    private const val ALIAS = "nexussh_vault_biokey"
+    private const val KEYSTORE = "AndroidKeyStore"
+    private const val TRANSFORM = "AES/GCM/NoPadding"
+
+    @Volatile
+    private var status: String = "idle"
+
+    @JvmStatic
+    fun poll(): String = status
+
+    @JvmStatic
+    fun available(ctx: Context): Boolean {
+        return BiometricManager.from(ctx)
+            .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) ==
+            BiometricManager.BIOMETRIC_SUCCESS
+    }
+
+    @JvmStatic
+    fun deleteKey(ctx: Context) {
+        try {
+            val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+            ks.deleteEntry(ALIAS)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun getOrCreateKey(): SecretKey {
+        val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        (ks.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE)
+        kg.init(
+            KeyGenParameterSpec.Builder(
+                ALIAS,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setUserAuthenticationRequired(true)
+                .setInvalidatedByBiometricEnrollment(true)
+                .build()
+        )
+        return kg.generateKey()
+    }
+
+    private fun promptInfo(): BiometricPrompt.PromptInfo =
+        BiometricPrompt.PromptInfo.Builder()
+            .setTitle("NexuSSH")
+            .setSubtitle("Unlock the vault")
+            .setNegativeButtonText("Cancel")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            .build()
+
+    @JvmStatic
+    fun startEnroll(ctx: Context, dek: String) {
+        status = "pending"
+        try {
+            val activity = ctx as FragmentActivity
+            val cipher = Cipher.getInstance(TRANSFORM)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            val prompt = BiometricPrompt(
+                activity,
+                ContextCompat.getMainExecutor(ctx),
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        try {
+                            val c = result.cryptoObject!!.cipher!!
+                            val ct = c.doFinal(dek.toByteArray(Charsets.UTF_8))
+                            val iv = c.iv
+                            val out = ByteArray(1 + iv.size + ct.size)
+                            out[0] = iv.size.toByte()
+                            System.arraycopy(iv, 0, out, 1, iv.size)
+                            System.arraycopy(ct, 0, out, 1 + iv.size, ct.size)
+                            status = "ok:" + Base64.encodeToString(out, Base64.NO_WRAP)
+                        } catch (e: Exception) {
+                            status = "err:" + (e.message ?: "encrypt failed")
+                        }
+                    }
+
+                    override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                        status = "err:" + msg
+                    }
+                }
+            )
+            prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
+        } catch (e: Exception) {
+            status = "err:" + (e.message ?: "enroll failed")
+        }
+    }
+
+    @JvmStatic
+    fun startUnlock(ctx: Context, wrapped: String) {
+        status = "pending"
+        try {
+            val activity = ctx as FragmentActivity
+            val raw = Base64.decode(wrapped, Base64.NO_WRAP)
+            val ivLen = raw[0].toInt()
+            val iv = raw.copyOfRange(1, 1 + ivLen)
+            val ct = raw.copyOfRange(1 + ivLen, raw.size)
+            val cipher = Cipher.getInstance(TRANSFORM)
+            val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+            val key = ks.getKey(ALIAS, null) as? SecretKey
+                ?: throw IllegalStateException("no biometric key")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+            val prompt = BiometricPrompt(
+                activity,
+                ContextCompat.getMainExecutor(ctx),
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        try {
+                            val c = result.cryptoObject!!.cipher!!
+                            val dek = String(c.doFinal(ct), Charsets.UTF_8)
+                            status = "ok:" + dek
+                        } catch (e: Exception) {
+                            status = "err:" + (e.message ?: "decrypt failed")
+                        }
+                    }
+
+                    override fun onAuthenticationError(code: Int, msg: CharSequence) {
+                        status = "err:" + msg
+                    }
+                }
+            )
+            prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
+        } catch (e: Exception) {
+            status = "err:" + (e.message ?: "unlock failed")
+        }
+    }
+}
+KT
+  echo "patch-android-manifest: wrote BiometricVault.kt to $PKG_DIR"
+fi
+
 # 3. Force AGP to sign debug builds with the keystore we placed in
 #    `gen/android/debug.keystore`. By default AGP looks at
 #    `~/.android/debug.keystore`, but on the CI runner something between

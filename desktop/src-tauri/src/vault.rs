@@ -440,6 +440,44 @@ pub fn put(state: &VaultState, key: &str, value: String) -> Result<(), VaultErro
     persist(u)
 }
 
+/// Export the unlocked vault's data key as its age secret string. Used ONLY by
+/// the biometric enroll flow to hand the key to the Android Keystore for
+/// hardware-backed, fingerprint-gated wrapping. Errors if locked.
+pub fn dek_secret(state: &VaultState) -> Result<String, VaultError> {
+    let guard = state.inner.lock().unwrap();
+    let u = guard.as_ref().ok_or(VaultError::Locked)?;
+    Ok(u.dek.to_string().expose_secret().to_owned())
+}
+
+/// Unlock the vault from a data key directly (no master password, no scrypt) —
+/// the biometric path: the keystore released the DEK after a fingerprint, and
+/// we decrypt the content with it. `passphrase` is left empty, so a password
+/// change still requires a password-based unlock.
+pub fn unlock_with_dek(
+    app: &tauri::AppHandle,
+    state: &VaultState,
+    dek_str: &str,
+) -> Result<(), VaultError> {
+    let path = config_vault_path(app).ok_or(VaultError::NotConfigured)?;
+    let bytes = std::fs::read(&path)?;
+    let (wrapped, content) = parse_envelope(&bytes)
+        .ok_or_else(|| VaultError::Decrypt("vault is not in envelope format".into()))?;
+    let dek = age::x25519::Identity::from_str(dek_str.trim())
+        .map_err(|e| VaultError::Decrypt(e.to_string()))?;
+    let dek_recipient = dek.to_public();
+    let plaintext = decrypt_with_identity(content, &dek)?;
+    let map = parse_kv_text(&plaintext);
+    *state.inner.lock().unwrap() = Some(Unlocked {
+        secrets: map,
+        passphrase: String::new(),
+        vault_path: path,
+        dek,
+        dek_recipient,
+        wrapped_dek: wrapped.to_vec(),
+    });
+    Ok(())
+}
+
 /// Change the master password of the unlocked vault: verify the old one, swap
 /// in the new, and re-encrypt to disk. The vault must be unlocked.
 #[tauri::command]

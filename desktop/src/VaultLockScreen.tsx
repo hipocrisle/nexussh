@@ -5,11 +5,17 @@
 // Carries its own window chrome (drag region + minimize/close) because the
 // app's custom titlebar isn't reachable while this overlay is up.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Lock, Minus, X } from "lucide-react";
+import { Lock, Minus, X, Fingerprint } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { vaultUnlock, vaultReset } from "./vault";
+import {
+  vaultUnlock,
+  vaultReset,
+  biometricAvailable,
+  biometricEnrolled,
+  biometricUnlock,
+} from "./vault";
 import {
   clearHostsEncryptedFlag,
   clearKnownFolders,
@@ -29,6 +35,35 @@ export function VaultLockScreen({ onUnlocked }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
   const [resetDone, setResetDone] = useState<string | null>(null);
+  const [bioOffer, setBioOffer] = useState(false);
+
+  // Offer fingerprint unlock only if the device supports it AND the user
+  // enrolled it for this vault.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const ok = (await biometricEnrolled()) && (await biometricAvailable());
+      if (alive) setBioOffer(ok);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function bioUnlock() {
+    if (busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await biometricUnlock();
+      await ensureHostsInVault();
+      onUnlocked();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit() {
     if (!pw || busy) return;
@@ -180,6 +215,17 @@ export function VaultLockScreen({ onUnlocked }: Props) {
               >
                 {busy ? "..." : t("vault.unlock")}
               </button>
+              {bioOffer && (
+                <button
+                  type="button"
+                  onClick={bioUnlock}
+                  disabled={busy}
+                  className="w-full mt-3 py-2 border border-[var(--nx-accent)] text-[var(--nx-accent)] disabled:opacity-50 font-mono rounded flex items-center justify-center gap-2"
+                >
+                  <Fingerprint size={16} />
+                  {t("vault.biometric_unlock")}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {

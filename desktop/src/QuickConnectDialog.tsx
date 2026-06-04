@@ -33,7 +33,14 @@ export function QuickConnectDialog({
   // NOT auto-submit it — otherwise quick connect silently fires as the default
   // user with an empty password. Ignore submits until armed a tick later.
   const armed = useRef(false);
+  // onCancel is an inline arrow in the parent (new identity every render); keep
+  // it in a ref so the mount-only effect below never needs it as a dependency.
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
 
+  // MOUNT ONLY. Previously this depended on [onCancel], so it re-ran on every
+  // parent render and re-focused+`select()`ed the login field — which kept
+  // re-selecting the text mid-typing, making login/password impossible to enter.
   useEffect(() => {
     // Focus the login so the default user is visible and editable (select it so
     // typing replaces it), instead of jumping past it to the password.
@@ -43,14 +50,14 @@ export function QuickConnectDialog({
       armed.current = true;
     }, 200);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") onCancelRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.clearTimeout(armTimer);
     };
-  }, [onCancel]);
+  }, []);
 
   return (
     <div className="nx-scrim grid place-items-center" {...backdropProps}>

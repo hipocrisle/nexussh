@@ -101,6 +101,45 @@ export async function vaultRestoreBackup(path: string): Promise<void> {
   await invoke("vault_restore_backup", { path });
 }
 
+// --- Biometric unlock (Android) -------------------------------------------
+// The vault data key is wrapped by a hardware-backed, fingerprint-gated Android
+// Keystore key. Enroll while unlocked; then unlock with a fingerprint instead of
+// the master password (which is never stored and stays the fallback).
+
+/** Is biometric hardware available + enrolled on this device? (Android only.) */
+export async function biometricAvailable(): Promise<boolean> {
+  try {
+    return await invoke<boolean>("vault_biometric_available");
+  } catch {
+    return false;
+  }
+}
+
+/** Has the user turned on biometric unlock for this vault? */
+export async function biometricEnrolled(): Promise<boolean> {
+  try {
+    return await invoke<boolean>("vault_biometric_has_enrollment");
+  } catch {
+    return false;
+  }
+}
+
+/** Turn on biometric unlock — prompts for a fingerprint and wraps the data key.
+ *  Vault must be unlocked. */
+export async function biometricEnroll(): Promise<void> {
+  await invoke("vault_biometric_enroll");
+}
+
+/** Unlock the vault with a fingerprint (no master password). */
+export async function biometricUnlock(): Promise<void> {
+  await invoke("vault_biometric_unlock");
+}
+
+/** Turn off biometric unlock and wipe the stored wrapped key. */
+export async function biometricDisable(): Promise<void> {
+  await invoke("vault_biometric_disable");
+}
+
 /** Conventional vault key for a host's saved password. */
 export function hostPasswordKey(hostId: string): string {
   return `host.${hostId}.password`;

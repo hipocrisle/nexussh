@@ -1,5 +1,6 @@
 mod android_keepalive;
 mod android_updater;
+mod biometric;
 mod bundle;
 mod cleanup;
 mod import_sources;
@@ -97,6 +98,11 @@ pub fn run() {
             android_updater::android_install_apk,
             android_updater::android_check_update,
             android_keepalive::android_keepalive,
+            biometric::vault_biometric_available,
+            biometric::vault_biometric_has_enrollment,
+            biometric::vault_biometric_enroll,
+            biometric::vault_biometric_unlock,
+            biometric::vault_biometric_disable,
             ssh_config::read_ssh_config,
             ssh_config::expand_home,
             import_sources::read_import_sources,

@@ -110,7 +110,6 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: |
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
           retention-days: 14
@@ -125,7 +124,6 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           # Keep DRAFT until latest.json is uploaded — otherwise the release
           # becomes "latest" while /releases/latest/download/latest.json is
           # still 404, and the in-app updater errors "Could not fetch a valid

@@ -8,6 +8,24 @@
 
 🚧 v0.0.1 — active early development. Desktop client first, mobile later.
 
+## Install
+
+**Windows** — download `NexuSSH_*_x64-setup.exe` from the
+[latest release](https://github.com/hipocrisle/nexussh/releases/latest) and run it.
+
+**Linux** — one command (installs the AppImage + a menu launcher; auto-updates in place):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hipocrisle/nexussh/main/install.sh | bash
+```
+
+Or grab `NexuSSH_*_amd64.AppImage` from the
+[latest release](https://github.com/hipocrisle/nexussh/releases/latest), `chmod +x`, double-click.
+
+> One format per OS on purpose — the in-app "Install and restart" updater works
+> with these. (The AppImage must stay in a user-writable path, which the script
+> handles; if FUSE is missing: `sudo apt install libfuse2`.)
+
 ## Why
 
 Termius is paywalled. Tabby is bloated Electron+Angular. We want:

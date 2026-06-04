@@ -41,8 +41,15 @@ pub fn run() {
     // WebKit a .deb uses tends to be fine). Force the fallback renderer before
     // any GTK/WebView init so the window actually paints everywhere.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        // Second common cause of a blank WebKitGTK window on VMs / software GL:
+        // accelerated compositing with no usable GL context. Disable it too.
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
     }
 
     // Capture russh's handshake/auth tracing into an in-memory ring so a failed

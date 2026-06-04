@@ -10,21 +10,13 @@
 
 ## Install
 
-**Windows** — download `NexuSSH_*_x64-setup.exe` from the
-[latest release](https://github.com/hipocrisle/nexussh/releases/latest) and run it.
+Download from the [latest release](https://github.com/hipocrisle/nexussh/releases/latest) and double-click:
 
-**Linux** — one command (installs the AppImage + a menu launcher; auto-updates in place):
+- **Windows** — `NexuSSH_*_x64-setup.exe`
+- **Linux (Debian/Ubuntu)** — `NexuSSH_*_amd64.deb`
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hipocrisle/nexussh/main/install.sh | bash
-```
-
-Or grab `NexuSSH_*_amd64.AppImage` from the
-[latest release](https://github.com/hipocrisle/nexussh/releases/latest), `chmod +x`, double-click.
-
-> One format per OS on purpose — the in-app "Install and restart" updater works
-> with these. (The AppImage must stay in a user-writable path, which the script
-> handles; if FUSE is missing: `sudo apt install libfuse2`.)
+One file per OS, nothing else to set up. The in-app **"Install and restart"**
+keeps it up to date (on Linux it asks for your password, like any system package).
 
 ## Why
 

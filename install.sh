@@ -65,7 +65,7 @@ cat > "$DESKTOP_DIR/nexussh.desktop" <<EOF
 Type=Application
 Name=NexuSSH
 Comment=SSH/SFTP client
-Exec=env APPIMAGE_EXTRACT_AND_RUN=1 "$APP_PATH"
+Exec=env APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 "$APP_PATH"
 Icon=nexussh
 Terminal=false
 Categories=Network;Utility;

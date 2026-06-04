@@ -35,6 +35,16 @@ fn open_extra_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebKitGTK's DMABUF renderer white-screens on machines without a working
+    // GPU compositor — VMs, headless/remote desktops, some Nvidia setups. The
+    // bundled WebKit in our AppImage is especially prone to it (the system
+    // WebKit a .deb uses tends to be fine). Force the fallback renderer before
+    // any GTK/WebView init so the window actually paints everywhere.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     // Capture russh's handshake/auth tracing into an in-memory ring so a failed
     // connect can show why (KEX mismatch, host-key reject, disconnect reason).
     {

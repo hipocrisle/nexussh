@@ -400,15 +400,14 @@ pub(crate) fn permissive_preferred() -> Preferred {
     }
 }
 
-/// Pick the algorithm set for a connection: russh's secure default unless the
-/// host opted into legacy algorithms. Never weaken a connection the user didn't
-/// explicitly flag.
-pub(crate) fn preferred_for(allow_legacy: bool) -> Preferred {
-    if allow_legacy {
-        permissive_preferred()
-    } else {
-        Preferred::default()
-    }
+/// Algorithm set for every connection. We ALWAYS offer the permissive set —
+/// modern algorithms first, legacy (SHA-1 KEX/MAC, CBC/3DES, ssh-rsa) only as a
+/// fallback. SSH negotiates the STRONGEST mutually-supported algorithm and the
+/// negotiation is covered by the signed exchange hash, so a modern host is never
+/// downgraded; old gear (Cisco IOS/SX, ESXi) just connects. This replaces the
+/// per-host "legacy algorithms" toggle — the client figures it out itself.
+pub(crate) fn preferred_for(_allow_legacy: bool) -> Preferred {
+    permissive_preferred()
 }
 
 /// Keyboard-interactive auth, answering username-ish prompts with the user and

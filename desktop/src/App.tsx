@@ -2162,6 +2162,29 @@ function App() {
   function renderActiveLayoutArea(): React.ReactNode {
     const ws = activeWorkspace;
     if (!ws) {
+      // Mobile home: with no open session, the main area IS the host list
+      // (instead of an empty placeholder behind the ☰ drawer).
+      if (isMobile) {
+        return (
+          <div className="flex-1 min-w-0 flex overflow-hidden">
+            <Sidebar
+              fill
+              onConnect={openHost}
+              onSftp={openSftp}
+              onSelect={setSelectedHost}
+              activeHostId={activeSession?.id ?? null}
+              openHostIds={openHostIds}
+              selectedId={selectedHost?.id ?? null}
+              collapsed={false}
+              onToggleCollapsed={() => {}}
+              onContextMenu={(x, y, items, title) =>
+                setMenu({ x, y, items, title })
+              }
+              clickMode={settings.clickMode}
+            />
+          </div>
+        );
+      }
       return (
         <div
           ref={mainAreaRef}

@@ -111,6 +111,9 @@ interface Props {
   /** From settings: 'connect' = single click connects, 'select' = single
    *  click selects and shows info, double-click connects. */
   clickMode?: "connect" | "select";
+  /** Fill the parent's width instead of the fixed `width` — used when the host
+   *  list is the mobile home screen rather than a fixed-width rail. */
+  fill?: boolean;
 }
 
 const COLLAPSED_GROUPS_LS = "nexussh.collapsedGroups";
@@ -141,6 +144,7 @@ export function Sidebar({
   width = 256,
   onContextMenu,
   clickMode = "select",
+  fill = false,
 }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
@@ -717,8 +721,11 @@ export function Sidebar({
 
   return (
     <aside
-      style={{ width }}
-      className="shrink-0 h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col"
+      style={fill ? undefined : { width }}
+      className={
+        "h-full bg-[var(--nx-bg-secondary)] border-r border-[var(--nx-border)] flex flex-col " +
+        (fill ? "w-full" : "shrink-0")
+      }
     >
       <div className="p-3 border-b border-[var(--nx-border)] flex gap-2 items-center">
         <Search size={14} className="text-[var(--nx-text-muted)]" />

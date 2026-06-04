@@ -42,13 +42,28 @@ pub fn run() {
     // any GTK/WebView init so the window actually paints everywhere.
     #[cfg(target_os = "linux")]
     {
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // Defensive set for blank-WebKitGTK-window cases (VMs, odd GL stacks —
+        // common across a mixed distro fleet). Disable the DMABUF renderer and
+        // accelerated compositing, and force Mesa software GL so the page paints
+        // even with no usable hardware GL context.
+        for (k, v) in [
+            ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+            ("LIBGL_ALWAYS_SOFTWARE", "1"),
+        ] {
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
         }
-        // Second common cause of a blank WebKitGTK window on VMs / software GL:
-        // accelerated compositing with no usable GL context. Disable it too.
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        // Redirect native stderr (WebKit/GL/GTK warnings) to ~/nexussh-debug.log
+        // so a blank window stays diagnosable WITHOUT a terminal — the user just
+        // opens the file. Unconditional for now while we chase the white screen;
+        // remove once Linux rendering is settled. Harmless on a good run.
+        if let Ok(home) = std::env::var("HOME") {
+            if let Ok(f) = std::fs::File::create(format!("{home}/nexussh-debug.log")) {
+                use std::os::unix::io::IntoRawFd;
+                unsafe { libc::dup2(f.into_raw_fd(), 2) };
+            }
         }
     }
 

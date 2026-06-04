@@ -55,6 +55,10 @@ sha2 = "0.10"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 
+# Linux-only: libc for redirecting native stderr (WebKit/GL) to a log file.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 # Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

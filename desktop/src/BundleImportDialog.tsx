@@ -11,7 +11,6 @@ import {
   importBundleHosts,
   importBundleVpn,
 } from "./bundle";
-import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
 
 interface Props {
@@ -20,7 +19,6 @@ interface Props {
 
 export function BundleImportDialog({ onClose }: Props) {
   const { t } = useTranslation();
-  const [settings] = useSettings();
   const [path, setPath] = useState<string | null>(null);
   const [pass, setPass] = useState("");
   const [payload, setPayload] = useState<BundlePayload | null>(null);
@@ -70,10 +68,7 @@ export function BundleImportDialog({ onClose }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const { added, skipped } = await importBundleHosts(
-        payload,
-        settings.defaultUser,
-      );
+      const { added, skipped } = await importBundleHosts(payload);
       const vpnAdded = importBundleVpn(payload);
       setDone(t("bundle.imported", { added, skipped, vpn: vpnAdded }));
     } catch (e) {
@@ -134,7 +129,7 @@ export function BundleImportDialog({ onClose }: Props) {
             <div>
               <label className={label}>{t("bundle.passphrase")}</label>
               <input
-                type="text"
+                type="password"
                 value={pass}
                 onChange={(e) => {
                   setPass(e.target.value);

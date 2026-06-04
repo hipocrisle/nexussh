@@ -73,7 +73,6 @@ export async function readBundle(
  *  the bundle. Returns counts. */
 export async function importBundleHosts(
   payload: BundlePayload,
-  defaultUser: string,
 ): Promise<{ added: number; skipped: number }> {
   const existing = await listHosts();
   const seen = new Set(existing.map((h) => `${h.host}:${h.port}`));
@@ -102,7 +101,10 @@ export async function importBundleHosts(
       name: typeof bh.name === "string" && bh.name ? bh.name : host,
       host,
       port,
-      user: typeof bh.user === "string" && bh.user ? bh.user : defaultUser,
+      // Preserve the exported login verbatim. If the bundle was exported WITHOUT
+      // logins, the host stays login-less — never inject the importing user's own
+      // default login into every host.
+      user: typeof bh.user === "string" ? bh.user : "",
       auth: { kind: "password", password: "" },
       alwaysAskPassword: true,
       group: typeof bh.group === "string" ? bh.group : undefined,

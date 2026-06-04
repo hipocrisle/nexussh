@@ -20,6 +20,7 @@ import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { readClipboard, writeClipboard } from "./clipboard";
+import { useIsMobile } from "./useIsMobile";
 
 export interface TerminalAction {
   label: string;
@@ -62,6 +63,12 @@ export function TerminalView({
 }: Props) {
   const { t } = useTranslation();
   const [settings] = useSettings();
+  // On mobile, programmatic term.focus() pops the soft keyboard on every tab
+  // switch / reconnect ("при любом чихе"). Suppress auto-focus there; the
+  // keyboard is shown only by the ⌨ bar key or a deliberate tap on the terminal.
+  const isMobile = useIsMobile();
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -245,8 +252,9 @@ export function TerminalView({
           term.writeln(`\x1b[2m[${tRef.current("terminal.enter_reconnect")}]\x1b[0m`);
           closedRef.current = true;
           // Grab focus so the Enter-to-reconnect keypress lands on this term
-          // even if focus had drifted when the session dropped.
-          term.focus();
+          // even if focus had drifted when the session dropped. Not on mobile —
+          // that would pop the keyboard on every disconnect.
+          if (!isMobileRef.current) term.focus();
           onSessionClosed?.(ev.reason);
         }),
       ]);
@@ -293,7 +301,9 @@ export function TerminalView({
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         fitIfVisible(containerRef.current, fitRef.current);
-        termRef.current?.focus();
+        // Desktop: focus on tab-visible so typing just works. Mobile: don't —
+        // it would pop the soft keyboard every time you switch tabs.
+        if (!isMobileRef.current) termRef.current?.focus();
       });
     });
   }, [visible]);

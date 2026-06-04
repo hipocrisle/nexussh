@@ -411,6 +411,48 @@ pub(crate) fn preferred_for(allow_legacy: bool) -> Preferred {
     }
 }
 
+/// Authenticate with a password, falling back to keyboard-interactive. Old gear
+/// (Cisco SX550, some IOS) offers ONLY keyboard-interactive, which our plain
+/// password method never satisfies — so the connection failed before the shell.
+/// We answer username-ish prompts with the user and every other prompt with the
+/// password, which covers the typical single "Password:" challenge.
+async fn auth_password_or_keyboard<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    password: &str,
+) -> Result<bool, russh::Error> {
+    if session.authenticate_password(user, password).await?.success() {
+        return Ok(true);
+    }
+    use russh::client::KeyboardInteractiveAuthResponse as Ki;
+    let mut resp = session
+        .authenticate_keyboard_interactive_start(user, None)
+        .await?;
+    for _ in 0..16 {
+        match resp {
+            Ki::Success => return Ok(true),
+            Ki::Failure { .. } => return Ok(false),
+            Ki::InfoRequest { prompts, .. } => {
+                let answers = prompts
+                    .iter()
+                    .map(|p| {
+                        let l = p.prompt.to_lowercase();
+                        if l.contains("user") || l.contains("login") || l.contains("name") {
+                            user.to_string()
+                        } else {
+                            password.to_string()
+                        }
+                    })
+                    .collect();
+                resp = session
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await?;
+            }
+        }
+    }
+    Ok(false)
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -462,10 +504,9 @@ pub async fn ssh_connect(
     };
 
     let auth_ok = match &args.auth {
-        AuthMethod::Password { password } => session
-            .authenticate_password(&args.user, password)
-            .await?
-            .success(),
+        AuthMethod::Password { password } => {
+            auth_password_or_keyboard(&mut session, &args.user, password).await?
+        }
         AuthMethod::Key { path, passphrase } => {
             let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
             session
@@ -483,10 +524,7 @@ pub async fn ssh_connect(
             // Resolve secret from our in-memory vault (must be unlocked).
             let secret = crate::vault::resolve(&vault, key)
                 .map_err(|e| SshError::Other(e.to_string()))?;
-            session
-                .authenticate_password(&args.user, &secret)
-                .await?
-                .success()
+            auth_password_or_keyboard(&mut session, &args.user, &secret).await?
         }
     };
     if !auth_ok {

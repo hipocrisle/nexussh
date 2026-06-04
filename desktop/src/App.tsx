@@ -516,9 +516,14 @@ function App() {
   const [pwPrompt, setPwPrompt] = useState<{
     user: string;
     host: string;
-    resolve: (v: string | null) => void;
+    resolve: (v: { user: string; password: string } | null) => void;
   } | null>(null);
-  function askPassword(h: HostRecord): Promise<string | null> {
+  // Resolves to the (possibly just-entered) login + password, or null if
+  // cancelled. For hosts WITH a login it just asks the password; for login-less
+  // hosts (imported address-only) it asks both.
+  function askPassword(
+    h: HostRecord,
+  ): Promise<{ user: string; password: string } | null> {
     return new Promise((resolve) =>
       setPwPrompt({ user: h.user, host: h.host, resolve }),
     );
@@ -906,8 +911,8 @@ function App() {
   async function kickoffConnect(pendingId: string, h: HostRecord) {
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = await askPassword(h);
-      if (entered === null) {
+      const creds = await askPassword(h);
+      if (!creds) {
         updateSession(pendingId, (s) => ({
           ...s,
           status: "closed",
@@ -915,7 +920,8 @@ function App() {
         }));
         return;
       }
-      auth = { kind: "password", password: entered };
+      h = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
     }
     try {
       const sid = await sshConnect({
@@ -1265,9 +1271,10 @@ function App() {
     // If user opted to always ask for password, prompt before opening tab.
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = await askPassword(h);
-      if (entered === null) return; // cancelled
-      auth = { kind: "password", password: entered };
+      const creds = await askPassword(h);
+      if (!creds) return; // cancelled
+      h = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
     }
     const pendingId = "pending-" + crypto.randomUUID();
     const paneId = uid("p");
@@ -1309,9 +1316,10 @@ function App() {
   async function openSftp(h: HostRecord) {
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = await askPassword(h);
-      if (entered === null) return;
-      auth = { kind: "password", password: entered };
+      const creds = await askPassword(h);
+      if (!creds) return;
+      h = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
     }
     setSftpTarget({
       args: {
@@ -1372,10 +1380,12 @@ function App() {
     // cases reusing it would just retry the same (possibly wrong) password
     // forever, so ask again.
     let auth = host.auth;
+    let user = host.user;
     if (host.auth.kind === "password") {
-      const entered = await askPassword(host);
-      if (entered === null) return;
-      auth = { kind: "password", password: entered };
+      const creds = await askPassword(host);
+      if (!creds) return;
+      user = creds.user;
+      auth = { kind: "password", password: creds.password };
     }
     if (pane.session.status === "connected") {
       sshDisconnect(sessionId).catch(() => {});
@@ -1389,7 +1399,7 @@ function App() {
       const sid = await sshConnect({
         host: host.host,
         port: host.port,
-        user: host.user,
+        user,
         auth,
         vpn: resolveHostVpn(host),
         allow_legacy: host.allowLegacy,
@@ -1436,9 +1446,10 @@ function App() {
   ) {
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
-      const entered = await askPassword(h);
-      if (entered === null) return;
-      auth = { kind: "password", password: entered };
+      const creds = await askPassword(h);
+      if (!creds) return;
+      h = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
     }
     const pendingId = "pending-" + crypto.randomUUID();
     const newPaneId = uid("p");
@@ -2938,8 +2949,8 @@ function App() {
         <PasswordPrompt
           user={pwPrompt.user}
           host={pwPrompt.host}
-          onSubmit={(password) => {
-            pwPrompt.resolve(password);
+          onSubmit={(creds) => {
+            pwPrompt.resolve(creds);
             setPwPrompt(null);
           }}
           onCancel={() => {

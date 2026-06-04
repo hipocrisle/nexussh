@@ -94,7 +94,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setName(initial.name);
     setHost(initial.host);
     setPort(initial.port || settings.defaultPort);
-    setUser(initial.user || settings.defaultUser);
+    // Preserve a host's empty login (e.g. imported "address-only" hosts) —
+    // don't paper over it with the local default user.
+    setUser(initial.user ?? "");
     setGroup(initial.group ?? "");
     setNote(initial.note ?? "");
     setAlwaysAskPassword(!!initial.alwaysAskPassword);

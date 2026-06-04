@@ -297,6 +297,28 @@ export async function deleteFolder(name: string): Promise<void> {
   for (const h of touched) await saveHost(h);
 }
 
+/** Delete a folder AND every host inside it (and its whole subtree), in one
+ *  batched write. The other deleteFolder ungroups; this one removes the hosts. */
+export async function deleteFolderWithHosts(name: string): Promise<void> {
+  const all = await readAll();
+  const prefix = name + "/";
+  const next = all.filter(
+    (h) => !(h.group === name || (h.group && h.group.startsWith(prefix))),
+  );
+  await writeAll(next);
+  removeKnownFolder(name);
+  notifyHostsChanged();
+  maybePushSync();
+}
+
+/** Wipe EVERY host and every remembered (empty) folder. One write. */
+export async function deleteAllHosts(): Promise<void> {
+  await writeAll([]);
+  clearKnownFolders();
+  notifyHostsChanged();
+  maybePushSync();
+}
+
 /** Move a single host into a folder. Pass null to ungroup. */
 export async function moveHostToFolder(
   hostId: string,

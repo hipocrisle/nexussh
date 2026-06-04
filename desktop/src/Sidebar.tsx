@@ -34,6 +34,8 @@ import {
   deleteHost,
   renameFolder,
   deleteFolder,
+  deleteFolderWithHosts,
+  deleteAllHosts,
   moveHostToFolder,
   reorderHosts,
   loadKnownFolders,
@@ -431,6 +433,18 @@ export function Sidebar({
           },
           destructive: true,
         },
+        {
+          label: t("sidebar.menu_delete_folder_hosts"),
+          icon: <Trash2 size={13} />,
+          onClick: async () => {
+            if (!confirm(t("sidebar.delete_folder_hosts_confirm", { name: path })))
+              return;
+            await deleteFolderWithHosts(path);
+            refreshFolders();
+            reload();
+          },
+          destructive: true,
+        },
       ],
       { main: path },
     );
@@ -570,6 +584,23 @@ export function Sidebar({
           }
         },
       },
+      ...(hosts.length > 0
+        ? [
+            { separator: true, label: "" },
+            {
+              label: t("sidebar.menu_delete_all"),
+              icon: <Trash2 size={13} />,
+              onClick: async () => {
+                if (!confirm(t("sidebar.delete_all_confirm", { count: hosts.length })))
+                  return;
+                await deleteAllHosts();
+                refreshFolders();
+                reload();
+              },
+              destructive: true,
+            },
+          ]
+        : []),
     ];
   }
 

@@ -411,19 +411,13 @@ pub(crate) fn preferred_for(allow_legacy: bool) -> Preferred {
     }
 }
 
-/// Authenticate with a password, falling back to keyboard-interactive. Old gear
-/// (Cisco SX550, some IOS) offers ONLY keyboard-interactive, which our plain
-/// password method never satisfies — so the connection failed before the shell.
-/// We answer username-ish prompts with the user and every other prompt with the
-/// password, which covers the typical single "Password:" challenge.
-async fn auth_password_or_keyboard<H: russh::client::Handler>(
+/// Keyboard-interactive auth, answering username-ish prompts with the user and
+/// every other prompt with the password (covers the typical single "Password:").
+async fn try_keyboard_interactive<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
     user: &str,
     password: &str,
 ) -> Result<bool, russh::Error> {
-    if session.authenticate_password(user, password).await?.success() {
-        return Ok(true);
-    }
     use russh::client::KeyboardInteractiveAuthResponse as Ki;
     let mut resp = session
         .authenticate_keyboard_interactive_start(user, None)
@@ -451,6 +445,34 @@ async fn auth_password_or_keyboard<H: russh::client::Handler>(
         }
     }
     Ok(false)
+}
+
+/// Authenticate with both password and keyboard-interactive. Old gear (Cisco
+/// SX550, some IOS) offers ONLY keyboard-interactive and often allows just ONE
+/// auth attempt before dropping the connection — so trying password first there
+/// got the session killed ("Channel send error"). For legacy hosts we therefore
+/// try keyboard-interactive FIRST; for everything else password first, with the
+/// other method as a fallback only if the first cleanly returns "not authed".
+async fn auth_password_or_keyboard<H: russh::client::Handler>(
+    session: &mut russh::client::Handle<H>,
+    user: &str,
+    password: &str,
+    prefer_keyboard: bool,
+) -> Result<bool, russh::Error> {
+    if prefer_keyboard {
+        if try_keyboard_interactive(session, user, password).await? {
+            return Ok(true);
+        }
+        Ok(session
+            .authenticate_password(user, password)
+            .await?
+            .success())
+    } else {
+        if session.authenticate_password(user, password).await?.success() {
+            return Ok(true);
+        }
+        try_keyboard_interactive(session, user, password).await
+    }
 }
 
 #[tauri::command]
@@ -505,7 +527,8 @@ pub async fn ssh_connect(
 
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => {
-            auth_password_or_keyboard(&mut session, &args.user, password).await?
+            auth_password_or_keyboard(&mut session, &args.user, password, args.allow_legacy)
+                .await?
         }
         AuthMethod::Key { path, passphrase } => {
             let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
@@ -524,7 +547,8 @@ pub async fn ssh_connect(
             // Resolve secret from our in-memory vault (must be unlocked).
             let secret = crate::vault::resolve(&vault, key)
                 .map_err(|e| SshError::Other(e.to_string()))?;
-            auth_password_or_keyboard(&mut session, &args.user, &secret).await?
+            auth_password_or_keyboard(&mut session, &args.user, &secret, args.allow_legacy)
+                .await?
         }
     };
     if !auth_ok {

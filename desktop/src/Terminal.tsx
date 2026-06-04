@@ -119,6 +119,22 @@ export function TerminalView({
     termRef.current = term;
     fitRef.current = fit;
 
+    // Mobile: declare the hidden input as inputmode="none" so the soft keyboard
+    // never auto-pops — not on focus, not on a bar-key tap, not on a stray touch
+    // ("выскакивает при любом чихе"). The ⌨ bar key flips it to "text" to type;
+    // any blur resets it back to "none" so it can't sneak back.
+    if (isMobileRef.current) {
+      const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (ta) {
+        ta.inputMode = "none";
+        ta.addEventListener("blur", () => {
+          ta.inputMode = "none";
+        });
+      }
+    }
+
     // Wheel scroll — CAPTURE phase listener so we run BEFORE xterm's own
     // wheel handler. In main buffer we scroll the viewport directly. In
     // alt-screen mode (Claude Code, vim, htop, less) xterm's default would

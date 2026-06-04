@@ -164,16 +164,22 @@ export function SmartKeyBar({ onSend, visible }: Props) {
   // textarea. Because every key preventDefault()s, the textarea keeps focus
   // while the bar is used, so activeElement reliably tells us the current state.
   function toggleKeyboard() {
-    const ae = document.activeElement as HTMLElement | null;
-    if (ae && ae.tagName === "TEXTAREA") {
-      ae.blur();
-      return;
-    }
     const tas = Array.from(
       document.querySelectorAll<HTMLTextAreaElement>(".xterm-helper-textarea"),
     );
     // The visible terminal's textarea has a non-null offsetParent (not hidden).
-    (tas.find((t) => t.offsetParent !== null) ?? tas[0])?.focus();
+    const ta = tas.find((t) => t.offsetParent !== null) ?? tas[0];
+    if (!ta) return;
+    // The terminal keeps inputmode="none" so the keyboard never auto-pops; flip
+    // it to "text" + focus to bring the keyboard up, back to "none" + blur to
+    // dismiss it.
+    if (ta.inputMode === "none") {
+      ta.inputMode = "text";
+      ta.focus();
+    } else {
+      ta.inputMode = "none";
+      ta.blur();
+    }
   }
 
   const ctrlArmed = mods.has("ctrl");

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.hipogas.nexussh</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>NexuSSH</name>
+  <summary>SSH/SFTP client with built-in VPN</summary>
+  <description>
+    <p>
+      NexuSSH is a modern SSH and SFTP client with split-view workspaces,
+      session history replay, an encrypted host vault, and an optional
+      built-in xray VPN transport per host.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.hipogas.nexussh.desktop</launchable>
+  <categories>
+    <category>Network</category>
+    <category>System</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.7.6" date="2026-06-05"/>
+  </releases>
+  <url type="homepage">https://github.com/hipocrisle/nexussh</url>
+</component>

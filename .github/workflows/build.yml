@@ -105,6 +105,15 @@ jobs:
           LDAI_RUNTIME_FILE: /tmp/appimage-runtime
         run: npm run tauri build -- --target ${{ matrix.target }}
 
+      - name: Pack .deb filesystem for Flatpak (host has dpkg; avoids ar/dpkg in sandbox)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          deb=$(ls desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb | head -1)
+          mkdir -p /tmp/debroot
+          dpkg-deb -x "$deb" /tmp/debroot
+          tar -C /tmp/debroot -czf nexussh-fs.tar.gz usr
+          ls -la nexussh-fs.tar.gz
+
       - name: Upload Windows installer
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
@@ -124,6 +133,7 @@ jobs:
           path: |
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            nexussh-fs.tar.gz
           retention-days: 14
 
       - name: Upload release assets (tag push only)
@@ -207,3 +217,37 @@ jobs:
         run: |
           gh release edit "${{ github.ref_name }}" \
             --repo "${{ github.repository }}" --draft=false --latest
+
+  flatpak:
+    name: Build Flatpak bundle
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:gnome-47
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux build (usr tree)
+        uses: actions/download-artifact@v4
+        with:
+          name: nexussh-linux
+          path: dist
+
+      - name: Stage filesystem tarball next to manifest
+        run: cp dist/nexussh-fs.tar.gz desktop/flatpak/nexussh-fs.tar.gz
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: NexuSSH.flatpak
+          manifest-path: desktop/flatpak/org.hipogas.nexussh.yml
+          cache-key: flatpak-${{ github.sha }}
+
+      - name: Upload Flatpak to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: NexuSSH.flatpak

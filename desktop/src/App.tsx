@@ -129,6 +129,16 @@ function readSidebarWidth(): number {
   return Number.isFinite(v) && v >= SIDEBAR_MIN && v <= SIDEBAR_MAX ? v : 256;
 }
 
+// First-run nudge to set up the vault. Shown once (when no vault exists yet);
+// "Later" or setting one up flips this flag so we never nag again.
+const VAULT_PROMPT_SEEN_LS_KEY = "nexussh.vaultPromptSeen";
+function vaultPromptSeen(): boolean {
+  return localStorage.getItem(VAULT_PROMPT_SEEN_LS_KEY) === "1";
+}
+function markVaultPromptSeen() {
+  localStorage.setItem(VAULT_PROMPT_SEEN_LS_KEY, "1");
+}
+
 // --- Workspace model (v0.7.0) ----------------------------------------------
 // Single tab strip at the top — each tab is a Workspace = layout of Panes;
 // each Pane holds one Session. New hosts open as their own Workspace (single
@@ -504,6 +514,9 @@ function App() {
   // never reconnects saved-password hosts before the vault unlocks.
   const [vaultChecked, setVaultChecked] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+  // First-run vault nudge — a one-time, dismissible banner offering to set up
+  // the vault. Shown only once no vault exists yet (decided after vaultStatus).
+  const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [sftpTarget, setSftpTarget] = useState<{
@@ -1199,6 +1212,9 @@ function App() {
       // is gated on vaultChecked && !appLocked so it waits for the unlock.
       if (st.configured && !st.unlocked) setAppLocked(true);
       setVaultChecked(true);
+      // First run: no vault yet and we've never offered → gently suggest it.
+      // Non-blocking banner; never shown again once seen/dismissed.
+      if (!st.configured && !vaultPromptSeen()) setVaultPromptOpen(true);
       // Leftover plaintext passwords → force vault open to migrate them.
       try {
         const plain = await findPlaintextPasswordHosts();
@@ -2518,16 +2534,15 @@ function App() {
               warn: sync?.configured && !sync?.unlocked,
               active: sync?.unlocked,
             },
-            ...(settings.advanced
-              ? [
-                  {
-                    label: "vault",
-                    onClick: () => setVaultPanelOpen(true),
-                    warn: vault?.configured && !vault?.unlocked,
-                    active: vault?.unlocked,
-                  },
-                ]
-              : []),
+            {
+              label: vault?.configured ? "vault" : t("vault.header_enable"),
+              onClick: () => {
+                if (!vault?.configured) markVaultPromptSeen();
+                setVaultPanelOpen(true);
+              },
+              warn: vault?.configured && !vault?.unlocked,
+              active: vault?.unlocked,
+            },
             {
               label: t("settings.open"),
               onClick: () => setSettingsOpen(true),
@@ -2592,25 +2607,35 @@ function App() {
           >
             sync
           </HeaderButton>
-          {settings.advanced && (
-            <HeaderButton
-              icon={
-                vault?.unlocked ? (
-                  <Unlock size={12} />
-                ) : vault?.configured ? (
-                  <Lock size={12} />
-                ) : (
-                  <KeyRound size={12} />
-                )
-              }
-              onClick={() => setVaultPanelOpen(true)}
-              title={t("vault.open_panel")}
-              active={vault?.unlocked}
-              warn={vault?.configured && !vault?.unlocked}
-            >
-              vault
-            </HeaderButton>
-          )}
+          <HeaderButton
+            icon={
+              vault?.unlocked ? (
+                <Unlock size={12} />
+              ) : vault?.configured ? (
+                <Lock size={12} />
+              ) : (
+                <KeyRound size={12} />
+              )
+            }
+            onClick={() => {
+              // Vault is a headline feature, not buried in settings: clicking
+              // always opens the panel, which itself routes to create / unlock
+              // / manage based on the current status.
+              if (!vault?.configured) markVaultPromptSeen();
+              setVaultPanelOpen(true);
+            }}
+            title={
+              vault?.unlocked
+                ? t("vault.open_panel")
+                : vault?.configured
+                  ? t("vault.header_unlock")
+                  : t("vault.header_setup")
+            }
+            active={vault?.unlocked}
+            warn={vault?.configured && !vault?.unlocked}
+          >
+            {vault?.configured ? "vault" : t("vault.header_enable")}
+          </HeaderButton>
           <HeaderButton
             icon={<HelpCircle size={12} />}
             onClick={() => setShortcutsOpen(true)}
@@ -2627,6 +2652,36 @@ function App() {
           <WindowControls />
         </div>
       </header>
+      )}
+
+      {/* First-run nudge: offer to set up the vault. Non-blocking bar under the
+       *  header; dismissing or setting up marks it seen so it never returns. */}
+      {vaultPromptOpen && !vault?.configured && (
+        <div className="relative z-20 flex items-center gap-3 px-4 py-2 border-b border-nx-border bg-nx-panel text-meta font-mono">
+          <KeyRound size={14} className="shrink-0 text-nx-accent" />
+          <span className="text-nx-soft min-w-0">{t("vault.prompt_body")}</span>
+          <div className="ml-auto flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => {
+                markVaultPromptSeen();
+                setVaultPromptOpen(false);
+                setVaultPanelOpen(true);
+              }}
+              className="px-2.5 py-0.5 rounded-nx-sm bg-nx-accent text-nx-bg font-bold hover:opacity-90 transition-opacity"
+            >
+              {t("vault.prompt_setup")}
+            </button>
+            <button
+              onClick={() => {
+                markVaultPromptSeen();
+                setVaultPromptOpen(false);
+              }}
+              className="px-2.5 py-0.5 rounded-nx-sm text-nx-muted hover:text-nx-text hover:bg-nx-elevated transition-colors"
+            >
+              {t("vault.prompt_later")}
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="relative z-10 flex-1 min-h-0 flex">

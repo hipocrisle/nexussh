@@ -5,7 +5,7 @@
 //! `install_update`, который скачает, верифицирует подпись и перезапустит app.
 
 use serde::Serialize;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Debug, thiserror::Error)]
@@ -57,11 +57,48 @@ pub async fn install_update(app: AppHandle) -> Result<(), UpdateError> {
     let Some(update) = update else {
         return Err(UpdateError::Plugin("no update available".into()));
     };
+
+    // Surface download/install progress to the frontend on the same
+    // `update-progress` channel the Android path already uses, so the
+    // UpdatePanel can show a real progress bar instead of an opaque
+    // spinner. Payload shape: { phase: "download"|"install", downloaded?, total? }.
+    //
+    // `download_and_install` blocks until BOTH the download finishes AND the
+    // package is fully applied (on Linux this drives deb/rpm install through
+    // an external pkexec/polkit step). Only after it returns Ok do we restart,
+    // so we never race the installer. If it returns Err — the install failed
+    // (e.g. user cancelled the polkit prompt) — we propagate the error to the
+    // frontend instead of silently restarting/closing.
+    let app_dl = app.clone();
+    let downloaded = std::sync::atomic::AtomicU64::new(0);
+    let app_done = app.clone();
+    let on_chunk = move |chunk_len: usize, content_length: Option<u64>| {
+        let total = downloaded.fetch_add(chunk_len as u64, std::sync::atomic::Ordering::Relaxed)
+            + chunk_len as u64;
+        let _ = app_dl.emit(
+            "update-progress",
+            serde_json::json!({
+                "phase": "download",
+                "downloaded": total,
+                "total": content_length,
+            }),
+        );
+    };
+    let on_download_finished = move || {
+        // Download done — the (potentially privileged, password-prompting)
+        // package install begins now.
+        let _ = app_done.emit(
+            "update-progress",
+            serde_json::json!({ "phase": "install" }),
+        );
+    };
+
     update
-        .download_and_install(|_chunk, _total| {}, || {})
+        .download_and_install(on_chunk, on_download_finished)
         .await
         .map_err(|e| UpdateError::Plugin(e.to_string()))?;
-    // After install_update finishes the new binary is on disk; restart so
-    // the user lands on the new version immediately.
+
+    // Install applied successfully — restart so the user lands on the new
+    // version immediately.
     app.restart();
 }

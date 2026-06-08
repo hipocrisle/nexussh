@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Settings as SettingsIcon,
   HelpCircle,
+  History as HistoryIcon,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -37,10 +38,14 @@ import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { ResizeHandles } from "./ResizeHandles";
+import { historyStart } from "./history";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
   import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
+);
+const HistoryPanel = lazy(() =>
+  import("./HistoryPanel").then((m) => ({ default: m.HistoryPanel })),
 );
 import { PaneHeader } from "./PaneHeader";
 import { useSettings } from "./settings/settings-store";
@@ -670,6 +675,7 @@ function App() {
     dir: "row" | "col";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
   );
@@ -1407,6 +1413,20 @@ function App() {
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
       triggerBurst();
+      // Encrypted session-history recording: per-host override wins over the
+      // global toggle; only when the vault is unlocked (recordings are gated by
+      // the master password). Backend finalises automatically on session close.
+      const wantRec = h.recordHistory ?? settings.historyEnabled;
+      if (wantRec && vault?.unlocked) {
+        historyStart(
+          sid,
+          h.id,
+          `${h.user}@${h.host}`,
+          80,
+          24,
+          settings.historyMode,
+        ).catch(() => {});
+      }
     } catch (e) {
       // Keep the pane and show WHY it failed (with Retry), instead of vanishing.
       updateSession(pendingId, (s) => ({
@@ -2735,6 +2755,11 @@ function App() {
             {vault?.configured ? "vault" : t("vault.header_enable")}
           </HeaderButton>
           <HeaderButton
+            icon={<HistoryIcon size={12} />}
+            onClick={() => setHistoryPanelOpen(true)}
+            title={t("history.open_panel")}
+          />
+          <HeaderButton
             icon={<HelpCircle size={12} />}
             onClick={() => setShortcutsOpen(true)}
             title={t("shortcuts.open_title") + " (?)"}
@@ -2941,6 +2966,9 @@ function App() {
             title={sftpTarget.title}
             onClose={() => setSftpTarget(null)}
           />
+        )}
+        {historyPanelOpen && (
+          <HistoryPanel onClose={() => setHistoryPanelOpen(false)} />
         )}
       </Suspense>
       {pickerOpen && (

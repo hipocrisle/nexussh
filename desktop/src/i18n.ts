@@ -330,6 +330,18 @@ const ru = {
     conv_off: "conv",
     conv_hint:
       "Conv-only режим: оставить только реальный разговор (твои вводы ❯, мои ответы ●, результаты ⎿) — спиннер/таски/статус/prompt-box убираются. Только при включённом Plain.",
+    panel: {
+      title: "история сессий",
+      empty: "записей пока нет — подключись к хосту",
+      locked: "vault заблокирован — разблокируй его, чтобы посмотреть историю",
+      clear: "очистить всё",
+      delete: "удалить",
+      select: "выбери запись для воспроизведения",
+      truncated: "обрезано",
+      usage: "{{count}} записей · {{size}}",
+      mode_light: "лёгкий",
+      mode_full: "полный",
+    },
   },
   settings: {
     open: "настройки",
@@ -473,6 +485,14 @@ const ru = {
       reconnect: "Авто-переподключение",
       reconnect_hint: "Пытаться поднять упавшие сессии автоматически.",
       reconnect_label: "переподключать",
+      history: "История сессий",
+      history_hint:
+        "Шифрованная запись вывода сессий (нужен vault, открывается мастер-паролем). Можно переопределить для каждого хоста.",
+      history_label: "записывать",
+      history_mode: "Режим записи",
+      history_mode_hint:
+        "Полный — пишет всё, включая TUI (vim/htop). Выкл = лёгкий: пропускает alt-screen (меньше и приватнее).",
+      history_full_label: "полный (с TUI)",
       confirm: "Подтверждать закрытие сплита или нескольких вкладок",
       confirm_hint: "Спрашивать перед закрытием вкладки со сплитом и при закрытии нескольких вкладок разом. Одиночная активная вкладка закрывается без вопроса, а выход из программы с живыми сессиями подтверждается всегда.",
       confirm_label: "спрашивать",
@@ -989,6 +1009,18 @@ const en = {
     conv_off: "conv",
     conv_hint:
       "Conversation-only: keep just real conversation (your ❯, my ●, results ⎿) — drop spinner/tasks/status/prompt-box. Only when Plain is on.",
+    panel: {
+      title: "session history",
+      empty: "no recordings yet — connect to a host",
+      locked: "vault is locked — unlock it to view history",
+      clear: "clear all",
+      delete: "delete",
+      select: "select a recording to replay",
+      truncated: "truncated",
+      usage: "{{count}} recordings · {{size}}",
+      mode_light: "light",
+      mode_full: "full",
+    },
   },
   settings: {
     open: "settings",
@@ -1132,6 +1164,14 @@ const en = {
       reconnect: "Auto-reconnect",
       reconnect_hint: "Try to re-establish dropped sessions automatically.",
       reconnect_label: "reconnect",
+      history: "Session history",
+      history_hint:
+        "Encrypted recording of session output (needs the vault; opened with the master password). Can be overridden per host.",
+      history_label: "record",
+      history_mode: "Recording mode",
+      history_mode_hint:
+        "Full records everything including TUIs (vim/htop). Off = light: skips alt-screen (smaller + more private).",
+      history_full_label: "full (with TUI)",
       confirm: "Confirm closing a split or multiple tabs",
       confirm_hint: "Ask before closing a tab that has a split, and when closing several tabs at once. A single active tab closes without asking; quitting the app with live sessions always prompts.",
       confirm_label: "confirm",

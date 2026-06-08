@@ -193,6 +193,42 @@ export function BehaviorSection({ s, set, t }: Props) {
       </Row>
 
       <Row
+        label={tr("settings.behavior.history")}
+        hint={tr("settings.behavior.history_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.historyEnabled}
+          onChange={(v) => set({ historyEnabled: v })}
+          t={t}
+          label={tr("settings.behavior.history_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+
+      {s.historyEnabled && (
+        <Row
+          label={tr("settings.behavior.history_mode")}
+          hint={tr("settings.behavior.history_mode_hint")}
+          t={t}
+        >
+          <Toggle
+            checked={s.historyMode === "full"}
+            onChange={(v) => set({ historyMode: v ? "full" : "light" })}
+            t={t}
+            label={tr("settings.behavior.history_full_label")}
+            onLabel={tr("settings.nav.on")}
+            offLabel={tr("settings.nav.off")}
+            enabledLabel={tr("settings.toggle.enabled")}
+            disabledLabel={tr("settings.toggle.disabled")}
+          />
+        </Row>
+      )}
+
+      <Row
         label={tr("settings.behavior.reconnect")}
         hint={tr("settings.behavior.reconnect_hint")}
         t={t}

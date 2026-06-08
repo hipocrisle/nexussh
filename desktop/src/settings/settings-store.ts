@@ -33,6 +33,12 @@ export interface NexuSettings {
   /** Auto-lock the app (vault) after N minutes idle. 0 = never (default).
    *  Locking shows a master-password screen; live SSH sessions keep running. */
   vaultAutoLockMin: number;
+  /** Record session output to encrypted history (requires the vault). Default
+   *  off. A per-host `recordHistory` override wins over this. */
+  historyEnabled: boolean;
+  /** "light" skips alt-screen/TUI output (smaller + more private); "full"
+   *  records everything including vim/htop/Claude Code. */
+  historyMode: "light" | "full";
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -56,6 +62,8 @@ export const DEFAULTS: NexuSettings = {
   advanced: false,
   puttyMouse: false,
   vaultAutoLockMin: 0,
+  historyEnabled: false, // off by default; opt-in (requires vault)
+  historyMode: "light",
 };
 
 const STORAGE_KEY = "nexussh.settings.v1";

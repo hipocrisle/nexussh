@@ -44,6 +44,10 @@ export interface HostRecord {
   vpnProfileId?: string;
   /** Chosen exit node tag, or "auto". */
   vpnExit?: string;
+  /** Per-host session-history override. `undefined` = inherit the global
+   *  `historyEnabled` setting; `true` = always record this host; `false` =
+   *  never record it (even when history is on globally). */
+  recordHistory?: boolean;
 }
 
 const STORE_FILE = "hosts.json";

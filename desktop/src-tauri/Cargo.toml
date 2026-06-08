@@ -56,8 +56,13 @@ sha2 = "0.10"
 jni = "0.21"
 
 # Linux-only: libc for redirecting native stderr (WebKit/GL) to a log file.
+# gtk (which re-exports gdk) is already in the tree via tao/webkit2gtk at 0.18;
+# we depend on it directly to query `gdk::Screen::is_composited()` so window
+# transparency (rounded corners) is only enabled when a compositor exists.
+# Pinned to the version tao/webview already use so cargo unifies, not duplicates.
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+gtk = "0.18"
 
 # Windows-only: read PuTTY sessions from HKCU\Software\SimonTatham\PuTTY\Sessions
 [target.'cfg(windows)'.dependencies]

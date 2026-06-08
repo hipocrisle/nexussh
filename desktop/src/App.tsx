@@ -420,21 +420,36 @@ function App() {
     applyTheme(settings.theme);
   }, [settings.theme]);
 
-  // Mark the document as running on Linux desktop so the CSS can round the
-  // borderless window corners (paired with transparent:true from
-  // tauri.linux.conf.json). Android is also "Linux" in the UA, so exclude it
-  // the same way updater.ts isAndroid() does. Fail-safe: never throws.
+  // Round the borderless Linux window corners — but ONLY when a compositor is
+  // present. The window is created transparent (tauri.linux.conf.json); on a
+  // machine WITHOUT a compositor that transparency renders as BLACK corners, so
+  // there we keep a fully-opaque square background (no rounding, no transparent
+  // layers). The Rust `window_composited` command answers compositor-presence
+  // via gdk::Screen::is_composited(); only when it's true do we set
+  // data-os="linux", which the CSS keys the radius + transparent background off.
+  //
+  // Android is also "Linux" in the UA, so exclude it the same way updater.ts
+  // isAndroid() does. Fail-safe: never throws; on any failure we leave the
+  // attribute unset → plain square opaque window (the safe default).
   useEffect(() => {
-    try {
-      const ua = navigator.userAgent || "";
-      const isAndroid = /Android/i.test(ua);
-      const isLinux = !isAndroid && /Linux/i.test(ua);
-      if (isLinux) {
-        document.documentElement.setAttribute("data-os", "linux");
+    let cancelled = false;
+    (async () => {
+      try {
+        const ua = navigator.userAgent || "";
+        const isAndroid = /Android/i.test(ua);
+        const isLinux = !isAndroid && /Linux/i.test(ua);
+        if (!isLinux || !HAS_TAURI) return;
+        const composited = await invoke<boolean>("window_composited");
+        if (!cancelled && composited) {
+          document.documentElement.setAttribute("data-os", "linux");
+        }
+      } catch {
+        /* no-op: cosmetic only — leave square/opaque on any failure */
       }
-    } catch {
-      /* no-op: cosmetic only */
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const [version, setVersion] = useState<string>("");

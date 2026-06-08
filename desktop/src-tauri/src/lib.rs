@@ -15,6 +15,64 @@ mod vpn;
 
 use std::sync::Arc;
 
+/// Whether the running session has a compositing window manager.
+///
+/// We only enable window transparency (which the frontend pairs with rounded
+/// corners) when a compositor is present. On a machine WITHOUT one, a
+/// transparent borderless window renders BLACK corners instead of see-through
+/// ones — worse than plain square corners. So transparency is gated on this.
+///
+/// Detection prefers GDK (`Screen::is_composited()`), which is authoritative on
+/// both X11 (reads `_NET_WM_CM_Sn`) and Wayland (always composited). GDK is
+/// valid at our call sites (the `window_composited` command and opening a second
+/// window) because tao/GTK has already initialised it by then. If for any reason
+/// the GDK screen can't be obtained we fall back to an env
+/// heuristic: a Wayland session always has a compositor; otherwise we assume
+/// one is present (the common case across desktop environments), since the only
+/// real failure mode we're guarding against — a transparent window on a bare
+/// X11 server with no compositor — is rare and the heuristic only runs when GDK
+/// already failed.
+#[cfg(target_os = "linux")]
+fn detect_composited() -> bool {
+    // `is_composited()` is provided by the `ScreenExt` trait in gtk3-rs, so it
+    // must be in scope (glob import is safe — only a warning if ever inherent).
+    use gtk::gdk::prelude::*;
+    // GDK: the reliable path. `gdk::Screen::default()` is valid once GTK is up
+    // (true inside Tauri's setup hook). `gtk::gdk` re-exports the gdk crate.
+    if let Some(screen) = gtk::gdk::Screen::default() {
+        return screen.is_composited();
+    }
+    // Fallback heuristic — only reached if there is no default GDK screen.
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|v| v.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+    if wayland {
+        return true; // Wayland always composites.
+    }
+    // X11 (or unknown): assume a compositor is present — most DEs composite,
+    // and over-assuming here only costs black corners on the rare bare-X11 box,
+    // which the GDK path above would normally have caught.
+    true
+}
+
+/// Non-Linux platforms don't use the transparency-gated rounding at all; report
+/// "not composited" so the shared window-builder simply skips `.transparent`.
+#[cfg(not(target_os = "linux"))]
+fn detect_composited() -> bool {
+    false
+}
+
+/// Exposed to the frontend so it rounds the borderless Linux window corners
+/// (transparent background outside the radius) ONLY when a compositor can
+/// actually blend that transparency. Without one, the frontend keeps a fully
+/// opaque square background — so even though the window is created transparent,
+/// no pixel is left see-through and there are no black corners.
+#[tauri::command]
+fn window_composited() -> bool {
+    detect_composited()
+}
+
 /// A second launch of the app is collapsed into the already-running instance by
 /// the single-instance plugin; instead of forking a second process that would
 /// race the same hosts.json / vault.age files, we open a fresh window in THIS
@@ -25,11 +83,16 @@ fn open_extra_window(app: &tauri::AppHandle) {
     static COUNTER: AtomicUsize = AtomicUsize::new(1);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let label = format!("main-{n}");
+    // Match the main window's transparency so secondary windows round their
+    // corners too — but only with a compositor (else opaque/square, no black
+    // corners). Builder windows don't inherit the config's `transparent`, so
+    // set it explicitly. detect_composited() is non-Linux-safe (returns false).
     let _ = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
         .title("NexuSSH")
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 500.0)
         .decorations(false)
+        .transparent(detect_composited())
         .build();
 }
 
@@ -156,6 +219,7 @@ pub fn run() {
             import_sources::read_text_file,
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
+            window_composited,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

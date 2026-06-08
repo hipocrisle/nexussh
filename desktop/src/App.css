@@ -136,13 +136,16 @@ select option {
   app-region: no-drag;
 }
 
-/* ---- Linux borderless-window rounded corners ----
+/* ---- Linux borderless-window rounded corners (compositor-aware) ----
  * On Linux the window is borderless (decorations:false) with transparent:true
  * (tauri.linux.conf.json). Round the top window container and clip its content
- * so the corners are smooth; make the layers behind it transparent so the
- * area outside the radius shows the desktop (needs a compositor — without one
- * the corners may render black instead of transparent). data-os="linux" is set
- * at runtime in App.tsx. Windows is unaffected (no data-os attr there). */
+ * so the corners are smooth; make the layers behind it transparent so the area
+ * outside the radius shows the desktop. This REQUIRES a compositor — without
+ * one the transparent corners render black. So data-os="linux" is set at
+ * runtime in App.tsx ONLY when the Rust `window_composited` command (GDK
+ * is_composited) reports a compositor. With no compositor the attribute stays
+ * unset → these rules don't apply → the background stays fully opaque and the
+ * window is a plain square (no black corners). Windows/Android: attr never set. */
 html[data-os="linux"],
 html[data-os="linux"] body,
 html[data-os="linux"] #root {

@@ -36,6 +36,7 @@ import { ContextMenu, MenuItem } from "./ContextMenu";
 import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
+import { ResizeHandles } from "./ResizeHandles";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
@@ -442,23 +443,29 @@ function App() {
         const composited = await invoke<boolean>("window_composited");
         if (!cancelled && composited) {
           document.documentElement.setAttribute("data-os", "linux");
-          // WebKitGTK paints the transparent corners OPAQUE until the first
-          // window relayout — so the rounded corners only appear once the user
-          // resizes/maximises. Nudge the window size by 1px and back (next
-          // tick, so the +1 actually lays out) to force that repaint on launch.
-          try {
-            const { getCurrentWindow, PhysicalSize } = await import(
-              "@tauri-apps/api/window"
-            );
-            const win = getCurrentWindow();
-            const sz = await win.innerSize();
-            await win.setSize(new PhysicalSize(sz.width, sz.height + 1));
-            setTimeout(() => {
-              win.setSize(sz).catch(() => {});
-            }, 60);
-          } catch {
-            /* nudge is best-effort */
-          }
+          // WebKitGTK paints the transparent corners OPAQUE until a real window
+          // relayout — so rounding only appears after a manual resize. Force it
+          // by nudging the window size +1px, HOLDING long enough that GTK
+          // actually commits the size-allocate (and repaints transparent), then
+          // reverting. Must run AFTER the first opaque composite (an early nudge
+          // gets overwritten by it), so we delay it and retry once as a
+          // fallback. Once transparency has kicked in it persists.
+          const nudge = async () => {
+            try {
+              const { getCurrentWindow, PhysicalSize } = await import(
+                "@tauri-apps/api/window"
+              );
+              const win = getCurrentWindow();
+              const sz = await win.innerSize();
+              await win.setSize(new PhysicalSize(sz.width, sz.height + 1));
+              await new Promise((r) => setTimeout(r, 180));
+              await win.setSize(sz);
+            } catch {
+              /* nudge is best-effort */
+            }
+          };
+          setTimeout(nudge, 350);
+          setTimeout(nudge, 1100);
         }
       } catch {
         /* no-op: cosmetic only — leave square/opaque on any failure */
@@ -3094,6 +3101,10 @@ function App() {
           <span>{paneDragState.hostLabel}</span>
         </div>
       )}
+
+      {/* Window-edge resize zones (decorations:false has no native resize
+       *  border/cursors). Desktop only — mobile windows aren't resized. */}
+      {HAS_TAURI && !isMobile && <ResizeHandles />}
     </main>
   );
 }

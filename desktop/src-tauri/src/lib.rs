@@ -83,6 +83,43 @@ fn window_composited() -> bool {
     COMPOSITED.load(Ordering::Relaxed)
 }
 
+/// Force WebKitGTK to recomposite the transparent window so the rounded corners
+/// show on launch. WebKitGTK paints the corners OPAQUE until a real GTK
+/// size-allocate; a programmatic Tauri `set_size` doesn't reliably trigger one
+/// (coalesced, or rounded away on HiDPI), but a native `gtk_window.resize()`
+/// held for a main-loop tick does — the same path a manual edge-drag takes. We
+/// bump the height +4px and revert it 220ms later via a glib timeout (so the +4
+/// actually commits a size-allocate in between). Linux + compositor only.
+#[tauri::command]
+fn nudge_repaint(window: tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    {
+        if !COMPOSITED.load(Ordering::Relaxed) {
+            return;
+        }
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            use gtk::prelude::*;
+            if let Ok(win) = w.gtk_window() {
+                let width = win.allocated_width().max(1);
+                let height = win.allocated_height().max(1);
+                win.resize(width, height + 4);
+                let revert = win.clone();
+                let _ = gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(220),
+                    move || {
+                        revert.resize(width, height);
+                    },
+                );
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+    }
+}
+
 /// A second launch of the app is collapsed into the already-running instance by
 /// the single-instance plugin; instead of forking a second process that would
 /// race the same hosts.json / vault.age files, we open a fresh window in THIS
@@ -238,6 +275,7 @@ pub fn run() {
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
             window_composited,
+            nudge_repaint,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

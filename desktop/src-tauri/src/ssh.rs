@@ -599,6 +599,8 @@ pub async fn ssh_connect(
         )
         .await;
         manager.sessions.lock().await.remove(&sid);
+        // Flush + seal the recording for this session (no-op if not recording).
+        crate::history::finalize_session(&app_handle, &sid);
         let _ = app_handle.emit(
             "ssh-closed",
             ClosedEvent {
@@ -640,6 +642,10 @@ async fn run_session_loop(
         gate: &Mutex<OutputGate>,
         bytes: Vec<u8>,
     ) {
+        // Feed the (optional) history recorder before we hand the bytes off to
+        // the frontend — a no-op unless this session is being recorded. Does NOT
+        // delay display: the emit/buffer happens right after.
+        crate::history::record_output(app, sid, &bytes);
         let mut g = gate.lock().await;
         match &mut *g {
             OutputGate::Buffering(buf) => buf.push(bytes),

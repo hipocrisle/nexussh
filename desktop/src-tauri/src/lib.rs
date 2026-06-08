@@ -212,6 +212,7 @@ pub fn run() {
         .manage(Arc::new(sftp::SftpManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
+        .manage(history::HistoryState::new())
         .setup(|app| {
             // Detect the compositor ONCE here — `.setup()` runs on the main GTK
             // thread, so the GDK call inside detect_composited() is safe (unlike
@@ -285,6 +286,8 @@ pub fn run() {
             history::history_delete,
             history::history_clear,
             history::history_stats,
+            history::history_start,
+            history::history_pause,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -30,14 +30,34 @@
 
 use age::secrecy::ExposeSecret;
 use age::x25519::{Identity, Recipient};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Mutex;
+use std::time::Instant;
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{self, VaultState};
+
+// ---- live recorder tuning (Phase 2) ----
+/// Flush the pending-events buffer into an encrypted chunk once it reaches this
+/// many uncompressed bytes (keeps chunk count + per-chunk age/gzip overhead sane).
+const FLUSH_THRESHOLD: usize = 32 * 1024;
+/// Per-session ring: once the on-disk recording passes the HIGH mark, drop whole
+/// leading chunks until it's back under LOW (keep the TAIL — recent output).
+const SESSION_CAP_HIGH: u64 = 5 * 1024 * 1024;
+const SESSION_CAP_LOW: u64 = 4 * 1024 * 1024;
+
+/// xterm alt-screen enter/exit sequences. In "light" mode we don't record output
+/// while inside one (vim/htop/Claude Code/tmux) — smaller + less chance of a
+/// secret flashing through a TUI.
+const ALT_ENTER: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?1047h", b"\x1b[?47h"];
+const ALT_EXIT: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l"];
 
 // ---- store policy (Phase 4 will wire these to Settings) ----
 /// Hard ceiling for the whole history store. Oldest recordings are pruned first.
@@ -450,6 +470,260 @@ pub fn prune(app: &AppHandle) -> Result<(), HistoryError> {
             total = total.saturating_sub(*sz);
         }
     }
+    Ok(())
+}
+
+// ---- live recorder (Phase 2) ----
+
+fn count_occurrences(hay: &[u8], needle: &[u8]) -> i32 {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return 0;
+    }
+    let mut n = 0i32;
+    let mut i = 0usize;
+    while i + needle.len() <= hay.len() {
+        if &hay[i..i + needle.len()] == needle {
+            n += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    n
+}
+
+/// One in-flight recording. Output is buffered as NDJSON event lines
+/// (`[t_seconds, "base64(bytes)"]`), flushed into encrypted+gzip chunks. Holds
+/// only the public recipient, so it keeps recording even if the vault locks.
+struct Recorder {
+    dir: PathBuf,
+    rec_path: PathBuf,
+    recipient: Recipient,
+    meta: SessionMeta,
+    buf: Vec<u8>,
+    started: Instant,
+    /// Sum of on-disk chunk byte-lengths (for the ring cap).
+    comp_total: u64,
+    chunk_lens: Vec<u64>,
+    /// alt-screen nesting depth (light mode skips output while > 0).
+    alt_depth: i32,
+    light: bool,
+    paused: bool,
+}
+
+impl Recorder {
+    fn record(&mut self, bytes: &[u8]) {
+        if self.paused || bytes.is_empty() {
+            return;
+        }
+        // Decide on the chunk as a whole using the depth at its START, then update
+        // depth from this chunk. Boundary splits leak/drop a little around the
+        // transition — acceptable for a best-effort privacy/size filter.
+        let write = !self.light || self.alt_depth == 0;
+        if self.light {
+            let mut delta = 0i32;
+            for p in ALT_ENTER {
+                delta += count_occurrences(bytes, p);
+            }
+            for p in ALT_EXIT {
+                delta -= count_occurrences(bytes, p);
+            }
+            self.alt_depth = (self.alt_depth + delta).max(0);
+        }
+        if !write {
+            return;
+        }
+        let t = self.started.elapsed().as_secs_f64();
+        // `[t,"b64"]\n` — all ASCII, so the decrypted stream stays valid UTF-8.
+        self.buf
+            .extend_from_slice(format!("[{:.3},\"{}\"]\n", t, B64.encode(bytes)).as_bytes());
+        self.meta.bytes += bytes.len() as u64;
+        if self.buf.len() >= FLUSH_THRESHOLD {
+            let _ = self.flush();
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), HistoryError> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let plain = std::mem::take(&mut self.buf);
+        let written = append_chunk(&self.rec_path, &self.recipient, &plain)?;
+        self.chunk_lens.push(written);
+        self.comp_total += written;
+        self.enforce_cap()?;
+        Ok(())
+    }
+
+    /// Keep the recording under the per-session cap by dropping whole leading
+    /// chunks (oldest output) once it passes HIGH, down to LOW. Chunks are
+    /// independent age blobs aligned on byte boundaries, so we can drop them by a
+    /// raw byte-prefix copy — no decryption needed.
+    fn enforce_cap(&mut self) -> Result<(), HistoryError> {
+        if self.comp_total <= SESSION_CAP_HIGH {
+            return Ok(());
+        }
+        let mut drop_bytes = 0u64;
+        let mut drop_chunks = 0usize;
+        while self.comp_total - drop_bytes > SESSION_CAP_LOW && drop_chunks < self.chunk_lens.len() {
+            drop_bytes += self.chunk_lens[drop_chunks];
+            drop_chunks += 1;
+        }
+        if drop_chunks == 0 {
+            return Ok(());
+        }
+        let data = std::fs::read(&self.rec_path)?;
+        if (drop_bytes as usize) <= data.len() {
+            let tail = &data[drop_bytes as usize..];
+            let tmp = self.rec_path.with_extension("nxrec.tmp");
+            std::fs::write(&tmp, tail)?;
+            std::fs::rename(&tmp, &self.rec_path)?;
+        }
+        self.chunk_lens.drain(0..drop_chunks);
+        self.comp_total = self.comp_total.saturating_sub(drop_bytes);
+        self.meta.truncated = true;
+        Ok(())
+    }
+
+    fn finalize(&mut self) -> Result<(), HistoryError> {
+        self.flush()?;
+        self.meta.end = Some(now_secs());
+        write_meta(&self.dir, &self.recipient, &self.meta)?;
+        Ok(())
+    }
+}
+
+/// Tauri-managed map of active recordings + a cached recipient string.
+#[derive(Default)]
+pub struct HistoryState {
+    recorders: Mutex<HashMap<String, Recorder>>,
+    /// `dek.pub` contents, cached after first load (public key, not a secret).
+    recipient: Mutex<Option<String>>,
+}
+
+impl HistoryState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn recipient(&self, app: &AppHandle) -> Result<Recipient, HistoryError> {
+        if let Some(s) = self.recipient.lock().unwrap().clone() {
+            return Recipient::from_str(&s).map_err(|e| HistoryError::Crypto(e.to_string()));
+        }
+        let r = load_recipient(app)?; // reads dek.pub (no vault needed)
+        *self.recipient.lock().unwrap() = Some(r.to_string());
+        Ok(r)
+    }
+
+    /// Begin recording a session. Requires the history key to exist (vault was
+    /// unlocked at least once). `mode` is "full" or "light".
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        &self,
+        app: &AppHandle,
+        session_id: String,
+        host_id: String,
+        label: String,
+        cols: u16,
+        rows: u16,
+        mode: String,
+    ) -> Result<(), HistoryError> {
+        if !safe_id(&session_id) {
+            return Err(HistoryError::BadId);
+        }
+        let dir = history_dir(app)?;
+        std::fs::create_dir_all(&dir)?;
+        let recipient = self.recipient(app)?;
+        let light = mode == "light";
+        let meta = SessionMeta {
+            id: session_id.clone(),
+            host_id,
+            label,
+            start: now_secs(),
+            end: None,
+            bytes: 0,
+            cols,
+            rows,
+            mode,
+            truncated: false,
+        };
+        // Write an initial meta (end=None) so a crash still leaves the recording
+        // listable; finalize() overwrites it with the complete record.
+        write_meta(&dir, &recipient, &meta)?;
+        let rec_path = rec_path(&dir, &session_id);
+        let rec = Recorder {
+            dir,
+            rec_path,
+            recipient,
+            meta,
+            buf: Vec::new(),
+            started: Instant::now(),
+            comp_total: 0,
+            chunk_lens: Vec::new(),
+            alt_depth: 0,
+            light,
+            paused: false,
+        };
+        self.recorders.lock().unwrap().insert(session_id, rec);
+        Ok(())
+    }
+
+    fn record(&self, session_id: &str, bytes: &[u8]) {
+        if let Some(r) = self.recorders.lock().unwrap().get_mut(session_id) {
+            r.record(bytes);
+        }
+    }
+
+    fn set_paused(&self, session_id: &str, paused: bool) {
+        if let Some(r) = self.recorders.lock().unwrap().get_mut(session_id) {
+            r.paused = paused;
+        }
+    }
+
+    fn finalize(&self, session_id: &str) {
+        if let Some(mut r) = self.recorders.lock().unwrap().remove(session_id) {
+            let _ = r.finalize();
+        }
+    }
+}
+
+/// Called from the ssh output loop for every chunk of server output — records it
+/// if this session is being recorded, otherwise a cheap no-op. Never blocks on
+/// the vault (recipient-only).
+pub fn record_output(app: &AppHandle, session_id: &str, bytes: &[u8]) {
+    app.state::<HistoryState>().record(session_id, bytes);
+}
+
+/// Called when the ssh session ends — flush + write the final metadata.
+pub fn finalize_session(app: &AppHandle, session_id: &str) {
+    app.state::<HistoryState>().finalize(session_id);
+}
+
+/// Start recording a session (called by the frontend right after connect when
+/// recording is enabled for this host).
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn history_start(
+    app: AppHandle,
+    hist: State<'_, HistoryState>,
+    session_id: String,
+    host_id: String,
+    label: String,
+    cols: u16,
+    rows: u16,
+    mode: String,
+) -> Result<(), HistoryError> {
+    hist.start(&app, session_id, host_id, label, cols, rows, mode)
+}
+
+/// Pause/resume recording of a live session (the per-tab incognito toggle).
+#[tauri::command]
+pub async fn history_pause(
+    hist: State<'_, HistoryState>,
+    session_id: String,
+    paused: bool,
+) -> Result<(), HistoryError> {
+    hist.set_paused(&session_id, paused);
     Ok(())
 }
 

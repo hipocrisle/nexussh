@@ -420,6 +420,23 @@ function App() {
     applyTheme(settings.theme);
   }, [settings.theme]);
 
+  // Mark the document as running on Linux desktop so the CSS can round the
+  // borderless window corners (paired with transparent:true from
+  // tauri.linux.conf.json). Android is also "Linux" in the UA, so exclude it
+  // the same way updater.ts isAndroid() does. Fail-safe: never throws.
+  useEffect(() => {
+    try {
+      const ua = navigator.userAgent || "";
+      const isAndroid = /Android/i.test(ua);
+      const isLinux = !isAndroid && /Linux/i.test(ua);
+      if (isLinux) {
+        document.documentElement.setAttribute("data-os", "linux");
+      }
+    } catch {
+      /* no-op: cosmetic only */
+    }
+  }, []);
+
   const [version, setVersion] = useState<string>("");
 
   // Workspace tab model: ONE top tab strip; each tab is a workspace = layout

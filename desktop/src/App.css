@@ -113,6 +113,19 @@ textarea {
   font-family: inherit;
 }
 
+/* Native <select> dropdowns render with the system (white) background on
+ * GTK/Linux, ignoring our dark theme. GTK honours background/color set on
+ * <select> and <option>, so pull them from the theme tokens. Falls back to
+ * the early :root defaults before the theme pump runs. */
+select {
+  background-color: var(--nx-bg-panel, var(--nexus-bg-input));
+  color: var(--nx-text-primary, var(--nexus-text));
+}
+select option {
+  background-color: var(--nx-bg-elevated, var(--nexus-bg));
+  color: var(--nx-text-primary, var(--nexus-text));
+}
+
 /* Draggable titlebar region */
 .titlebar-drag {
   -webkit-app-region: drag;
@@ -121,6 +134,23 @@ textarea {
 .no-drag {
   -webkit-app-region: no-drag;
   app-region: no-drag;
+}
+
+/* ---- Linux borderless-window rounded corners ----
+ * On Linux the window is borderless (decorations:false) with transparent:true
+ * (tauri.linux.conf.json). Round the top window container and clip its content
+ * so the corners are smooth; make the layers behind it transparent so the
+ * area outside the radius shows the desktop (needs a compositor — without one
+ * the corners may render black instead of transparent). data-os="linux" is set
+ * at runtime in App.tsx. Windows is unaffected (no data-os attr there). */
+html[data-os="linux"],
+html[data-os="linux"] body,
+html[data-os="linux"] #root {
+  background: transparent !important;
+}
+html[data-os="linux"] #root > main {
+  border-radius: 9px;
+  overflow: hidden;
 }
 
 /* Glow on focused green accents */

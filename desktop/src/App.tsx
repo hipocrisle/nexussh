@@ -1619,6 +1619,16 @@ function App() {
         },
         disabled: !focused || focused.session.status === "connecting",
       },
+      // Duplicate tab — open a fresh tab connected to the same host as the
+      // focused pane (reuses its auth snapshot, so saved/quick-connect hosts
+      // don't re-prompt; alwaysAsk hosts prompt as usual).
+      {
+        label: t("tabmenu.duplicate"),
+        onClick: () => {
+          if (focusedHost) openHost(focusedHost);
+        },
+        disabled: !focusedHost,
+      },
       // Splits aren't usable on phone-sized viewports (terminal becomes
       // unreadable), so the items are hidden there.
       ...(!isMobile

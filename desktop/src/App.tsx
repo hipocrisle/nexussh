@@ -38,7 +38,7 @@ import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { ResizeHandles } from "./ResizeHandles";
-import { historyStart } from "./history";
+import { historyStart, historyPause } from "./history";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
@@ -676,6 +676,8 @@ function App() {
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  // Sessions currently being recorded → paused?. Drives the ● REC chip.
+  const [recSids, setRecSids] = useState<Record<string, boolean>>({});
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
   );
@@ -1418,14 +1420,9 @@ function App() {
       // the master password). Backend finalises automatically on session close.
       const wantRec = h.recordHistory ?? settings.historyEnabled;
       if (wantRec && vault?.unlocked) {
-        historyStart(
-          sid,
-          h.id,
-          `${h.user}@${h.host}`,
-          80,
-          24,
-          settings.historyMode,
-        ).catch(() => {});
+        historyStart(sid, h.id, `${h.user}@${h.host}`, 80, 24, settings.historyMode)
+          .then(() => setRecSids((r) => ({ ...r, [sid]: false })))
+          .catch(() => {});
       }
     } catch (e) {
       // Keep the pane and show WHY it failed (with Retry), instead of vanishing.
@@ -2225,8 +2222,25 @@ function App() {
     });
   }
 
+  // Toggle pause/resume of a live recording (the ● REC chip click).
+  function toggleRecPause(sessionId: string) {
+    setRecSids((r) => {
+      if (!(sessionId in r)) return r;
+      const paused = !r[sessionId];
+      historyPause(sessionId, paused).catch(() => {});
+      return { ...r, [sessionId]: paused };
+    });
+  }
+
   function markClosed(sessionId: string, reason: string) {
     updateSession(sessionId, (s) => ({ ...s, status: "closed" }));
+    // Drop the recording chip — the backend finalises the recording itself.
+    setRecSids((r) => {
+      if (!(sessionId in r)) return r;
+      const n = { ...r };
+      delete n[sessionId];
+      return n;
+    });
     // Auto-reconnect only on UNEXPECTED close (network drop, server-side EOF
     // etc.). Don't retry when the user themselves closed the session.
     if (reason === "user disconnected") {
@@ -2713,6 +2727,38 @@ function App() {
             <span className="text-nx-muted shrink-0">@</span>
             <span className="text-nx-muted truncate">{activeSession.host}</span>
           </div>
+        )}
+
+        {/* Live recording chip for the focused session — click to pause/resume. */}
+        {focusedSession && recSids[focusedSession.id] !== undefined && !isMobile && (
+          <button
+            type="button"
+            onClick={() => toggleRecPause(focusedSession.id)}
+            title={t(
+              recSids[focusedSession.id]
+                ? "history.rec_resume"
+                : "history.rec_pause",
+            )}
+            className="no-drag flex items-center gap-1.5 px-2 py-0.5 border rounded-nx text-meta font-mono"
+            style={{
+              borderColor: recSids[focusedSession.id]
+                ? "var(--nx-border)"
+                : "var(--nx-error)",
+              color: recSids[focusedSession.id]
+                ? "var(--nx-text-muted)"
+                : "var(--nx-error)",
+            }}
+          >
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                background: recSids[focusedSession.id]
+                  ? "var(--nx-text-muted)"
+                  : "var(--nx-error)",
+              }}
+            />
+            {recSids[focusedSession.id] ? t("history.rec_paused") : t("history.rec")}
+          </button>
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">

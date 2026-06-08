@@ -1,8 +1,10 @@
 // Behavior section — defaults, sessions, advanced toggle, about.
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { FileText } from "lucide-react";
+import { FileText, Trash2 } from "lucide-react";
+import { historyStats, historyClear } from "../history";
+import { askConfirm } from "../dialogs";
 import { ThemePalette } from "./themes";
 import {
   Section,
@@ -32,6 +34,19 @@ export function BehaviorSection({ s, set, t }: Props) {
   const [bundleExportOpen, setBundleExportOpen] = useState(false);
   const [bundleImportOpen, setBundleImportOpen] = useState(false);
   const isMobile = useIsMobile();
+  const [histStats, setHistStats] = useState({ sessions: 0, bytes: 0 });
+  const refreshStats = () => {
+    historyStats().then(setHistStats).catch(() => {});
+  };
+  useEffect(() => {
+    if (s.historyEnabled) refreshStats();
+  }, [s.historyEnabled]);
+  const fmtBytes = (n: number) =>
+    n < 1024
+      ? `${n} B`
+      : n < 1048576
+        ? `${(n / 1024).toFixed(0)} KB`
+        : `${(n / 1048576).toFixed(1)} MB`;
 
   return (
     <Section
@@ -210,22 +225,60 @@ export function BehaviorSection({ s, set, t }: Props) {
       </Row>
 
       {s.historyEnabled && (
-        <Row
-          label={tr("settings.behavior.history_mode")}
-          hint={tr("settings.behavior.history_mode_hint")}
-          t={t}
-        >
-          <Toggle
-            checked={s.historyMode === "full"}
-            onChange={(v) => set({ historyMode: v ? "full" : "light" })}
+        <>
+          <Row
+            label={tr("settings.behavior.history_mode")}
+            hint={tr("settings.behavior.history_mode_hint")}
             t={t}
-            label={tr("settings.behavior.history_full_label")}
-            onLabel={tr("settings.nav.on")}
-            offLabel={tr("settings.nav.off")}
-            enabledLabel={tr("settings.toggle.enabled")}
-            disabledLabel={tr("settings.toggle.disabled")}
-          />
-        </Row>
+          >
+            <Toggle
+              checked={s.historyMode === "full"}
+              onChange={(v) => set({ historyMode: v ? "full" : "light" })}
+              t={t}
+              label={tr("settings.behavior.history_full_label")}
+              onLabel={tr("settings.nav.on")}
+              offLabel={tr("settings.nav.off")}
+              enabledLabel={tr("settings.toggle.enabled")}
+              disabledLabel={tr("settings.toggle.disabled")}
+            />
+          </Row>
+          <Row
+            label={tr("settings.behavior.history_usage")}
+            hint={tr("settings.behavior.history_usage_hint")}
+            t={t}
+          >
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="font-mono text-xs" style={{ color: t.textSoft }}>
+                {tr("settings.behavior.history_usage_value", {
+                  count: histStats.sessions,
+                  size: fmtBytes(histStats.bytes),
+                })}
+              </span>
+              <button
+                type="button"
+                disabled={histStats.sessions === 0}
+                onClick={async () => {
+                  const ok = await askConfirm(
+                    tr("settings.behavior.history_clear_confirm"),
+                    { destructive: true },
+                  );
+                  if (!ok) return;
+                  await historyClear().catch(() => {});
+                  refreshStats();
+                }}
+                className="inline-flex items-center gap-2 px-3 py-2 font-mono text-xs rounded disabled:opacity-40"
+                style={{
+                  background: t.bgPanel,
+                  border: `1px solid ${t.border}`,
+                  color: t.error,
+                }}
+              >
+                <Trash2 size={12} />
+                {tr("settings.behavior.history_clear")}
+              </button>
+            </div>
+          </Row>
+        </>
       )}
 
       <Row

@@ -82,6 +82,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // Default: ask every connect. Inverted in UI as "save password" opt-in.
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(true);
   const [useVpn, setUseVpn] = useState(false);
+  // undefined = inherit global history setting; true/false = force on/off.
+  const [recordHistory, setRecordHistory] = useState<boolean | undefined>(
+    undefined,
+  );
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
@@ -104,6 +108,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
+    setRecordHistory(initial.recordHistory);
     // A host whose secret lives in the vault under its own per-host key is
     // shown as a normal "password (saved)" host — the vault is an
     // implementation detail. Leave the field blank; keep the existing
@@ -200,6 +205,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,
+        recordHistory,
         order: initial?.order,
       };
       await saveHost(rec);
@@ -453,6 +459,31 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               ))}
               </>
             )}
+
+            {/* Per-host session-history override (inherits the global setting
+             *  by default). */}
+            <div className={kicker + " mt-6 mb-3 block"}>
+              // {t("dialog.col_history")}
+            </div>
+            <RowLabel>{t("dialog.record_history")}</RowLabel>
+            <Select
+              className="mt-1.5"
+              value={
+                recordHistory === undefined
+                  ? "default"
+                  : recordHistory
+                    ? "on"
+                    : "off"
+              }
+              onChange={(v) =>
+                setRecordHistory(v === "default" ? undefined : v === "on")
+              }
+              options={[
+                { value: "default", label: t("dialog.record_default") },
+                { value: "on", label: t("dialog.record_on") },
+                { value: "off", label: t("dialog.record_off") },
+              ]}
+            />
           </div>
         </div>
 

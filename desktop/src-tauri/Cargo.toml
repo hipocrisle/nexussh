@@ -42,6 +42,10 @@ tauri-plugin-clipboard-manager = "2"
 # in-memory ring buffer so a failed connect can show WHY it failed (ssh -vvv-ish).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Session-history recordings are gzip-compressed before age-encryption. flate2's
+# default miniz_oxide backend is pure Rust (no C toolchain) so it cross-compiles
+# cleanly to Android/Windows in CI.
+flate2 = "1"
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"

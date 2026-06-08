@@ -3,6 +3,7 @@ mod android_updater;
 mod biometric;
 mod bundle;
 mod cleanup;
+mod history;
 mod import_sources;
 mod sftp;
 mod ssh;
@@ -211,12 +212,15 @@ pub fn run() {
         .manage(Arc::new(sftp::SftpManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
-        .setup(|_app| {
+        .setup(|app| {
             // Detect the compositor ONCE here — `.setup()` runs on the main GTK
             // thread, so the GDK call inside detect_composited() is safe (unlike
             // from a command's worker thread). Cache it for window_composited()
             // and open_extra_window(). No-op on non-Linux (detect → false).
             COMPOSITED.store(detect_composited(), Ordering::Relaxed);
+            // Trim the history store to its size/age limits at startup (mtime +
+            // size only, no vault needed). Best-effort — never block launch.
+            let _ = history::prune(&app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -276,6 +280,11 @@ pub fn run() {
             vpn::vpn_fetch_subscription,
             window_composited,
             nudge_repaint,
+            history::history_list,
+            history::history_read,
+            history::history_delete,
+            history::history_clear,
+            history::history_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

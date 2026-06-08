@@ -319,6 +319,10 @@ pub async fn vault_create(
     persist(&u)?;
     set_config_vault_path(&app, &path)?;
     *state.inner.lock().unwrap() = Some(u);
+    // Mint the separate history data key now that the vault key exists (the
+    // history key is wrapped to it). Best-effort — vault creation must succeed
+    // even if history init can't (e.g. read-only history dir).
+    let _ = crate::history::ensure_dek(&app, &state);
     Ok(())
 }
 
@@ -360,6 +364,9 @@ pub async fn vault_unlock(
         dek_recipient,
         wrapped_dek,
     });
+    // Ensure the history data key exists / its public file is present now that
+    // we're unlocked (covers vaults created before the history feature).
+    let _ = crate::history::ensure_dek(&app, &state);
     Ok(())
 }
 
@@ -449,6 +456,15 @@ pub fn dek_secret(state: &VaultState) -> Result<String, VaultError> {
     Ok(u.dek.to_string().expose_secret().to_owned())
 }
 
+/// The unlocked vault data key's PUBLIC recipient (`age1...`). Used by the
+/// history module to wrap its own separate data key to the vault key. Returns
+/// None when locked. Public is not secret, but it's only meaningful while
+/// unlocked (the matching identity is what gates reads).
+pub fn dek_recipient_string(state: &VaultState) -> Option<String> {
+    let guard = state.inner.lock().unwrap();
+    guard.as_ref().map(|u| u.dek_recipient.to_string())
+}
+
 /// Unlock the vault from a data key directly (no master password, no scrypt) —
 /// the biometric path: the keystore released the DEK after a fingerprint, and
 /// we decrypt the content with it. `passphrase` is left empty, so a password
@@ -475,6 +491,7 @@ pub fn unlock_with_dek(
         dek_recipient,
         wrapped_dek: wrapped.to_vec(),
     });
+    let _ = crate::history::ensure_dek(app, state);
     Ok(())
 }
 

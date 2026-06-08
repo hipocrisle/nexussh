@@ -46,9 +46,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # default miniz_oxide backend is pure Rust (no C toolchain) so it cross-compiles
 # cleanly to Android/Windows in CI.
 flate2 = "1"
-# Raw terminal-output bytes (not always valid UTF-8) are base64-encoded into the
-# NDJSON history events so they survive losslessly through JSON/UTF-8.
-base64 = "0.22"
+# (base64 — already a dependency below — encodes raw terminal bytes into the
+#  NDJSON history events losslessly.)
 aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"

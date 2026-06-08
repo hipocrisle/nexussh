@@ -25,6 +25,7 @@ import {
   ToggleRow,
 } from "./components/primitives";
 import { loadProfiles, type VpnProfile } from "./vpn";
+import { Select } from "./Select";
 
 type AuthKind = "password" | "key" | "vault";
 
@@ -421,37 +422,31 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 <div className="mt-2 space-y-3">
                   <div>
                     <RowLabel>{t("dialog.vpn_profile")}</RowLabel>
-                    <select
+                    <Select
                       value={vpnProfileId}
-                      onChange={(e) => {
-                        setVpnProfileId(e.target.value);
+                      onChange={(v) => {
+                        setVpnProfileId(v);
                         setVpnExit("auto");
                       }}
-                      className="nx-focus w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-body text-nx-text"
-                    >
-                      <option value="">{t("dialog.vpn_pick_profile")}</option>
-                      {vpnProfiles.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder={t("dialog.vpn_pick_profile")}
+                      options={vpnProfiles.map((p) => ({ value: p.id, label: p.name }))}
+                      className="mt-1.5"
+                    />
                   </div>
                   {vpnProfileId && (
                     <div>
                       <RowLabel>{t("dialog.vpn_exit")}</RowLabel>
-                      <select
+                      <Select
                         value={vpnExit}
-                        onChange={(e) => setVpnExit(e.target.value)}
-                        className="nx-focus w-full mt-1.5 px-2.5 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-body text-nx-text"
-                      >
-                        <option value="auto">{t("dialog.vpn_auto")}</option>
-                        {(vpnProfiles.find((p) => p.id === vpnProfileId)?.nodes ?? []).map((n) => (
-                          <option key={n.tag} value={n.tag}>
-                            {n.tag}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(v) => setVpnExit(v)}
+                        options={[
+                          { value: "auto", label: t("dialog.vpn_auto") },
+                          ...(vpnProfiles.find((p) => p.id === vpnProfileId)?.nodes ?? []).map(
+                            (n) => ({ value: n.tag, label: n.tag }),
+                          ),
+                        ]}
+                        className="mt-1.5"
+                      />
                     </div>
                   )}
                 </div>

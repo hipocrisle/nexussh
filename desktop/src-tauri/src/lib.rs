@@ -14,6 +14,16 @@ mod vault;
 mod vpn;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Cached result of compositor detection. Computed ONCE on the main GTK thread
+/// in the `.setup()` hook (GDK is thread-affine — calling it from a Tauri
+/// command's worker thread can panic / return garbage, which is why the earlier
+/// per-command detection silently failed and corners stayed square). Defaults
+/// to `false` (no rounding) until setup runs; the webview only loads — and thus
+/// can only `invoke("window_composited")` — after setup completes, so there's no
+/// race.
+static COMPOSITED: AtomicBool = AtomicBool::new(false);
 
 /// Whether the running session has a compositing window manager.
 ///
@@ -70,7 +80,7 @@ fn detect_composited() -> bool {
 /// no pixel is left see-through and there are no black corners.
 #[tauri::command]
 fn window_composited() -> bool {
-    detect_composited()
+    COMPOSITED.load(Ordering::Relaxed)
 }
 
 /// A second launch of the app is collapsed into the already-running instance by
@@ -92,7 +102,7 @@ fn open_extra_window(app: &tauri::AppHandle) {
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 500.0)
         .decorations(false)
-        .transparent(detect_composited())
+        .transparent(COMPOSITED.load(Ordering::Relaxed))
         .build();
 }
 
@@ -164,6 +174,14 @@ pub fn run() {
         .manage(Arc::new(sftp::SftpManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
+        .setup(|_app| {
+            // Detect the compositor ONCE here — `.setup()` runs on the main GTK
+            // thread, so the GDK call inside detect_composited() is safe (unlike
+            // from a command's worker thread). Cache it for window_composited()
+            // and open_extra_window(). No-op on non-Linux (detect → false).
+            COMPOSITED.store(detect_composited(), Ordering::Relaxed);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ssh::ssh_connect,
             ssh::ssh_send,

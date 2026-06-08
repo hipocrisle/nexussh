@@ -13,6 +13,7 @@ import {
   syncPull,
 } from "./sync";
 import { useBackdropClose } from "./useBackdropClose";
+import { Select } from "./Select";
 
 interface Props {
   onClose: () => void;
@@ -163,17 +164,11 @@ export function SyncPanel({ onClose, onChange }: Props) {
         <div className="space-y-3">
           <div>
             <label className={labelBase}>{t("sync.backend")}</label>
-            <select
+            <Select
               value={backend}
-              onChange={(e) => setBackend(e.target.value)}
-              className={inputBase}
-            >
-              {BACKENDS.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {t(b.labelKey)}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setBackend(v)}
+              options={BACKENDS.map((b) => ({ value: b.id, label: t(b.labelKey) }))}
+            />
           </div>
           <div>
             <label className={labelBase}>{t("sync.file_path")}</label>

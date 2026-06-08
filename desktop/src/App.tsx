@@ -442,6 +442,23 @@ function App() {
         const composited = await invoke<boolean>("window_composited");
         if (!cancelled && composited) {
           document.documentElement.setAttribute("data-os", "linux");
+          // WebKitGTK paints the transparent corners OPAQUE until the first
+          // window relayout — so the rounded corners only appear once the user
+          // resizes/maximises. Nudge the window size by 1px and back (next
+          // tick, so the +1 actually lays out) to force that repaint on launch.
+          try {
+            const { getCurrentWindow, PhysicalSize } = await import(
+              "@tauri-apps/api/window"
+            );
+            const win = getCurrentWindow();
+            const sz = await win.innerSize();
+            await win.setSize(new PhysicalSize(sz.width, sz.height + 1));
+            setTimeout(() => {
+              win.setSize(sz).catch(() => {});
+            }, 60);
+          } catch {
+            /* nudge is best-effort */
+          }
         }
       } catch {
         /* no-op: cosmetic only — leave square/opaque on any failure */

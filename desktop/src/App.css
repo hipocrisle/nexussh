@@ -154,6 +154,14 @@ html[data-os="linux"] #root {
 html[data-os="linux"] #root > main {
   border-radius: 9px;
   overflow: hidden;
+  /* `transform` makes <main> the containing block for its position:fixed
+   * descendants (Settings overlay, modals, drawer backdrop — all inside
+   * <main>). Without it those fixed layers are viewport-relative and ESCAPE
+   * the overflow:hidden clip, repainting square corners on top of the rounded
+   * window whenever one is open. With it they're clipped to the rounded shape,
+   * so corners stay rounded in every state. main is full-window at 0,0 so
+   * fixed positions are unchanged. Also forces a compositing layer. */
+  transform: translateZ(0);
 }
 
 /* Glow on focused green accents */

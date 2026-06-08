@@ -474,12 +474,22 @@ function App() {
     const win = getCurrentWindow();
     let unlisten: (() => void) | undefined;
     let cancelled = false;
+    let prevSquared = false;
     const apply = async () => {
       try {
         const squared =
           (await win.isMaximized()) || (await win.isFullscreen());
-        if (!cancelled)
-          document.documentElement.toggleAttribute("data-squared", squared);
+        if (cancelled) return;
+        document.documentElement.toggleAttribute("data-squared", squared);
+        // Transition square→rounded (un-maximise / exit fullscreen): WebKitGTK
+        // won't repaint the now-transparent corners until a real size-allocate,
+        // so they'd stay square until a manual resize. Nudge to force it. Only
+        // on this transition — the nudge itself fires onResized, but with
+        // squared still false, so prevSquared guards against a loop.
+        if (prevSquared && !squared) {
+          invoke("nudge_repaint").catch(() => {});
+        }
+        prevSquared = squared;
       } catch {
         /* ignore */
       }

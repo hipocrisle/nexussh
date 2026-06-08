@@ -163,6 +163,12 @@ html[data-os="linux"] #root > main {
    * fixed positions are unchanged. Also forces a compositing layer. */
   transform: translateZ(0);
 }
+/* Maximised / fullscreen: square the corners — rounded ones cut holes that show
+ * the desktop at the screen edge. data-squared is toggled in App.tsx on
+ * resize/maximise/fullscreen. */
+html[data-os="linux"][data-squared] #root > main {
+  border-radius: 0;
+}
 
 /* Glow on focused green accents */
 .glow-green {

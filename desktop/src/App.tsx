@@ -465,6 +465,39 @@ function App() {
     };
   }, []);
 
+  // Square the window corners while maximised/fullscreen — rounded corners
+  // there cut holes that show the desktop at the screen edge. Maximise and
+  // fullscreen both change the window size, so onResized covers both; we also
+  // check once on mount in case the app launched maximised.
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    const win = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const apply = async () => {
+      try {
+        const squared =
+          (await win.isMaximized()) || (await win.isFullscreen());
+        if (!cancelled)
+          document.documentElement.toggleAttribute("data-squared", squared);
+      } catch {
+        /* ignore */
+      }
+    };
+    apply();
+    win
+      .onResized(() => apply())
+      .then((u) => {
+        if (cancelled) u();
+        else unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const [version, setVersion] = useState<string>("");
 
   // Workspace tab model: ONE top tab strip; each tab is a workspace = layout

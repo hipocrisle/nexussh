@@ -10,9 +10,10 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Trash2, Lock } from "lucide-react";
+import { Loader2, Trash2, Lock, Search, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import {
   SessionMeta,
@@ -23,6 +24,7 @@ import {
   historyStats,
 } from "./history";
 import { useBackdropClose } from "./useBackdropClose";
+import { writeClipboard } from "./clipboard";
 import { IconButton, Button } from "./components/primitives";
 import { askConfirm } from "./dialogs";
 import { useSettings } from "./settings/settings-store";
@@ -87,6 +89,20 @@ export function HistoryPanel({ onClose }: Props) {
   const termContainerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+
+  // In-replay find bar — only meaningful while a recording is selected.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Keep latest setter in a ref so the mount-once term effect's key handler
+  // (registered when the replay term is built) always opens the live bar.
+  const openSearchRef = useRef<() => void>(() => {});
+  openSearchRef.current = () => {
+    setSearchOpen(true);
+    // Focus after the input has actually rendered.
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
 
   // Load list + stats on mount.
   useEffect(() => {
@@ -121,6 +137,7 @@ export function HistoryPanel({ onClose }: Props) {
       termRef.current = null;
     }
     fitRef.current = null;
+    searchAddonRef.current = null;
   }, []);
 
   // Build a fresh headless xterm and replay the selected recording.
@@ -135,6 +152,9 @@ export function HistoryPanel({ onClose }: Props) {
     let alive = true;
     setReplayLoading(true);
     setError(null);
+    // New recording → drop any stale find query/bar.
+    setSearchOpen(false);
+    setSearchQuery("");
 
     // Re-create the terminal for this recording (clean buffer + fresh parser).
     disposeTerm();
@@ -150,9 +170,35 @@ export function HistoryPanel({ onClose }: Props) {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
     term.open(container);
     termRef.current = term;
     fitRef.current = fit;
+    searchAddonRef.current = searchAddon;
+
+    // Replay has disableStdin:true (no PTY), but attachCustomKeyEventHandler
+    // still fires — we use it for copy + opening the find bar. Returning false
+    // suppresses xterm's default handling of that key.
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== "keydown") return true;
+      const ctrl = ev.ctrlKey && !ev.altKey && !ev.metaKey;
+      // Copy: Ctrl+Shift+C, or Ctrl+C when there's a selection (Ctrl+C alone
+      // has no SIGINT meaning here — there's no live shell).
+      if (ctrl && ev.key.toLowerCase() === "c") {
+        const sel = term.getSelection();
+        if (ev.shiftKey || sel) {
+          if (sel) writeClipboard(sel);
+          return false;
+        }
+      }
+      // Open the in-replay find bar.
+      if (ctrl && !ev.shiftKey && ev.key.toLowerCase() === "f") {
+        openSearchRef.current();
+        return false;
+      }
+      return true;
+    });
     try {
       fit.fit();
     } catch {
@@ -236,6 +282,21 @@ export function HistoryPanel({ onClose }: Props) {
     setStats({ sessions: 0, bytes: 0 });
   }
 
+  function runFind(forward: boolean) {
+    const addon = searchAddonRef.current;
+    if (!addon || !searchQuery) return;
+    if (forward) addon.findNext(searchQuery);
+    else addon.findPrevious(searchQuery);
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchQuery("");
+    searchAddonRef.current?.clearDecorations?.();
+    // Return focus to the replay terminal so wheel/Ctrl+F keep working.
+    termRef.current?.focus();
+  }
+
   function modeLabel(mode: string): string {
     if (mode === "light") return t("history.panel.mode_light");
     if (mode === "full") return t("history.panel.mode_full");
@@ -274,8 +335,16 @@ export function HistoryPanel({ onClose }: Props) {
           >
             {t("history.panel.clear")}
           </Button>
+          {selected && (
+            <IconButton
+              className="ml-auto"
+              icon={<Search size={14} />}
+              onClick={() => openSearchRef.current()}
+              title={t("history.panel.search_placeholder")}
+            />
+          )}
           <IconButton
-            className="ml-auto"
+            className={selected ? undefined : "ml-auto"}
             icon={<span className="text-base leading-none">×</span>}
             onClick={onClose}
             title={t("tabmenu.close")}
@@ -362,6 +431,53 @@ export function HistoryPanel({ onClose }: Props) {
                     {replayLoading && (
                       <div className="absolute top-2 right-3 z-10 text-nx-accent">
                         <Loader2 size={14} className="animate-spin" />
+                      </div>
+                    )}
+                    {searchOpen && (
+                      <div className="absolute top-2 left-3 z-10 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-glow-md font-mono">
+                        <Search size={12} className="text-nx-muted shrink-0" />
+                        <input
+                          ref={searchInputRef}
+                          value={searchQuery}
+                          onChange={(e) => {
+                            setSearchQuery(e.target.value);
+                            const addon = searchAddonRef.current;
+                            if (addon && e.target.value)
+                              addon.findNext(e.target.value);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              runFind(!e.shiftKey);
+                            } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              closeSearch();
+                            }
+                          }}
+                          placeholder={t("history.panel.search_placeholder")}
+                          className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
+                        />
+                        <button
+                          onClick={() => runFind(false)}
+                          className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+                          title={t("history.panel.find_prev")}
+                        >
+                          ‹
+                        </button>
+                        <button
+                          onClick={() => runFind(true)}
+                          className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+                          title={t("history.panel.find_next")}
+                        >
+                          ›
+                        </button>
+                        <button
+                          onClick={closeSearch}
+                          className="shrink-0 text-nx-muted hover:text-nx-error"
+                          title={t("history.panel.clear_search")}
+                        >
+                          <X size={12} />
+                        </button>
                       </div>
                     )}
                     <div

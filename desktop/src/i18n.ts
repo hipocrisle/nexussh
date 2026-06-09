@@ -351,6 +351,11 @@ const ru = {
       usage: "{{count}} записей · {{size}}",
       mode_light: "лёгкий",
       mode_full: "полный",
+      search_placeholder: "поиск по выводу…",
+      search_none: "не найдено",
+      find_next: "след. совпадение",
+      find_prev: "пред. совпадение",
+      clear_search: "закрыть",
     },
   },
   settings: {
@@ -1046,6 +1051,11 @@ const en = {
       usage: "{{count}} recordings · {{size}}",
       mode_light: "light",
       mode_full: "full",
+      search_placeholder: "search output…",
+      search_none: "no matches",
+      find_next: "next match",
+      find_prev: "prev match",
+      clear_search: "close",
     },
   },
   settings: {

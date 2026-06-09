@@ -346,6 +346,7 @@ function HeaderButton({
   title,
   active,
   warn,
+  tint,
 }: {
   icon: React.ReactNode;
   children?: React.ReactNode;
@@ -353,14 +354,23 @@ function HeaderButton({
   title?: string;
   active?: boolean;
   warn?: boolean;
+  /** Custom resting text colour (CSS value), e.g. the blue history accent. */
+  tint?: string;
 }) {
   return (
     <button
       onClick={onClick}
       title={title}
+      style={tint && !active && !warn ? { color: tint } : undefined}
       className={
         "flex items-center gap-1.5 px-2 py-0.5 rounded-nx-sm font-mono transition-colors duration-[80ms] hover:bg-nx-elevated hover:text-nx-text " +
-        (active ? "text-nx-accent" : warn ? "text-nx-warning" : "text-nx-muted")
+        (active
+          ? "text-nx-accent"
+          : warn
+            ? "text-nx-warning"
+            : tint
+              ? ""
+              : "text-nx-muted")
       }
     >
       {icon}
@@ -1533,7 +1543,9 @@ function App() {
       error: undefined,
     }));
     try {
-      const { sessionId: sid } = await sshConnect({
+      const hist = historyArgsFor(host);
+      const doRec = hist.record && !!vault?.unlocked;
+      const { sessionId: sid, recording } = await sshConnect({
         host: host.host,
         port: host.port,
         user,
@@ -1541,11 +1553,16 @@ function App() {
         vpn: resolveHostVpn(host),
         allow_legacy: host.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        record_history: doRec,
+        history_mode: hist.mode,
+        history_host_id: host.id,
+        history_label: host.name || host.host,
       });
       bumpLastUsed(host.id).catch(() => {});
       // promoteSession keeps focus where it is (no focus-steal on auto-reconnect
       // of a background pane).
       promoteSession(sessionId, sid, "connected");
+      if (recording) setRecSids((r) => ({ ...r, [sid]: false }));
       // Move reconnect bookkeeping to the new session id and reset attempts.
       const prev = reconnectRef.current.get(sessionId);
       reconnectRef.current.delete(sessionId);
@@ -1614,7 +1631,9 @@ function App() {
     );
     setActiveWorkspaceId(intent.wsId);
     try {
-      const { sessionId: sid } = await sshConnect({
+      const hist = historyArgsFor(h);
+      const doRec = hist.record && !!vault?.unlocked;
+      const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
         user: h.user,
@@ -1622,10 +1641,15 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        record_history: doRec,
+        history_mode: hist.mode,
+        history_host_id: h.id,
+        history_label: h.name || h.host,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
       triggerBurst();
+      if (recording) setRecSids((r) => ({ ...r, [sid]: false }));
     } catch (e) {
       updateSession(pendingId, (s) => ({
         ...s,
@@ -2815,6 +2839,7 @@ function App() {
             icon={<HistoryIcon size={12} />}
             onClick={() => setHistoryPanelOpen(true)}
             title={t("history.open_panel")}
+            tint="var(--nx-accent2)"
           >
             {t("history.button")}
           </HeaderButton>

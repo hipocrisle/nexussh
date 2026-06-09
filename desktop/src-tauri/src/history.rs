@@ -705,6 +705,20 @@ impl HistoryState {
             let _ = r.finalize();
         }
     }
+
+    /// Flush recorders whose buffer has gone idle. CRITICAL: the per-`record()`
+    /// time-flush only fires when new output arrives, so a session that stops
+    /// producing output would leave its last events stuck in RAM forever (never
+    /// on disk, so history showed everything-but-the-tail). A background ticker
+    /// calls this every second so idle buffers reach disk within ~1s.
+    pub fn flush_stale(&self) {
+        let mut map = self.recorders.lock().unwrap();
+        for r in map.values_mut() {
+            if !r.buf.is_empty() && r.last_flush.elapsed() >= Duration::from_millis(800) {
+                let _ = r.flush();
+            }
+        }
+    }
 }
 
 /// Begin recording from the BACKEND connect path (before the output loop spawns)

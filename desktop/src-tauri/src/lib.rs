@@ -222,6 +222,21 @@ pub fn run() {
             // Trim the history store to its size/age limits at startup (mtime +
             // size only, no vault needed). Best-effort — never block launch.
             let _ = history::prune(&app.handle());
+            // Background ticker: flush idle history buffers so a session that
+            // stopped producing output still gets its last lines on disk (the
+            // per-output time-flush can't fire when no output is arriving).
+            {
+                use tauri::Manager;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut tick =
+                        tokio::time::interval(std::time::Duration::from_secs(1));
+                    loop {
+                        tick.tick().await;
+                        handle.state::<history::HistoryState>().flush_stale();
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

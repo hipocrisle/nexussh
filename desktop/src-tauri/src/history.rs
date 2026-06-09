@@ -322,7 +322,14 @@ pub async fn history_list(
                 // Skip a recording whose meta won't decrypt rather than failing
                 // the whole list.
                 if let Ok(m) = read_meta(&path, &identity) {
-                    out.push(m);
+                    // Hide phantom recordings whose data file is missing or empty
+                    // (nothing was ever flushed) — they'd show as "N KB, no output".
+                    let has_data = std::fs::metadata(rec_path(&dir, &m.id))
+                        .map(|md| md.len() > 0)
+                        .unwrap_or(false);
+                    if has_data {
+                        out.push(m);
+                    }
                 }
             }
         }
@@ -498,6 +505,30 @@ fn count_occurrences(hay: &[u8], needle: &[u8]) -> i32 {
     n
 }
 
+/// Like `count_occurrences`, but only counts matches that END past `boundary`
+/// (i.e. extend into the new bytes). Used with the alt-screen carry: matches
+/// fully inside the carried tail were already counted on the previous chunk, so
+/// counting them again would double-count — we only want sequences that were
+/// SPLIT across the read boundary plus ones fully in the new bytes.
+fn count_occurrences_after(hay: &[u8], needle: &[u8], boundary: usize) -> i32 {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return 0;
+    }
+    let mut n = 0i32;
+    let mut i = 0usize;
+    while i + needle.len() <= hay.len() {
+        if &hay[i..i + needle.len()] == needle {
+            if i + needle.len() > boundary {
+                n += 1;
+            }
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    n
+}
+
 /// One in-flight recording. Output is buffered as NDJSON event lines
 /// (`[t_seconds, "base64(bytes)"]`), flushed into encrypted+gzip chunks. Holds
 /// only the public recipient, so it keeps recording even if the vault locks.
@@ -516,6 +547,10 @@ struct Recorder {
     chunk_lens: Vec<u64>,
     /// alt-screen nesting depth (light mode skips output while > 0).
     alt_depth: i32,
+    /// Last few bytes of the previous chunk, so an alt-screen ESC sequence split
+    /// across two reads is still detected (a missed exit would otherwise stick
+    /// alt_depth > 0 and silently skip the REST of the session in light mode).
+    alt_carry: Vec<u8>,
     light: bool,
     paused: bool,
 }
@@ -530,14 +565,23 @@ impl Recorder {
         // transition — acceptable for a best-effort privacy/size filter.
         let write = !self.light || self.alt_depth == 0;
         if self.light {
+            // Prepend the carried tail of the previous chunk so a sequence split
+            // across two reads is still detected; count only matches reaching
+            // past the boundary so carry-only matches aren't double-counted.
+            let boundary = self.alt_carry.len();
+            let mut scan = std::mem::take(&mut self.alt_carry);
+            scan.extend_from_slice(bytes);
             let mut delta = 0i32;
             for p in ALT_ENTER {
-                delta += count_occurrences(bytes, p);
+                delta += count_occurrences_after(&scan, p, boundary);
             }
             for p in ALT_EXIT {
-                delta -= count_occurrences(bytes, p);
+                delta -= count_occurrences_after(&scan, p, boundary);
             }
             self.alt_depth = (self.alt_depth + delta).max(0);
+            // Keep the last 7 bytes (longest alt sequence is 8) for next time.
+            let keep = scan.len().min(7);
+            self.alt_carry = scan[scan.len() - keep..].to_vec();
         }
         if !write {
             return;
@@ -565,6 +609,11 @@ impl Recorder {
         self.chunk_lens.push(written);
         self.comp_total += written;
         self.enforce_cap()?;
+        // Refresh the meta on every flush so a LIVE recording stays listed with
+        // a current byte count — and, crucially, so it reappears after the user
+        // hits "clear all" (which deletes the files; the next flush recreates
+        // both the data and the meta). Best-effort.
+        let _ = write_meta(&self.dir, &self.recipient, &self.meta);
         Ok(())
     }
 
@@ -681,6 +730,7 @@ impl HistoryState {
             comp_total: 0,
             chunk_lens: Vec::new(),
             alt_depth: 0,
+            alt_carry: Vec::new(),
             light,
             paused: false,
         };

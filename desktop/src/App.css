@@ -406,7 +406,10 @@ html[data-os="linux"][data-squared] #root > main {
     position: fixed; inset: 0;
     background: radial-gradient(ellipse at center, rgba(0,0,0,0.55), rgba(0,0,0,0.85) 80%);
     backdrop-filter: blur(2px);
-    z-index: 40;
+    /* Above the full-screen panels (Settings/History are z-50) so a confirm
+     * dialog triggered from inside one (e.g. History → Clear all) isn't hidden
+     * behind it. Modals are always topmost. */
+    z-index: 60;
   }
 
   /* Rain burst — brief full-app matrix wash on connect / vault-unlock.

@@ -100,14 +100,14 @@ export function HistoryPanel({ onClose }: Props) {
   const palette = THEMES[settings.theme];
   const searchOpts: ISearchOptions = {
     decorations: {
-      // No matchBackground → text fully legible; the border outlines each hit.
-      matchBorder: palette.accent2,
+      // Outline-only, dimmed. No background fill at all (a fill over coloured
+      // terminal glyphs was unreadable). Each hit gets a soft ~60% border; the
+      // active hit is distinguished by HUE (warning vs accent2), not brightness,
+      // so nothing is harsh. Overview-ruler ticks (required) stay solid.
+      matchBorder: `${palette.accent2}99`,
       matchOverviewRuler: palette.accent2,
-      // Active match: a barely-there fill (~8%) + slightly-dimmed border (~80%)
-      // so it's the obvious current hit without being harsh or hiding glyphs.
-      activeMatchBackground: `${palette.accent}14`,
-      activeMatchBorder: `${palette.accent}cc`,
-      activeMatchColorOverviewRuler: palette.accent,
+      activeMatchBorder: `${palette.warning}aa`,
+      activeMatchColorOverviewRuler: palette.warning,
     },
   };
   // Stash in a ref so the live find-bar onChange/onKeyDown handlers and the

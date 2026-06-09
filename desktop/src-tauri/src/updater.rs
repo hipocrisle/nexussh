@@ -1,12 +1,50 @@
 //! Auto-update — лёгкая обёртка над tauri-plugin-updater.
 //!
-//! Эндпоинт + публичный ключ заданы в `tauri.conf.json`. Frontend дёргает
-//! `check_for_update`, получает Option<UpdateInfo>; если Some — может вызвать
-//! `install_update`, который скачает, верифицирует подпись и перезапустит app.
+//! Публичный ключ задан в `tauri.conf.json`. Эндпоинт выбирается ПО КАНАЛУ
+//! (stable/beta) — фронт передаёт `channel`, бэкенд строит updater на
+//! катящийся манифест `channel-<c>/latest.json`. Без канала используется
+//! зашитый в конфиг эндпоинт (back-compat для старых установок).
+//!
+//! `version_comparator` всегда отвечает "да, это апдейт", чтобы ОДИН и тот же
+//! поток обслуживал и обычные обновления, и смену канала НА ЛЕТУ (beta→stable —
+//! это даунгрейд, который дефолтный semver-компаратор отверг бы). Решение
+//! «показывать ли кнопку» принимает фронт, сравнивая `version` vs
+//! `current_version`.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
-use tauri_plugin_updater::UpdaterExt;
+use tauri::{AppHandle, Emitter, Url};
+use tauri_plugin_updater::{Updater, UpdaterExt};
+
+/// Rolling per-channel manifest URL. Unknown/None → None (fall back to the
+/// endpoint baked into tauri.conf.json, for back-compat with old installs).
+fn channel_endpoint(channel: Option<&str>) -> Option<String> {
+    let c = match channel {
+        Some("beta") => "beta",
+        Some("stable") => "stable",
+        _ => return None,
+    };
+    Some(format!(
+        "https://github.com/hipocrisle/nexussh/releases/download/channel-{c}/latest.json"
+    ))
+}
+
+/// Build a channel-aware updater that treats ANY remote release as installable
+/// (so on-the-fly channel switches, including downgrades, work). The frontend
+/// gates the actual prompt on `version != current_version`.
+fn build_updater(app: &AppHandle, channel: Option<&str>) -> Result<Updater, UpdateError> {
+    let mut b = app
+        .updater_builder()
+        .version_comparator(|_current, _update| true);
+    if let Some(ep) = channel_endpoint(channel) {
+        let url: Url = ep
+            .parse()
+            .map_err(|e| UpdateError::Plugin(format!("bad endpoint url: {e}")))?;
+        b = b
+            .endpoints(vec![url])
+            .map_err(|e| UpdateError::Plugin(e.to_string()))?;
+    }
+    b.build().map_err(|e| UpdateError::Plugin(e.to_string()))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
@@ -29,10 +67,11 @@ pub struct UpdateInfo {
 }
 
 #[tauri::command]
-pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, UpdateError> {
-    let updater = app
-        .updater()
-        .map_err(|e| UpdateError::Plugin(e.to_string()))?;
+pub async fn check_for_update(
+    app: AppHandle,
+    channel: Option<String>,
+) -> Result<Option<UpdateInfo>, UpdateError> {
+    let updater = build_updater(&app, channel.as_deref())?;
     let update = updater
         .check()
         .await
@@ -46,10 +85,8 @@ pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, Upda
 }
 
 #[tauri::command]
-pub async fn install_update(app: AppHandle) -> Result<(), UpdateError> {
-    let updater = app
-        .updater()
-        .map_err(|e| UpdateError::Plugin(e.to_string()))?;
+pub async fn install_update(app: AppHandle, channel: Option<String>) -> Result<(), UpdateError> {
+    let updater = build_updater(&app, channel.as_deref())?;
     let update = updater
         .check()
         .await

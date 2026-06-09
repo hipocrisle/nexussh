@@ -27,6 +27,21 @@ function isAndroid(): boolean {
   return /Android/i.test(navigator.userAgent);
 }
 
+/** Read the selected release channel from the settings store WITHOUT React
+ *  (the updater runs outside components). Defaults to "stable". */
+function currentChannel(): "stable" | "beta" {
+  try {
+    const raw = localStorage.getItem("nexussh.settings.v1");
+    if (raw) {
+      const s = JSON.parse(raw) as { channel?: string };
+      if (s.channel === "beta") return "beta";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "stable";
+}
+
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
   if (isAndroid()) {
     const a = await invoke<AndroidUpdateInfo | null>("android_check_update");
@@ -40,7 +55,15 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
       apk_sha256: a.sha256,
     };
   }
-  return await invoke<UpdateInfo | null>("check_for_update");
+  // The backend always reports the channel's latest as an "update" (so channel
+  // switches incl. downgrades work). Treat same-version as "no update" here so
+  // every caller keeps its "non-null ⇒ actionable" contract. A different
+  // version — higher OR lower (channel switch) — is actionable.
+  const r = await invoke<UpdateInfo | null>("check_for_update", {
+    channel: currentChannel(),
+  });
+  if (r && r.version === r.current_version) return null;
+  return r;
 }
 
 export async function installUpdate(info?: UpdateInfo): Promise<void> {
@@ -51,7 +74,7 @@ export async function installUpdate(info?: UpdateInfo): Promise<void> {
     });
     return;
   }
-  await invoke("install_update");
+  await invoke("install_update", { channel: currentChannel() });
 }
 
 const LAST_CHECK_LS = "nexussh.lastUpdateCheck";

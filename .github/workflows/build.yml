@@ -136,8 +136,10 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm.sig
           # DRAFT до публикации latest.json — иначе релиз станет latest, пока
           # latest.json ещё 404, и in-app updater словит "Could not fetch release JSON".
+          # Бета-теги (vX.Y.Z-beta.N) публикуются как prerelease → не становятся
+          # releases/latest, поэтому старые stable-клиенты их не видят.
           draft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-beta.') }}
 
   generate-update-manifest:
     name: Generate updater manifest
@@ -189,12 +191,32 @@ jobs:
           EOF
           cat latest.json
 
-      - name: Upload latest.json to release
+      - name: Publish manifest to rolling channel + versioned release
         env:
+          TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" latest.json --repo "${{ github.repository }}" --clobber
+        run: |
+          REPO="${{ github.repository }}"
+          CHANNEL=stable
+          case "$TAG" in *-beta.*) CHANNEL=beta;; esac
+          echo "channel=$CHANNEL"
 
-      - name: Publish release (draft -> latest)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
+          # 1) Rolling per-channel manifest release — this is the endpoint the
+          #    in-app updater polls (releases/download/channel-<c>/latest.json).
+          #    Kept as a prerelease so it never hijacks releases/latest.
+          if ! gh release view "channel-$CHANNEL" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "channel-$CHANNEL" --repo "$REPO" --prerelease \
+              --target main --title "channel-$CHANNEL" \
+              --notes "Rolling updater manifest for the $CHANNEL channel — do not delete."
+          fi
+          gh release upload "channel-$CHANNEL" latest.json --repo "$REPO" --clobber
+
+          # 2) Publish the versioned release that holds the installers.
+          if [ "$CHANNEL" = stable ]; then
+            # Back-compat: pre-2.0.0 installs still poll releases/latest/download/latest.json.
+            gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+            gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+          else
+            # Beta stays a prerelease (not "latest") so only opted-in beta clients pull it.
+            gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease
+          fi

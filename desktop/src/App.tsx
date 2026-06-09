@@ -685,6 +685,10 @@ function App() {
     dir: "row" | "col";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Section to land on when Settings opens (e.g. History button → "behavior").
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(
+    undefined,
+  );
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Sessions currently being recorded → paused?. Drives the ● REC chip.
   const [recSids, setRecSids] = useState<Record<string, boolean>>({});
@@ -2853,8 +2857,21 @@ function App() {
           </HeaderButton>
           <HeaderButton
             icon={<HistoryIcon size={12} />}
-            onClick={() => setHistoryPanelOpen(true)}
-            title={t("history.open_panel")}
+            onClick={() => {
+              // History off in settings → no recordings to show; send the user
+              // to the toggle instead of opening an empty/dead panel.
+              if (settings.historyEnabled) {
+                setHistoryPanelOpen(true);
+              } else {
+                setSettingsSection("behavior");
+                setSettingsOpen(true);
+              }
+            }}
+            title={
+              settings.historyEnabled
+                ? t("history.open_panel")
+                : t("history.enable_hint")
+            }
             tint="var(--nx-accent2)"
           >
             {t("history.button")}
@@ -3219,8 +3236,12 @@ function App() {
         <div className="fixed inset-0 z-40">
           <Suspense fallback={null}>
             <SettingsScreen
-              onClose={() => setSettingsOpen(false)}
+              onClose={() => {
+                setSettingsOpen(false);
+                setSettingsSection(undefined);
+              }}
               sessionCount={allSessions.length}
+              initialSection={settingsSection}
             />
           </Suspense>
         </div>

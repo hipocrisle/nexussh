@@ -14,7 +14,7 @@ export interface NexuSettings {
   rainDensity: number; // 10–28 cell px
   rainOpacity: number; // 0.10–0.80
 
-  channel: "stable" | "beta" | "nightly";
+  channel: "stable" | "beta";
   autoUpdate: boolean;
   verifySigs: boolean;
 
@@ -83,7 +83,10 @@ function load(): NexuSettings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<NexuSettings>;
-      return { ...DEFAULTS, ...parsed };
+      const merged = { ...DEFAULTS, ...parsed };
+      // nightly channel was removed — fold any saved value back to stable.
+      if ((merged.channel as string) !== "beta") merged.channel = "stable";
+      return merged;
     }
   } catch {
     /* ignore */

@@ -134,7 +134,7 @@ export function UpdatesSection({ s, set, t }: Props) {
           className="inline-flex rounded border overflow-hidden font-mono text-xs"
           style={{ borderColor: t.border }}
         >
-          {(["stable", "beta", "nightly"] as const).map((c) => (
+          {(["stable", "beta"] as const).map((c, i, arr) => (
             <button
               key={c}
               type="button"
@@ -143,7 +143,7 @@ export function UpdatesSection({ s, set, t }: Props) {
               style={{
                 background: s.channel === c ? t.bgElevated : t.bgPanel,
                 color: s.channel === c ? t.accent : t.textMuted,
-                borderRight: c !== "nightly" ? `1px solid ${t.border}` : "none",
+                borderRight: i < arr.length - 1 ? `1px solid ${t.border}` : "none",
               }}
             >
               {c}

@@ -304,6 +304,7 @@ const ru = {
   history: {
     button: "история",
     open_panel: "история сессий",
+    enable_hint: "История выключена — включить в настройках",
     title: "история сессий",
     rec: "ЗАПИСЬ",
     rec_paused: "ПАУЗА",
@@ -451,7 +452,7 @@ const ru = {
       current: "текущая",
       available: "доступна",
       channel: "Канал обновлений",
-      channel_hint: "Stable отстаёт на ~2 недели. Beta получает новые backend-ы первыми.",
+      channel_hint: "Stable — проверенное. Beta получает правки первой. Смени канал и нажми «Проверить обновления», чтобы перейти на него (можно и обратно).",
       auto: "Автопроверка",
       auto_hint: "Раз в 24ч при старте. Молча, если всё актуально.",
       auto_label: "автообновление",
@@ -1005,6 +1006,7 @@ const en = {
   history: {
     button: "history",
     open_panel: "session history",
+    enable_hint: "History is off — enable it in Settings",
     title: "session history",
     rec: "REC",
     rec_paused: "PAUSED",
@@ -1152,7 +1154,7 @@ const en = {
       current: "current",
       available: "available",
       channel: "Release channel",
-      channel_hint: "Stable lags by ~2 weeks. Beta gets new backends first.",
+      channel_hint: "Stable is vetted. Beta gets fixes first. Switch channel and hit Check for updates to move to it (works both ways).",
       auto: "Auto-check",
       auto_hint: "Once every 24h on startup. Silent if up to date.",
       auto_label: "auto-update",

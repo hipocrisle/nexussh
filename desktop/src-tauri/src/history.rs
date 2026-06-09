@@ -548,7 +548,8 @@ impl Recorder {
             .extend_from_slice(format!("[{:.3},\"{}\"]\n", t, B64.encode(bytes)).as_bytes());
         self.meta.bytes += bytes.len() as u64;
         if self.buf.len() >= FLUSH_THRESHOLD
-            || (!self.buf.is_empty() && self.last_flush.elapsed() >= Duration::from_secs(2))
+            || (!self.buf.is_empty()
+                && self.last_flush.elapsed() >= Duration::from_millis(1000))
         {
             let _ = self.flush();
         }

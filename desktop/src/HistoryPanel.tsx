@@ -103,10 +103,10 @@ export function HistoryPanel({ onClose }: Props) {
       // No matchBackground → text fully legible; the border outlines each hit.
       matchBorder: palette.accent2,
       matchOverviewRuler: palette.accent2,
-      // Active match: a barely-there fill (~12%) + bright border so it's the
-      // obvious current hit without hiding the glyphs.
-      activeMatchBackground: `${palette.accent}22`,
-      activeMatchBorder: palette.accent,
+      // Active match: a barely-there fill (~8%) + slightly-dimmed border (~80%)
+      // so it's the obvious current hit without being harsh or hiding glyphs.
+      activeMatchBackground: `${palette.accent}14`,
+      activeMatchBorder: `${palette.accent}cc`,
       activeMatchColorOverviewRuler: palette.accent,
     },
   };

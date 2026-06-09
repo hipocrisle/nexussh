@@ -32,6 +32,12 @@ jobs:
 
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default packages include the deprecated `tools` bundle, which drags
+          # in the Android emulator — a ~hundreds-of-MB download whose unzip
+          # flakes on the runner (and we never run an emulator). Install only
+          # what an APK build needs; Gradle/AGP auto-resolves anything missing.
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
 
       - name: Install Android NDK
         run: |

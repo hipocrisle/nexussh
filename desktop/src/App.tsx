@@ -38,7 +38,7 @@ import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { ResizeHandles } from "./ResizeHandles";
-import { historyPause, historyStart } from "./history";
+import { historyPause } from "./history";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
@@ -688,31 +688,7 @@ function App() {
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Sessions currently being recorded → paused?. Drives the ● REC chip.
   const [recSids, setRecSids] = useState<Record<string, boolean>>({});
-  // Guards against double-starting a recording while a history_start is in flight.
-  const recStartingRef = useRef<Set<string>>(new Set());
 
-  // Catch-up recording. A session that connected while the vault was still
-  // LOCKED (classic case: tab restore on startup, before the user unlocks) never
-  // got a recorder — recording is gated on an unlocked vault — so it stayed
-  // unrecorded until the tab was reopened. Once the vault is unlocked, start
-  // recording for every connected session that SHOULD record and isn't yet
-  // (records from here on; the pre-unlock output is already gone). Idempotent:
-  // the recSids + in-flight guards stop it re-starting an active recording.
-  useEffect(() => {
-    if (!vault?.unlocked) return;
-    for (const s of allSessions) {
-      if (s.status !== "connected") continue;
-      if (s.id in recSids || recStartingRef.current.has(s.id)) continue;
-      const hist = historyArgsFor(s.host);
-      if (!hist.record) continue;
-      recStartingRef.current.add(s.id);
-      historyStart(s.id, s.host.id, s.host.name || s.host.host, 80, 24, hist.mode)
-        .then(() => setRecSids((r) => ({ ...r, [s.id]: false })))
-        .catch(() => {})
-        .finally(() => recStartingRef.current.delete(s.id));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vault?.unlocked, allSessions, recSids]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(
     readSidebarCollapsed(),
   );
@@ -1069,7 +1045,7 @@ function App() {
     }
     try {
       const hist = historyArgsFor(h);
-      const doRec = hist.record && !!vault?.unlocked;
+      const doRec = hist.record && !!vault?.configured;
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -1464,7 +1440,7 @@ function App() {
       // recordings). Gated on vault unlock (recordings live behind the master
       // password). recordHistory per-host overrides the global on/off + mode.
       const hist = historyArgsFor(h);
-      const doRec = hist.record && !!vault?.unlocked;
+      const doRec = hist.record && !!vault?.configured;
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -1576,7 +1552,7 @@ function App() {
     }));
     try {
       const hist = historyArgsFor(host);
-      const doRec = hist.record && !!vault?.unlocked;
+      const doRec = hist.record && !!vault?.configured;
       const { sessionId: sid, recording } = await sshConnect({
         host: host.host,
         port: host.port,
@@ -1664,7 +1640,7 @@ function App() {
     setActiveWorkspaceId(intent.wsId);
     try {
       const hist = historyArgsFor(h);
-      const doRec = hist.record && !!vault?.unlocked;
+      const doRec = hist.record && !!vault?.configured;
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,

@@ -560,14 +560,11 @@ impl Recorder {
         if self.paused || bytes.is_empty() {
             return;
         }
-        // Decide on the chunk as a whole using the depth at its START, then update
-        // depth from this chunk. Boundary splits leak/drop a little around the
-        // transition — acceptable for a best-effort privacy/size filter.
-        let write = !self.light || self.alt_depth == 0;
-        if self.light {
-            // Prepend the carried tail of the previous chunk so a sequence split
-            // across two reads is still detected; count only matches reaching
-            // past the boundary so carry-only matches aren't double-counted.
+        let write = if self.light {
+            // Track alt-screen depth, carrying the previous chunk's tail so a
+            // sequence split across two reads is still detected (count only
+            // matches reaching past the boundary to avoid double-counting).
+            let before = self.alt_depth;
             let boundary = self.alt_carry.len();
             let mut scan = std::mem::take(&mut self.alt_carry);
             scan.extend_from_slice(bytes);
@@ -578,11 +575,17 @@ impl Recorder {
             for p in ALT_EXIT {
                 delta -= count_occurrences_after(&scan, p, boundary);
             }
-            self.alt_depth = (self.alt_depth + delta).max(0);
+            self.alt_depth = (before + delta).max(0);
             // Keep the last 7 bytes (longest alt sequence is 8) for next time.
             let keep = scan.len().min(7);
             self.alt_carry = scan[scan.len() - keep..].to_vec();
-        }
+            // Record ONLY chunks fully outside alt-screen — skip the entering
+            // frame, the body, AND the exiting frame, so vim/htop/tmux (incl. a
+            // tmux re-attach captured from the first byte) leave nothing behind.
+            before == 0 && self.alt_depth == 0
+        } else {
+            true
+        };
         if !write {
             return;
         }

@@ -184,15 +184,17 @@ jobs:
           path: desktop/dist-android/*
           retention-days: 14
 
-      - name: Attach APK + manifest to release (tag push only)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # STABLE tags only. Beta no longer has a versioned release (betas live on
+      # the rolling channel-beta), so attaching here would RE-CREATE a versioned
+      # beta release — exactly the pile-up we removed. The Android updater polls
+      # releases/latest anyway (stable only); the beta APK stays a workflow
+      # artifact (above) for manual grabs.
+      - name: Attach APK + manifest to release (STABLE tag push only)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-beta.') }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
             desktop/dist-android/nexussh-arm64-v8a.apk
             desktop/dist-android/latest-android.json
           draft: true
-          # Match build.yml: beta tags stay prerelease so they never become
-          # releases/latest (which the Android updater polls). Otherwise this
-          # step could race-flip a beta release to "latest".
-          prerelease: ${{ contains(github.ref_name, '-beta.') }}
+          prerelease: false

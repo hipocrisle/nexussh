@@ -10,7 +10,7 @@ import { X, FileText } from "lucide-react";
 import {
   HostRecord,
   listHosts,
-  saveHost,
+  saveHostsBatch,
   newHostId,
 } from "./hosts";
 import { useSettings } from "./settings/settings-store";
@@ -69,6 +69,9 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState<number | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   useEffect(() => {
@@ -162,15 +165,19 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
     if (rows.length === 0) return;
     setBusy(true);
     setError(null);
+    const pick = [...selected].filter((i) => !isDup(rows[i]));
+    setProgress({ done: 0, total: pick.length });
     try {
-      let count = 0;
-      for (const i of selected) {
+      // Build every record first (resolving ~ in identity paths), tracking
+      // progress, then persist all of them in ONE vault write — see
+      // saveHostsBatch. Looping saveHost would re-encrypt the whole list N times.
+      const recs: HostRecord[] = [];
+      for (const i of pick) {
         const r = rows[i];
-        if (isDup(r)) continue;
         const idFile = r.identity_file
           ? await invoke<string>("expand_home", { path: r.identity_file })
           : null;
-        const rec: HostRecord = {
+        recs.push({
           id: newHostId(),
           name: r.alias,
           host: r.hostname,
@@ -181,16 +188,17 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
             ? { kind: "key", path: idFile }
             : { kind: "password", password: "" },
           alwaysAskPassword: !idFile,
-        };
-        await saveHost(rec);
-        count += 1;
+        });
+        setProgress({ done: recs.length, total: pick.length });
       }
-      setSuccess(count);
+      await saveHostsBatch(recs);
+      setSuccess(recs.length);
       onImported?.();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -352,6 +360,24 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
                   {SOURCE_LABEL[s] ?? s}: {n}
                 </span>
               ))}
+            </div>
+          )}
+          {progress && (
+            <div className="px-3 pt-2">
+              <div className="flex items-center justify-between text-[10px] font-mono text-[var(--nx-text-muted)] mb-1">
+                <span>{t("import.saving")}</span>
+                <span>
+                  {progress.done} / {progress.total}
+                </span>
+              </div>
+              <div className="h-1.5 rounded-full overflow-hidden bg-[var(--nx-bg-panel)]">
+                <div
+                  className="h-full bg-[var(--nx-accent)] transition-all duration-150"
+                  style={{
+                    width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`,
+                  }}
+                />
+              </div>
             </div>
           )}
           <div className="h-12 px-3 flex items-center gap-2">

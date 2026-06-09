@@ -240,6 +240,26 @@ export async function saveHost(rec: HostRecord): Promise<void> {
   maybePushSync();
 }
 
+/** Insert/update MANY hosts with a SINGLE read + write + sync push. Used by bulk
+ *  import: calling saveHost in a loop is O(N²) — each call re-reads and
+ *  re-encrypts the whole list (and pushes to sync). This collapses that to one. */
+export async function saveHostsBatch(recs: HostRecord[]): Promise<void> {
+  if (recs.length === 0) return;
+  const all = await readAll();
+  const byId = new Map(all.map((h, i) => [h.id, i]));
+  for (const rec of recs) {
+    const idx = byId.get(rec.id);
+    if (idx !== undefined) all[idx] = rec;
+    else {
+      byId.set(rec.id, all.length);
+      all.push(rec);
+    }
+  }
+  await writeAll(all);
+  notifyHostsChanged();
+  maybePushSync();
+}
+
 export async function deleteHost(id: string): Promise<void> {
   const all = await readAll();
   const next = all.filter((h) => h.id !== id);

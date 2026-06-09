@@ -186,4 +186,7 @@ jobs:
             desktop/dist-android/nexussh-arm64-v8a.apk
             desktop/dist-android/latest-android.json
           draft: true
-          prerelease: false
+          # Match build.yml: beta tags stay prerelease so they never become
+          # releases/latest (which the Android updater polls). Otherwise this
+          # step could race-flip a beta release to "latest".
+          prerelease: ${{ contains(github.ref_name, '-beta.') }}

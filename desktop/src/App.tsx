@@ -425,7 +425,7 @@ function resolveHostVpn(h: HostRecord): VpnNode | null {
 
 function App() {
   const { t } = useTranslation();
-  const [settings] = useSettings();
+  const [settings, setSettings] = useSettings();
   const theme = THEMES[settings.theme];
   const fontStack = fontStackOf(settings.font);
 
@@ -685,10 +685,6 @@ function App() {
     dir: "row" | "col";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Section to land on when Settings opens (e.g. History button → "behavior").
-  const [settingsSection, setSettingsSection] = useState<string | undefined>(
-    undefined,
-  );
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Sessions currently being recorded → paused?. Drives the ● REC chip.
   const [recSids, setRecSids] = useState<Record<string, boolean>>({});
@@ -2857,14 +2853,22 @@ function App() {
           </HeaderButton>
           <HeaderButton
             icon={<HistoryIcon size={12} />}
-            onClick={() => {
-              // History off in settings → no recordings to show; send the user
-              // to the toggle instead of opening an empty/dead panel.
+            onClick={async () => {
+              // History on → open the panel. History off → ask to enable it via a
+              // themed modal (not a jerky scroll into Settings). On confirm we flip
+              // the toggle and open the now-active panel.
               if (settings.historyEnabled) {
                 setHistoryPanelOpen(true);
-              } else {
-                setSettingsSection("behavior");
-                setSettingsOpen(true);
+                return;
+              }
+              const ok = await askConfirm(t("history.enable_prompt"), {
+                title: t("history.enable_title"),
+                confirmLabel: t("history.enable_confirm"),
+                cancelLabel: t("dialog.cancel"),
+              });
+              if (ok) {
+                setSettings({ historyEnabled: true });
+                setHistoryPanelOpen(true);
               }
             }}
             title={
@@ -3236,12 +3240,8 @@ function App() {
         <div className="fixed inset-0 z-40">
           <Suspense fallback={null}>
             <SettingsScreen
-              onClose={() => {
-                setSettingsOpen(false);
-                setSettingsSection(undefined);
-              }}
+              onClose={() => setSettingsOpen(false)}
               sessionCount={allSessions.length}
-              initialSection={settingsSection}
             />
           </Suspense>
         </div>

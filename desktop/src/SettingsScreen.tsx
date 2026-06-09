@@ -29,8 +29,6 @@ import { getVersion } from "@tauri-apps/api/app";
 interface Props {
   onClose: () => void;
   sessionCount?: number;
-  /** Section id to open scrolled to (e.g. "behavior" for the history toggle). */
-  initialSection?: string;
 }
 
 const SECTIONS = [
@@ -41,7 +39,7 @@ const SECTIONS = [
   { id: "about", key: "about", Icon: Info },
 ] as const;
 
-export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Props) {
+export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
   const { t: tr } = useTranslation();
   const [settings, set] = useSettings();
   const isMobile = useIsMobile();
@@ -90,15 +88,6 @@ export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Pr
       root.scrollTo({ top: el.offsetTop - 24, behavior: "smooth" });
     }
   }
-
-  // Open scrolled to a requested section (e.g. History button when the feature
-  // is off → jump to the "behavior" section that holds the history toggle).
-  useEffect(() => {
-    if (!initialSection) return;
-    const raf = requestAnimationFrame(() => jump(initialSection));
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const t = THEMES[settings.theme];
   const fontStack = fontStackOf(settings.font);

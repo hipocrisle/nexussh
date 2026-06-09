@@ -305,7 +305,10 @@ const ru = {
   history: {
     button: "история",
     open_panel: "история сессий",
-    enable_hint: "История выключена — включить в настройках",
+    enable_hint: "История выключена — нажми, чтобы включить",
+    enable_title: "Включить историю сессий?",
+    enable_prompt: "История сейчас выключена. Включить запись вывода сессий в зашифрованную историю? (требуется vault; пишутся только новые подключения)",
+    enable_confirm: "Включить",
     title: "история сессий",
     rec: "ЗАПИСЬ",
     rec_paused: "ПАУЗА",
@@ -1009,7 +1012,10 @@ const en = {
   history: {
     button: "history",
     open_panel: "session history",
-    enable_hint: "History is off — enable it in Settings",
+    enable_hint: "History is off — click to enable",
+    enable_title: "Enable session history?",
+    enable_prompt: "Session history is currently off. Start recording session output to the encrypted history? (requires the vault; only new connections are recorded)",
+    enable_confirm: "Enable",
     title: "session history",
     rec: "REC",
     rec_paused: "PAUSED",

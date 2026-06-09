@@ -26,7 +26,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "nsis", "msi"],
+    "targets": ["deb", "rpm", "nsis"],
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/xray"],
     "icon": [

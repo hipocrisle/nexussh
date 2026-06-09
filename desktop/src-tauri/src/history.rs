@@ -643,6 +643,12 @@ impl HistoryState {
         if !safe_id(&session_id) {
             return Err(HistoryError::BadId);
         }
+        // Idempotent: if this session is already being recorded, keep the live
+        // recorder (don't clobber its buffer/file). Guards the race between the
+        // connect-path start (ConnectArgs) and the frontend catch-up start.
+        if self.recorders.lock().unwrap().contains_key(&session_id) {
+            return Ok(());
+        }
         let dir = history_dir(app)?;
         std::fs::create_dir_all(&dir)?;
         let recipient = self.recipient(app)?;

@@ -92,22 +92,22 @@ export function HistoryPanel({ onClose }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
 
-  // Search options (incl. readable decorations) rebuilt when the theme changes.
-  // The palette colors are #RRGGBB; xterm's color parser also accepts #RRGGBBAA,
-  // so we append an alpha byte to the *backgrounds* to keep the underlying text
-  // legible (a solid fill hid the glyphs). Borders stay fully opaque so each
-  // match still has a crisp outline, and the active match gets a brighter fill.
+  // Search decorations: OUTLINE ONLY — no background fill. A coloured fill over
+  // the terminal's own coloured glyphs muddied the text to the point of being
+  // unreadable, so we mark matches with a crisp border (active match = a much
+  // fainter fill + brighter border so it still stands out) and leave the glyphs
+  // completely untouched. Overview-ruler ticks (required fields) show positions.
   const palette = THEMES[settings.theme];
   const searchOpts: ISearchOptions = {
     decorations: {
-      // ~33% alpha — clearly highlighted, text still shows through.
-      matchBackground: `${palette.accent2}55`,
+      // No matchBackground → text fully legible; the border outlines each hit.
       matchBorder: palette.accent2,
       matchOverviewRuler: palette.accent2,
-      // ~40% alpha — brighter than regular matches but still translucent.
-      activeMatchBackground: `${palette.warning}66`,
-      activeMatchBorder: palette.warning,
-      activeMatchColorOverviewRuler: palette.warning,
+      // Active match: a barely-there fill (~12%) + bright border so it's the
+      // obvious current hit without hiding the glyphs.
+      activeMatchBackground: `${palette.accent}22`,
+      activeMatchBorder: palette.accent,
+      activeMatchColorOverviewRuler: palette.accent,
     },
   };
   // Stash in a ref so the live find-bar onChange/onKeyDown handlers and the

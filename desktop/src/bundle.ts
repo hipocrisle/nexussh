@@ -7,7 +7,7 @@
 // shapes the JSON payload and merges imported hosts into the local store.
 
 import { invoke } from "@tauri-apps/api/core";
-import { HostRecord, listHosts, saveHost, newHostId } from "./hosts";
+import { HostRecord, listHosts, saveHostsBatch, newHostId } from "./hosts";
 import { VpnProfile, importProfiles } from "./vpn";
 
 export const BUNDLE_VERSION = 1;
@@ -76,7 +76,7 @@ export async function importBundleHosts(
 ): Promise<{ added: number; skipped: number }> {
   const existing = await listHosts();
   const seen = new Set(existing.map((h) => `${h.host}:${h.port}`));
-  let added = 0;
+  const recs: HostRecord[] = [];
   let skipped = 0;
   for (const bh of payload.hosts) {
     // Validate untrusted bundle fields — a hostile/malformed bundle could carry
@@ -110,10 +110,11 @@ export async function importBundleHosts(
       group: typeof bh.group === "string" ? bh.group : undefined,
       note: typeof bh.note === "string" ? bh.note : undefined,
     };
-    await saveHost(rec);
-    added += 1;
+    recs.push(rec);
   }
-  return { added, skipped };
+  // One vault write for the whole bundle, not one per host (O(N²)).
+  await saveHostsBatch(recs);
+  return { added: recs.length, skipped };
 }
 
 /** Import the VPN profiles carried in a bundle (if any). Returns count added. */

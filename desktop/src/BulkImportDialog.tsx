@@ -7,7 +7,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { listHosts, saveHost, newHostId, HostRecord } from "./hosts";
+import { listHosts, saveHostsBatch, newHostId, HostRecord } from "./hosts";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
 
@@ -69,6 +69,9 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(
+    null,
+  );
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   async function loadFile() {
@@ -92,39 +95,50 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
       return;
     }
     setBusy(true);
+    setProgress({ done: 0, total: parsed.length });
     try {
       const existing = await listHosts();
       const existingKeys = new Set(existing.map((h) => `${h.host}:${h.port}`));
       const group = folder.trim() || "import";
       const u = user.trim() || settings.defaultUser;
-      let added = 0;
+      // Build every record first, then persist them in ONE vault write
+      // (saveHostsBatch). Looping saveHost re-encrypted the whole list per host —
+      // O(N²), which made a 100+ paste take a minute.
+      const recs: HostRecord[] = [];
       let skipped = 0;
-      for (const p of parsed) {
+      for (let i = 0; i < parsed.length; i++) {
+        const p = parsed[i];
         const key = `${p.host}:${p.port}`;
         if (existingKeys.has(key)) {
           skipped += 1;
-          continue;
+        } else {
+          existingKeys.add(key);
+          recs.push({
+            id: newHostId(),
+            name: p.host,
+            host: p.host,
+            port: p.port,
+            user: u,
+            auth: { kind: "password", password: "" },
+            alwaysAskPassword: true,
+            group,
+          });
         }
-        existingKeys.add(key);
-        const rec: HostRecord = {
-          id: newHostId(),
-          name: p.host,
-          host: p.host,
-          port: p.port,
-          user: u,
-          auth: { kind: "password", password: "" },
-          alwaysAskPassword: true,
-          group,
-        };
-        await saveHost(rec);
-        added += 1;
+        // Yield every so often so the progress bar actually paints on big pastes.
+        if ((i & 63) === 0) {
+          setProgress({ done: i + 1, total: parsed.length });
+          await new Promise((r) => setTimeout(r, 0));
+        }
       }
-      setResult({ added, skipped });
+      setProgress({ done: parsed.length, total: parsed.length });
+      await saveHostsBatch(recs);
+      setResult({ added: recs.length, skipped });
       onImported?.();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -218,6 +232,25 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
             {error && (
               <div className="text-[var(--nx-error)] text-sm font-mono break-all">
                 ✗ {error}
+              </div>
+            )}
+
+            {progress && (
+              <div>
+                <div className="flex items-center justify-between text-[10px] font-mono text-[var(--nx-text-muted)] mb-1">
+                  <span>{t("bulk.importing")}</span>
+                  <span>
+                    {progress.done} / {progress.total}
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden bg-[var(--nx-bg-panel)]">
+                  <div
+                    className="h-full bg-[var(--nx-accent)] transition-all duration-150"
+                    style={{
+                      width: `${progress.total ? (progress.done / progress.total) * 100 : 0}%`,
+                    }}
+                  />
+                </div>
               </div>
             )}
 

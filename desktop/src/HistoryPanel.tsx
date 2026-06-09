@@ -92,16 +92,20 @@ export function HistoryPanel({ onClose }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
 
-  // Search options (incl. bright decorations) rebuilt when the theme changes.
-  // Colors must be #RRGGBB (SearchAddon requirement): regular matches use the
-  // secondary accent, the active match the warning hue so it stands out.
+  // Search options (incl. readable decorations) rebuilt when the theme changes.
+  // The palette colors are #RRGGBB; xterm's color parser also accepts #RRGGBBAA,
+  // so we append an alpha byte to the *backgrounds* to keep the underlying text
+  // legible (a solid fill hid the glyphs). Borders stay fully opaque so each
+  // match still has a crisp outline, and the active match gets a brighter fill.
   const palette = THEMES[settings.theme];
   const searchOpts: ISearchOptions = {
     decorations: {
-      matchBackground: palette.accent2,
+      // ~33% alpha — clearly highlighted, text still shows through.
+      matchBackground: `${palette.accent2}55`,
       matchBorder: palette.accent2,
       matchOverviewRuler: palette.accent2,
-      activeMatchBackground: palette.warning,
+      // ~40% alpha — brighter than regular matches but still translucent.
+      activeMatchBackground: `${palette.warning}66`,
       activeMatchBorder: palette.warning,
       activeMatchColorOverviewRuler: palette.warning,
     },
@@ -140,6 +144,14 @@ export function HistoryPanel({ onClose }: Props) {
     setSearchOpen(true);
     // Focus after the input has actually rendered.
     requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
+  // Esc handler for the replay terminal's key handler (which closes over stale
+  // state). Re-assigned every render so it sees the live searchOpen value:
+  // close the find bar if open, otherwise close the whole panel.
+  const escapeRef = useRef<() => void>(() => {});
+  escapeRef.current = () => {
+    if (searchOpen) closeSearch();
+    else onClose();
   };
 
   // Load list + stats on mount.
@@ -234,6 +246,13 @@ export function HistoryPanel({ onClose }: Props) {
       // Open the in-replay find bar.
       if (ctrl && !ev.shiftKey && ev.key.toLowerCase() === "f") {
         openSearchRef.current();
+        return false;
+      }
+      // Esc while focus is inside the replay terminal: xterm normally swallows
+      // it, so useBackdropClose never sees it. Handle it here — if the find bar
+      // is open, close just the search; otherwise close the whole panel.
+      if (ev.key === "Escape") {
+        escapeRef.current();
         return false;
       }
       return true;
@@ -429,14 +448,75 @@ export function HistoryPanel({ onClose }: Props) {
           >
             {t("history.panel.clear")}
           </Button>
-          {selected && (
-            <IconButton
-              className="ml-auto"
-              icon={<Search size={14} />}
-              onClick={() => openSearchRef.current()}
-              title={t("history.panel.search_placeholder")}
-            />
-          )}
+          {selected &&
+            (searchOpen ? (
+              // Compact find bar lives in the header so it never overlays the
+              // replay output. Single row: input + idx/count + prev/next + close.
+              <div className="ml-auto flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx font-mono">
+                <Search size={12} className="text-nx-muted shrink-0" />
+                <input
+                  ref={searchInputRef}
+                  value={searchQuery}
+                  onChange={(e) => {
+                    const q = e.target.value;
+                    setSearchQuery(q);
+                    const addon = searchAddonRef.current;
+                    if (addon && q) {
+                      addon.findNext(q, searchOptsRef.current);
+                    } else if (addon) {
+                      addon.clearDecorations?.();
+                      setSearchInfo({ idx: -1, count: 0 });
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      runFind(!e.shiftKey);
+                    } else if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeSearch();
+                    }
+                  }}
+                  placeholder={t("history.panel.search_placeholder")}
+                  className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
+                />
+                <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
+                  {searchInfo.count > 0
+                    ? `${searchInfo.idx + 1}/${searchInfo.count}`
+                    : searchQuery
+                      ? "0/0"
+                      : ""}
+                </span>
+                <button
+                  onClick={() => runFind(false)}
+                  className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+                  title={t("history.panel.find_prev")}
+                >
+                  ‹
+                </button>
+                <button
+                  onClick={() => runFind(true)}
+                  className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+                  title={t("history.panel.find_next")}
+                >
+                  ›
+                </button>
+                <button
+                  onClick={closeSearch}
+                  className="shrink-0 text-nx-muted hover:text-nx-error"
+                  title={t("history.panel.clear_search")}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <IconButton
+                className="ml-auto"
+                icon={<Search size={14} />}
+                onClick={() => openSearchRef.current()}
+                title={t("history.panel.search_placeholder")}
+              />
+            ))}
           <IconButton
             className={selected ? undefined : "ml-auto"}
             icon={<span className="text-base leading-none">×</span>}
@@ -525,65 +605,6 @@ export function HistoryPanel({ onClose }: Props) {
                     {replayLoading && (
                       <div className="absolute top-2 right-3 z-10 text-nx-accent">
                         <Loader2 size={14} className="animate-spin" />
-                      </div>
-                    )}
-                    {searchOpen && (
-                      <div className="absolute top-2 left-3 z-10 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-glow-md font-mono">
-                        <Search size={12} className="text-nx-muted shrink-0" />
-                        <input
-                          ref={searchInputRef}
-                          value={searchQuery}
-                          onChange={(e) => {
-                            const q = e.target.value;
-                            setSearchQuery(q);
-                            const addon = searchAddonRef.current;
-                            if (addon && q) {
-                              addon.findNext(q, searchOptsRef.current);
-                            } else if (addon) {
-                              addon.clearDecorations?.();
-                              setSearchInfo({ idx: -1, count: 0 });
-                            }
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                              runFind(!e.shiftKey);
-                            } else if (e.key === "Escape") {
-                              e.preventDefault();
-                              closeSearch();
-                            }
-                          }}
-                          placeholder={t("history.panel.search_placeholder")}
-                          className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
-                        />
-                        <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
-                          {searchInfo.count > 0
-                            ? `${searchInfo.idx + 1}/${searchInfo.count}`
-                            : searchQuery
-                              ? "0/0"
-                              : ""}
-                        </span>
-                        <button
-                          onClick={() => runFind(false)}
-                          className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
-                          title={t("history.panel.find_prev")}
-                        >
-                          ‹
-                        </button>
-                        <button
-                          onClick={() => runFind(true)}
-                          className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
-                          title={t("history.panel.find_next")}
-                        >
-                          ›
-                        </button>
-                        <button
-                          onClick={closeSearch}
-                          className="shrink-0 text-nx-muted hover:text-nx-error"
-                          title={t("history.panel.clear_search")}
-                        >
-                          <X size={12} />
-                        </button>
                       </div>
                     )}
                     <div

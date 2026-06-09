@@ -23,6 +23,12 @@ export interface ConnectArgs {
   allow_legacy?: boolean;
   /** When host-list encryption is on, pin host keys in the vault not the file. */
   encrypt_known_hosts?: boolean;
+  /** Record this session to encrypted history (started backend-side before the
+   *  output loop, so the banner/prompt isn't missed). */
+  record_history?: boolean;
+  history_mode?: string;
+  history_host_id?: string;
+  history_label?: string;
 }
 
 export interface DataEvent {
@@ -35,12 +41,15 @@ export interface ClosedEvent {
   reason: string;
 }
 
-export async function sshConnect(args: ConnectArgs): Promise<string> {
+export async function sshConnect(
+  args: ConnectArgs,
+): Promise<{ sessionId: string; recording: boolean }> {
   try {
-    const { session_id } = await invoke<{ session_id: string }>("ssh_connect", {
-      args,
-    });
-    return session_id;
+    const res = await invoke<{ session_id: string; recording: boolean }>(
+      "ssh_connect",
+      { args },
+    );
+    return { sessionId: res.session_id, recording: !!res.recording };
   } catch (e) {
     // Attach the captured SSH protocol trace (KEX / host-key / auth / disconnect)
     // so a cryptic failure like "Channel send error" shows what actually happened.

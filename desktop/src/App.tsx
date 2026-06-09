@@ -38,7 +38,7 @@ import { buildAppContextMenu } from "./contextMenuItems";
 import { HostInfoCard } from "./HostInfoCard";
 import { HostDialog } from "./HostDialog";
 import { ResizeHandles } from "./ResizeHandles";
-import { historyStart, historyPause } from "./history";
+import { historyPause } from "./history";
 import { PasswordPrompt } from "./PasswordPrompt";
 import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
@@ -1033,7 +1033,7 @@ function App() {
       auth = { kind: "password", password: creds.password };
     }
     try {
-      const sid = await sshConnect({
+      const { sessionId: sid } = await sshConnect({
         host: h.host,
         port: h.port,
         user: h.user,
@@ -1379,6 +1379,20 @@ function App() {
   // Session operations
   // ---------------------------------------------------------------------------
 
+  // Resolve a host's effective recording decision: the per-host recordHistory
+  // override wins over the global on/off + mode. undefined = inherit global.
+  function historyArgsFor(h: HostRecord): { record: boolean; mode: string } {
+    const rh = h.recordHistory;
+    if (rh === undefined)
+      return { record: settings.historyEnabled, mode: settings.historyMode };
+    if (rh === "off" || rh === false)
+      return { record: false, mode: settings.historyMode };
+    if (rh === true)
+      // Legacy boolean (pre-mode-override) → record with the global mode.
+      return { record: true, mode: settings.historyMode };
+    return { record: true, mode: rh }; // "light" | "full"
+  }
+
   async function openHost(h: HostRecord) {
     // If user opted to always ask for password, prompt before opening tab.
     let auth = h.auth;
@@ -1403,7 +1417,13 @@ function App() {
     setWorkspaces((ws_) => [...ws_, ws]);
     setActiveWorkspaceId(ws.id);
     try {
-      const sid = await sshConnect({
+      // History recording is started in the BACKEND before the output loop, so
+      // the banner/prompt isn't missed (the old frontend start raced it → empty
+      // recordings). Gated on vault unlock (recordings live behind the master
+      // password). recordHistory per-host overrides the global on/off + mode.
+      const hist = historyArgsFor(h);
+      const doRec = hist.record && !!vault?.unlocked;
+      const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
         user: h.user,
@@ -1411,19 +1431,15 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        record_history: doRec,
+        history_mode: hist.mode,
+        history_host_id: h.id,
+        history_label: h.name || h.host,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
       triggerBurst();
-      // Encrypted session-history recording: per-host override wins over the
-      // global toggle; only when the vault is unlocked (recordings are gated by
-      // the master password). Backend finalises automatically on session close.
-      const wantRec = h.recordHistory ?? settings.historyEnabled;
-      if (wantRec && vault?.unlocked) {
-        historyStart(sid, h.id, `${h.user}@${h.host}`, 80, 24, settings.historyMode)
-          .then(() => setRecSids((r) => ({ ...r, [sid]: false })))
-          .catch(() => {});
-      }
+      if (recording) setRecSids((r) => ({ ...r, [sid]: false }));
     } catch (e) {
       // Keep the pane and show WHY it failed (with Retry), instead of vanishing.
       updateSession(pendingId, (s) => ({
@@ -1517,7 +1533,7 @@ function App() {
       error: undefined,
     }));
     try {
-      const sid = await sshConnect({
+      const { sessionId: sid } = await sshConnect({
         host: host.host,
         port: host.port,
         user,
@@ -1598,7 +1614,7 @@ function App() {
     );
     setActiveWorkspaceId(intent.wsId);
     try {
-      const sid = await sshConnect({
+      const { sessionId: sid } = await sshConnect({
         host: h.host,
         port: h.port,
         user: h.user,
@@ -2729,7 +2745,8 @@ function App() {
           </div>
         )}
 
-        {/* Live recording chip for the focused session — click to pause/resume. */}
+        {/* Live recording indicator for the focused session — just a red dot
+         *  (pulsing while recording, grey when paused). Click to pause/resume. */}
         {focusedSession && recSids[focusedSession.id] !== undefined && !isMobile && (
           <button
             type="button"
@@ -2739,25 +2756,19 @@ function App() {
                 ? "history.rec_resume"
                 : "history.rec_pause",
             )}
-            className="no-drag flex items-center gap-1.5 px-2 py-0.5 border rounded-nx text-meta font-mono"
-            style={{
-              borderColor: recSids[focusedSession.id]
-                ? "var(--nx-border)"
-                : "var(--nx-error)",
-              color: recSids[focusedSession.id]
-                ? "var(--nx-text-muted)"
-                : "var(--nx-error)",
-            }}
+            className="no-drag flex items-center justify-center w-5 h-5 rounded"
           >
             <span
-              className="w-2 h-2 rounded-full"
+              className={
+                "w-2.5 h-2.5 rounded-full " +
+                (recSids[focusedSession.id] ? "" : "animate-pulse")
+              }
               style={{
                 background: recSids[focusedSession.id]
                   ? "var(--nx-text-muted)"
                   : "var(--nx-error)",
               }}
             />
-            {recSids[focusedSession.id] ? t("history.rec_paused") : t("history.rec")}
           </button>
         )}
 
@@ -2804,7 +2815,9 @@ function App() {
             icon={<HistoryIcon size={12} />}
             onClick={() => setHistoryPanelOpen(true)}
             title={t("history.open_panel")}
-          />
+          >
+            {t("history.button")}
+          </HeaderButton>
           <HeaderButton
             icon={<HelpCircle size={12} />}
             onClick={() => setShortcutsOpen(true)}

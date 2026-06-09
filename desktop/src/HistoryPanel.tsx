@@ -367,6 +367,14 @@ export function HistoryPanel({ onClose }: Props) {
                     <div
                       ref={termContainerRef}
                       className="w-full h-full"
+                      onWheel={(e) => {
+                        // WebKitGTK/WebView2 don't reliably forward wheel to the
+                        // xterm viewport, so drive scrollback ourselves (same as
+                        // the live terminal). ~3 lines per notch.
+                        const term = termRef.current;
+                        if (term)
+                          term.scrollLines(e.deltaY > 0 ? 3 : -3);
+                      }}
                       style={{ background: THEMES[settings.theme].bgBase }}
                     />
                   </>

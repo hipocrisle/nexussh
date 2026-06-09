@@ -82,10 +82,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // Default: ask every connect. Inverted in UI as "save password" opt-in.
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(true);
   const [useVpn, setUseVpn] = useState(false);
-  // undefined = inherit global history setting; true/false = force on/off.
-  const [recordHistory, setRecordHistory] = useState<boolean | undefined>(
-    undefined,
-  );
+  // "default" = inherit global on/off + mode; otherwise force this host.
+  const [recordHistory, setRecordHistory] = useState<
+    "default" | "off" | "light" | "full"
+  >("default");
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
@@ -108,7 +108,18 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
-    setRecordHistory(initial.recordHistory);
+    {
+      const rh = initial.recordHistory;
+      setRecordHistory(
+        rh === undefined
+          ? "default"
+          : rh === false
+            ? "off"
+            : rh === true
+              ? "light" // legacy boolean → show as light
+              : rh,
+      );
+    }
     // A host whose secret lives in the vault under its own per-host key is
     // shown as a normal "password (saved)" host — the vault is an
     // implementation detail. Leave the field blank; keep the existing
@@ -205,7 +216,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,
-        recordHistory,
+        recordHistory: recordHistory === "default" ? undefined : recordHistory,
         order: initial?.order,
       };
       await saveHost(rec);
@@ -468,20 +479,15 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             <RowLabel>{t("dialog.record_history")}</RowLabel>
             <Select
               className="mt-1.5"
-              value={
-                recordHistory === undefined
-                  ? "default"
-                  : recordHistory
-                    ? "on"
-                    : "off"
-              }
+              value={recordHistory}
               onChange={(v) =>
-                setRecordHistory(v === "default" ? undefined : v === "on")
+                setRecordHistory(v as "default" | "off" | "light" | "full")
               }
               options={[
                 { value: "default", label: t("dialog.record_default") },
-                { value: "on", label: t("dialog.record_on") },
                 { value: "off", label: t("dialog.record_off") },
+                { value: "light", label: t("dialog.record_light") },
+                { value: "full", label: t("dialog.record_full") },
               ]}
             />
           </div>

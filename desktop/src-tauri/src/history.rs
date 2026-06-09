@@ -39,7 +39,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State};
 
 use crate::vault::{self, VaultState};
@@ -259,7 +259,13 @@ pub fn append_chunk(
 /// Decrypt + decompress every chunk and concatenate back to the raw event bytes.
 /// A truncated trailing chunk (crash mid-append) is tolerated — we stop there.
 fn read_session(path: &Path, identity: &Identity) -> Result<Vec<u8>, HistoryError> {
-    let bytes = std::fs::read(path)?;
+    // An empty recording never created its .nxrec (the file appears on the first
+    // chunk). Treat "not found" as an empty replay, not an error.
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
     let mut out = vec![];
     let mut i = 0usize;
     while i + 4 <= bytes.len() {
@@ -502,6 +508,9 @@ struct Recorder {
     meta: SessionMeta,
     buf: Vec<u8>,
     started: Instant,
+    /// When we last flushed a chunk — drives a time-based flush so a live,
+    /// low-output session is still viewable in history before it closes.
+    last_flush: Instant,
     /// Sum of on-disk chunk byte-lengths (for the ring cap).
     comp_total: u64,
     chunk_lens: Vec<u64>,
@@ -538,7 +547,9 @@ impl Recorder {
         self.buf
             .extend_from_slice(format!("[{:.3},\"{}\"]\n", t, B64.encode(bytes)).as_bytes());
         self.meta.bytes += bytes.len() as u64;
-        if self.buf.len() >= FLUSH_THRESHOLD {
+        if self.buf.len() >= FLUSH_THRESHOLD
+            || (!self.buf.is_empty() && self.last_flush.elapsed() >= Duration::from_secs(2))
+        {
             let _ = self.flush();
         }
     }
@@ -547,6 +558,7 @@ impl Recorder {
         if self.buf.is_empty() {
             return Ok(());
         }
+        self.last_flush = Instant::now();
         let plain = std::mem::take(&mut self.buf);
         let written = append_chunk(&self.rec_path, &self.recipient, &plain)?;
         self.chunk_lens.push(written);
@@ -658,6 +670,7 @@ impl HistoryState {
             meta,
             buf: Vec::new(),
             started: Instant::now(),
+            last_flush: Instant::now(),
             comp_total: 0,
             chunk_lens: Vec::new(),
             alt_depth: 0,
@@ -685,6 +698,25 @@ impl HistoryState {
             let _ = r.finalize();
         }
     }
+}
+
+/// Begin recording from the BACKEND connect path (before the output loop spawns)
+/// so no server output is missed — the frontend-driven start raced the first
+/// bytes (banner/prompt). Returns whether recording actually started. No-op /
+/// false if history isn't set up (vault never unlocked → no dek.pub).
+#[allow(clippy::too_many_arguments)]
+pub fn start_recording(
+    app: &AppHandle,
+    session_id: &str,
+    host_id: String,
+    label: String,
+    cols: u16,
+    rows: u16,
+    mode: String,
+) -> bool {
+    app.state::<HistoryState>()
+        .start(app, session_id.to_string(), host_id, label, cols, rows, mode)
+        .is_ok()
 }
 
 /// Called from the ssh output loop for every chunk of server output — records it

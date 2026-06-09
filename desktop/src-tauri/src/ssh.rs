@@ -87,11 +87,24 @@ pub struct ConnectArgs {
     /// the encrypted vault rather than plaintext known_hosts.json.
     #[serde(default)]
     pub encrypt_known_hosts: bool,
+    /// Record this session to encrypted history. Started in the backend BEFORE
+    /// the output loop so no banner/prompt is missed (the old frontend-driven
+    /// start raced the first bytes → empty recordings).
+    #[serde(default)]
+    pub record_history: bool,
+    #[serde(default)]
+    pub history_mode: Option<String>,
+    #[serde(default)]
+    pub history_host_id: Option<String>,
+    #[serde(default)]
+    pub history_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectResult {
     pub session_id: String,
+    /// Whether history recording actually started for this session.
+    pub recording: bool,
 }
 
 /// Per-session output gate. Frontend's `listen('ssh-data', ...)` is async
@@ -584,6 +597,23 @@ pub async fn ssh_connect(
         },
     );
 
+    // Register the recorder BEFORE spawning the output loop so the very first
+    // server bytes (banner/prompt) are captured. No-op/false if not requested
+    // or history isn't set up.
+    let recording = if args.record_history {
+        crate::history::start_recording(
+            &app,
+            &session_id,
+            args.history_host_id.clone().unwrap_or_default(),
+            args.history_label.clone().unwrap_or_default(),
+            cols,
+            rows,
+            args.history_mode.clone().unwrap_or_else(|| "light".into()),
+        )
+    } else {
+        false
+    };
+
     let sid = session_id.clone();
     let app_handle = app.clone();
     let manager = state.inner().clone();
@@ -610,7 +640,7 @@ pub async fn ssh_connect(
         );
     });
 
-    Ok(ConnectResult { session_id })
+    Ok(ConnectResult { session_id, recording })
 }
 
 #[derive(Clone, Serialize)]

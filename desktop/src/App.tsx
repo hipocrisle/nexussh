@@ -1043,7 +1043,9 @@ function App() {
       auth = { kind: "password", password: creds.password };
     }
     try {
-      const { sessionId: sid } = await sshConnect({
+      const hist = historyArgsFor(h);
+      const doRec = hist.record && !!vault?.unlocked;
+      const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
         user: h.user,
@@ -1051,9 +1053,14 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        record_history: doRec,
+        history_mode: hist.mode,
+        history_host_id: h.id,
+        history_label: h.name || h.host,
       });
       bumpLastUsed(h.id).catch(() => {});
       promoteSession(pendingId, sid, "connected");
+      if (recording) setRecSids((r) => ({ ...r, [sid]: false }));
     } catch (e) {
       updateSession(pendingId, (s) => ({
         ...s,

@@ -2769,8 +2769,10 @@ function App() {
           </div>
         )}
 
-        {/* Live recording indicator for the focused session — just a red dot
-         *  (pulsing while recording, grey when paused). Click to pause/resume. */}
+        {/* Live recording indicator for the focused session — a SOLID dot
+         *  (always visible on any theme, incl. the light one) plus a pinging
+         *  ring while recording; grey static dot when paused. Click to
+         *  pause/resume. (Opacity-pulse faded to invisible on light bg.) */}
         {focusedSession && recSids[focusedSession.id] !== undefined && !isMobile && (
           <button
             type="button"
@@ -2780,17 +2782,23 @@ function App() {
                 ? "history.rec_resume"
                 : "history.rec_pause",
             )}
-            className="no-drag flex items-center justify-center w-5 h-5 rounded"
+            className="no-drag relative flex items-center justify-center w-5 h-5 rounded"
           >
+            {!recSids[focusedSession.id] && (
+              <span
+                className="absolute w-2.5 h-2.5 rounded-full animate-ping"
+                style={{ background: "var(--nx-error)", opacity: 0.55 }}
+              />
+            )}
             <span
-              className={
-                "w-2.5 h-2.5 rounded-full " +
-                (recSids[focusedSession.id] ? "" : "animate-pulse")
-              }
+              className="relative w-2.5 h-2.5 rounded-full"
               style={{
                 background: recSids[focusedSession.id]
                   ? "var(--nx-text-muted)"
                   : "var(--nx-error)",
+                boxShadow: recSids[focusedSession.id]
+                  ? "none"
+                  : "0 0 6px var(--nx-error)",
               }}
             />
           </button>

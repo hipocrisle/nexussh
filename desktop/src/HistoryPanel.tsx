@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2, Trash2, Lock, Search, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { SearchAddon } from "@xterm/addon-search";
+import { SearchAddon, ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import {
   SessionMeta,
@@ -25,6 +25,7 @@ import {
 } from "./history";
 import { useBackdropClose } from "./useBackdropClose";
 import { writeClipboard } from "./clipboard";
+import { ContextMenu, MenuItem } from "./ContextMenu";
 import { IconButton, Button } from "./components/primitives";
 import { askConfirm } from "./dialogs";
 import { useSettings } from "./settings/settings-store";
@@ -91,10 +92,47 @@ export function HistoryPanel({ onClose }: Props) {
   const fitRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
 
+  // Search options (incl. bright decorations) rebuilt when the theme changes.
+  // Colors must be #RRGGBB (SearchAddon requirement): regular matches use the
+  // secondary accent, the active match the warning hue so it stands out.
+  const palette = THEMES[settings.theme];
+  const searchOpts: ISearchOptions = {
+    decorations: {
+      matchBackground: palette.accent2,
+      matchBorder: palette.accent2,
+      matchOverviewRuler: palette.accent2,
+      activeMatchBackground: palette.warning,
+      activeMatchBorder: palette.warning,
+      activeMatchColorOverviewRuler: palette.warning,
+    },
+  };
+  // Stash in a ref so the live find-bar onChange/onKeyDown handlers and the
+  // term-effect closures always use the current theme's options.
+  const searchOptsRef = useRef(searchOpts);
+  searchOptsRef.current = searchOpts;
+
   // In-replay find bar — only meaningful while a recording is selected.
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  // Live match counter, driven by SearchAddon.onDidChangeResults.
+  const [searchInfo, setSearchInfo] = useState<{ idx: number; count: number }>({
+    idx: -1,
+    count: 0,
+  });
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Right-click context menu over the replay terminal (mirrors Terminal.tsx's
+  // ctxHandler, minus the dead-PTY actions: paste/clear/send).
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    items: MenuItem[];
+  } | null>(null);
+
+  // Latest settings in a ref so the mount-once term effect's mouse handlers see
+  // the current puttyMouse value without re-creating the terminal.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   // Keep latest setter in a ref so the mount-once term effect's key handler
   // (registered when the replay term is built) always opens the live bar.
   const openSearchRef = useRef<() => void>(() => {});
@@ -155,10 +193,11 @@ export function HistoryPanel({ onClose }: Props) {
     // New recording → drop any stale find query/bar.
     setSearchOpen(false);
     setSearchQuery("");
+    setSearchInfo({ idx: -1, count: 0 });
+    setCtxMenu(null);
 
     // Re-create the terminal for this recording (clean buffer + fresh parser).
     disposeTerm();
-    const palette = THEMES[settings.theme];
     const term = new Terminal({
       theme: xtermThemeOf(palette),
       fontFamily: fontStackOf(settings.font),
@@ -199,6 +238,57 @@ export function HistoryPanel({ onClose }: Props) {
       }
       return true;
     });
+
+    // Live match counter — fires whenever decorations recompute (findNext/Prev,
+    // incremental typing). resultIndex is 0-based (or -1 when none/over limit),
+    // resultCount the total. We mirror it into searchInfo for the find-bar.
+    const resultsDisposable = searchAddon.onDidChangeResults(
+      ({ resultIndex, resultCount }) => {
+        setSearchInfo({ idx: resultIndex, count: resultCount });
+      },
+    );
+
+    // PuTTY-style mouse: releasing a drag-selection auto-copies it (same as
+    // Terminal.tsx's mouseupHandler). 0-ms timer lets xterm finalize selection.
+    const mouseupHandler = () => {
+      if (!settingsRef.current.puttyMouse) return;
+      setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel) writeClipboard(sel);
+      }, 0);
+    };
+    container.addEventListener("mouseup", mouseupHandler);
+
+    // Right-click context menu — mirrors Terminal.tsx's ctxHandler but for a
+    // dead replay terminal: only Copy / Select all / Find (no paste/clear/send).
+    // Unlike the live terminal, PuTTY-mode does NOT paste here (nothing to paste
+    // into) — right-click always opens this menu.
+    const ctxHandler = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const selection = term.getSelection();
+      const items: MenuItem[] = [
+        {
+          label: t("term_menu.copy"),
+          disabled: !selection,
+          onClick: () => {
+            const sel = term.getSelection();
+            if (sel) writeClipboard(sel);
+          },
+        },
+        {
+          label: t("term_menu.select_all"),
+          onClick: () => term.selectAll(),
+        },
+        { separator: true, label: "" },
+        {
+          label: t("history.panel.find"),
+          onClick: () => openSearchRef.current(),
+        },
+      ];
+      setCtxMenu({ x: ev.clientX, y: ev.clientY, items });
+    };
+    container.addEventListener("contextmenu", ctxHandler);
+
     try {
       fit.fit();
     } catch {
@@ -240,6 +330,9 @@ export function HistoryPanel({ onClose }: Props) {
 
     return () => {
       alive = false;
+      resultsDisposable.dispose();
+      container.removeEventListener("mouseup", mouseupHandler);
+      container.removeEventListener("contextmenu", ctxHandler);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
@@ -285,13 +378,14 @@ export function HistoryPanel({ onClose }: Props) {
   function runFind(forward: boolean) {
     const addon = searchAddonRef.current;
     if (!addon || !searchQuery) return;
-    if (forward) addon.findNext(searchQuery);
-    else addon.findPrevious(searchQuery);
+    if (forward) addon.findNext(searchQuery, searchOptsRef.current);
+    else addon.findPrevious(searchQuery, searchOptsRef.current);
   }
 
   function closeSearch() {
     setSearchOpen(false);
     setSearchQuery("");
+    setSearchInfo({ idx: -1, count: 0 });
     searchAddonRef.current?.clearDecorations?.();
     // Return focus to the replay terminal so wheel/Ctrl+F keep working.
     termRef.current?.focus();
@@ -440,10 +534,15 @@ export function HistoryPanel({ onClose }: Props) {
                           ref={searchInputRef}
                           value={searchQuery}
                           onChange={(e) => {
-                            setSearchQuery(e.target.value);
+                            const q = e.target.value;
+                            setSearchQuery(q);
                             const addon = searchAddonRef.current;
-                            if (addon && e.target.value)
-                              addon.findNext(e.target.value);
+                            if (addon && q) {
+                              addon.findNext(q, searchOptsRef.current);
+                            } else if (addon) {
+                              addon.clearDecorations?.();
+                              setSearchInfo({ idx: -1, count: 0 });
+                            }
                           }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") {
@@ -457,6 +556,13 @@ export function HistoryPanel({ onClose }: Props) {
                           placeholder={t("history.panel.search_placeholder")}
                           className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
                         />
+                        <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
+                          {searchInfo.count > 0
+                            ? `${searchInfo.idx + 1}/${searchInfo.count}`
+                            : searchQuery
+                              ? "0/0"
+                              : ""}
+                        </span>
                         <button
                           onClick={() => runFind(false)}
                           className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
@@ -514,6 +620,14 @@ export function HistoryPanel({ onClose }: Props) {
           )}
         </div>
       </div>
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={ctxMenu.items}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
     </div>
   );
 }

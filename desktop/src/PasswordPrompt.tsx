@@ -24,15 +24,44 @@ export function PasswordPrompt({ user, host, onSubmit, onCancel }: Props) {
   const [pw, setPw] = useState("");
   const { backdropProps, contentProps } = useBackdropClose(onCancel);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
+    const focusFirst = () =>
+      wrapRef.current?.querySelector("input")?.focus();
     // Focus the first field — login if we're asking for it, else the password.
-    wrapRef.current?.querySelector("input")?.focus();
+    focusFirst();
+    // SECURITY focus trap. During a multi-host restore a saved-password host
+    // connects in the background and its terminal grabs focus via a deferred
+    // (double-rAF) term.focus() when it becomes visible — winning the race
+    // against this dialog. If we let it, the password the user types lands in
+    // that live terminal as CLEARTEXT (and is sent to the remote host). So we
+    // (a) re-focus after the terminal's deferred grab, and (b) pull focus back
+    // whenever anything steals it while this dialog is open.
+    const raf = requestAnimationFrame(() =>
+      requestAnimationFrame(focusFirst),
+    );
+    const tid = window.setTimeout(focusFirst, 80);
+    const onFocusOut = () => {
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (formRef.current && active && formRef.current.contains(active))
+          return;
+        focusFirst();
+      });
+    };
+    const form = formRef.current;
+    form?.addEventListener("focusout", onFocusOut);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(tid);
+      form?.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [onCancel]);
 
   function submit() {

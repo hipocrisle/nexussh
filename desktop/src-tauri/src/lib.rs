@@ -298,6 +298,7 @@ pub fn run() {
             nudge_repaint,
             history::history_list,
             history::history_read,
+            history::history_search,
             history::history_delete,
             history::history_clear,
             history::history_stats,

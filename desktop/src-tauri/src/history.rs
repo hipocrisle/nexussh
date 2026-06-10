@@ -354,6 +354,161 @@ pub async fn history_read(
     String::from_utf8(bytes).map_err(|_| HistoryError::Crypto("events not utf8".into()))
 }
 
+/// One global-search hit group: a recording that contains the query.
+#[derive(Serialize)]
+pub struct SearchResult {
+    pub meta: SessionMeta,
+    pub hits: u32,
+    pub snippets: Vec<String>,
+}
+
+/// Decode the NDJSON event stream (`[t,"base64(bytes)"]` per line) back to the
+/// terminal bytes, then strip ANSI/control sequences → readable plain text.
+fn decode_events_to_text(raw: &[u8]) -> String {
+    let mut bytes: Vec<u8> = Vec::with_capacity(raw.len());
+    for line in raw.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
+            if let Some(s) = v.get(1).and_then(|x| x.as_str()) {
+                if let Ok(decoded) = B64.decode(s) {
+                    bytes.extend_from_slice(&decoded);
+                }
+            }
+        }
+    }
+    strip_ansi(&bytes)
+}
+
+/// Drop ANSI/VT escape sequences and control bytes, keeping newlines and UTF-8
+/// text intact (lossy-decoded once at the end so Cyrillic etc. survive).
+fn strip_ansi(bytes: &[u8]) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == 0x1b {
+            i += 1;
+            if i >= bytes.len() {
+                break;
+            }
+            match bytes[i] {
+                b'[' => {
+                    // CSI: params until a final byte 0x40..=0x7e
+                    i += 1;
+                    while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                b']' => {
+                    // OSC: until BEL or ST (ESC \)
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != 0x07 && bytes[i] != 0x1b {
+                        i += 1;
+                    }
+                    if i < bytes.len() && bytes[i] == 0x1b {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                _ => i += 1, // 2-byte escape (charset selects etc.)
+            }
+            continue;
+        }
+        match b {
+            b'\n' => out.push(b'\n'),
+            b'\t' => out.push(b' '),
+            b'\r' => {}
+            0x00..=0x08 | 0x0b..=0x1f | 0x7f => {}
+            _ => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Count case-insensitive matches per line + collect up to `max_snippets`
+/// trimmed context lines. Line-oriented to match the in-replay xterm search.
+fn find_hits(text: &str, needle_lc: &str, max_snippets: usize) -> (u32, Vec<String>) {
+    let mut hits = 0u32;
+    let mut snippets: Vec<String> = vec![];
+    for line in text.lines() {
+        let ll = line.to_lowercase();
+        let mut c = 0u32;
+        let mut s = 0;
+        while let Some(rel) = ll[s..].find(needle_lc) {
+            c += 1;
+            s += rel + needle_lc.len();
+        }
+        if c > 0 {
+            hits += c;
+            if snippets.len() < max_snippets {
+                let t = line.trim();
+                let snip = if t.chars().count() > 160 {
+                    t.chars().take(160).collect::<String>() + "…"
+                } else {
+                    t.to_string()
+                };
+                if !snip.is_empty() {
+                    snippets.push(snip);
+                }
+            }
+        }
+        if hits >= 5000 {
+            break;
+        }
+    }
+    (hits, snippets)
+}
+
+/// Search every recording's decoded output for `query` (case-insensitive
+/// substring). Returns only recordings with a hit, newest first, each with a
+/// hit count and a few context snippets. Requires the vault unlocked.
+#[tauri::command]
+pub async fn history_search(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+    query: String,
+) -> Result<Vec<SearchResult>, HistoryError> {
+    let needle = query.trim();
+    if needle.is_empty() {
+        return Ok(vec![]);
+    }
+    let needle_lc = needle.to_lowercase();
+    let identity = load_identity(&app, &vault_state)?;
+    let dir = history_dir(&app)?;
+    let mut out: Vec<SearchResult> = vec![];
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|x| x.to_str()) != Some("meta") {
+                continue;
+            }
+            let meta = match read_meta(&path, &identity) {
+                Ok(m) => m,
+                Err(_) => continue, // skip a recording that won't decrypt
+            };
+            let raw = match read_session(&rec_path(&dir, &meta.id), &identity) {
+                Ok(b) if !b.is_empty() => b,
+                _ => continue,
+            };
+            let text = decode_events_to_text(&raw);
+            let (hits, snippets) = find_hits(&text, &needle_lc, 3);
+            if hits > 0 {
+                out.push(SearchResult {
+                    meta,
+                    hits,
+                    snippets,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.meta.start.cmp(&a.meta.start));
+    Ok(out)
+}
+
 /// Delete one recording (data + meta). No unlock needed.
 #[tauri::command]
 pub async fn history_delete(app: AppHandle, id: String) -> Result<(), HistoryError> {

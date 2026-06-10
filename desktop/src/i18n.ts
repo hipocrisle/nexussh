@@ -362,6 +362,10 @@ const ru = {
       find_next: "след. совпадение",
       find_prev: "пред. совпадение",
       clear_search: "закрыть",
+      search_all: "поиск по всем записям…",
+      searching: "ищу…",
+      no_matches: "ничего не найдено",
+      hits: "{{count}} совп.",
     },
   },
   settings: {
@@ -1069,6 +1073,10 @@ const en = {
       find_next: "next match",
       find_prev: "prev match",
       clear_search: "close",
+      search_all: "search all recordings…",
+      searching: "searching…",
+      no_matches: "no matches",
+      hits: "{{count}} hits",
     },
   },
   settings: {

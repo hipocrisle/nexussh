@@ -17,8 +17,10 @@ import { SearchAddon, ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import {
   SessionMeta,
+  SearchResult,
   historyList,
   historyRead,
+  historySearch,
   historyDelete,
   historyClear,
   historyStats,
@@ -124,6 +126,18 @@ export function HistoryPanel({ onClose }: Props) {
     count: 0,
   });
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Global search across ALL recordings (#284). Backed by `history_search`;
+  // when the query is non-empty the left list shows matching recordings (with
+  // hit counts + a snippet) instead of the full session list.
+  const [globalQuery, setGlobalQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(
+    null,
+  );
+  const [searching, setSearching] = useState(false);
+  // Query to jump to inside a replay once it has finished loading (set when a
+  // global-search result is clicked, consumed by the auto-jump effect below).
+  const pendingJumpRef = useRef<string | null>(null);
 
   // Right-click context menu over the replay terminal (mirrors Terminal.tsx's
   // ctxHandler, minus the dead-PTY actions: paste/clear/send).
@@ -361,6 +375,56 @@ export function HistoryPanel({ onClose }: Props) {
     return () => disposeTerm();
   }, [disposeTerm]);
 
+  // Debounced global search: re-query the backend when the box changes. A null
+  // result means "no active search" (show the full list); [] means "searched,
+  // no matches".
+  useEffect(() => {
+    const q = globalQuery.trim();
+    if (!q) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    let alive = true;
+    const h = setTimeout(async () => {
+      try {
+        const res = await historySearch(q);
+        if (alive) setSearchResults(res);
+      } catch (e) {
+        if (alive) {
+          setSearchResults([]);
+          setError(String(e));
+        }
+      } finally {
+        if (alive) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      alive = false;
+      clearTimeout(h);
+    };
+  }, [globalQuery]);
+
+  // After a clicked search result's replay finishes loading, open the in-replay
+  // find bar seeded with the query and jump to the first match.
+  useEffect(() => {
+    if (replayLoading || !selected) return;
+    const q = pendingJumpRef.current;
+    if (!q) return;
+    pendingJumpRef.current = null;
+    setSearchOpen(true);
+    setSearchQuery(q);
+    requestAnimationFrame(() => {
+      searchAddonRef.current?.findNext(q, searchOptsRef.current);
+    });
+  }, [replayLoading, selected]);
+
+  function openResult(meta: SessionMeta, q: string) {
+    pendingJumpRef.current = q || null;
+    setSelected(meta.id);
+  }
+
   async function onDelete(id: string) {
     try {
       await historyDelete(id);
@@ -541,9 +605,81 @@ export function HistoryPanel({ onClose }: Props) {
             </div>
           ) : (
             <>
-              {/* Left: recording list */}
-              <div className="w-80 shrink-0 border-r border-nx-divider overflow-y-auto">
-                {sessions.map((s) => {
+              {/* Left: global search + recording list */}
+              <div className="w-80 shrink-0 border-r border-nx-divider flex flex-col">
+                <div className="shrink-0 px-2 py-2 border-b border-nx-divider">
+                  <div className="flex items-center gap-1.5 px-2 py-1 bg-nx-panel border border-nx-border rounded-nx font-mono">
+                    <Search size={12} className="text-nx-muted shrink-0" />
+                    <input
+                      value={globalQuery}
+                      onChange={(e) => setGlobalQuery(e.target.value)}
+                      placeholder={t("history.panel.search_all")}
+                      className="flex-1 min-w-0 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
+                    />
+                    {searching ? (
+                      <Loader2
+                        size={12}
+                        className="shrink-0 text-nx-muted animate-spin"
+                      />
+                    ) : (
+                      globalQuery && (
+                        <button
+                          onClick={() => setGlobalQuery("")}
+                          className="shrink-0 text-nx-muted hover:text-nx-error"
+                          title={t("history.panel.clear_search")}
+                        >
+                          <X size={12} />
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  {searchResults !== null ? (
+                    searchResults.length === 0 ? (
+                      <div className="px-3.5 py-6 text-center text-meta text-nx-muted font-mono">
+                        {searching
+                          ? t("history.panel.searching")
+                          : t("history.panel.no_matches")}
+                      </div>
+                    ) : (
+                      searchResults.map((r) => {
+                        const s = r.meta;
+                        const isSel = s.id === selected;
+                        return (
+                          <div
+                            key={s.id}
+                            data-active={isSel || undefined}
+                            onClick={() => openResult(s, globalQuery.trim())}
+                            className="nx-row px-3.5 py-2.5 cursor-pointer text-body select-none border-b border-nx-divider"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span
+                                className={
+                                  "truncate font-mono " +
+                                  (isSel ? "text-nx-accent" : "text-nx-text")
+                                }
+                              >
+                                {s.label}
+                              </span>
+                              <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-accent2 tabular-nums">
+                                {t("history.panel.hits", { count: r.hits })}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-meta text-nx-muted tabular-nums truncate">
+                              {fmtDate(s.start)}
+                            </div>
+                            {r.snippets[0] && (
+                              <div className="mt-1 text-micro text-nx-dim font-mono truncate">
+                                {r.snippets[0]}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )
+                  ) : (
+                    sessions.map((s) => {
                   const isSel = s.id === selected;
                   return (
                     <div
@@ -591,7 +727,9 @@ export function HistoryPanel({ onClose }: Props) {
                       </div>
                     </div>
                   );
-                })}
+                    })
+                  )}
+                </div>
               </div>
 
               {/* Right: replay */}

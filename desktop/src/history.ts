@@ -50,6 +50,23 @@ export async function historyRead(id: string): Promise<string> {
   return await invoke<string>("history_read", { id });
 }
 
+/** One recording that matched a global search, with hit count + preview snippets. */
+export interface SearchResult {
+  meta: SessionMeta;
+  hits: number;
+  snippets: string[];
+}
+
+/**
+ * Search the decoded output of every recording for `query` (case-insensitive
+ * substring). Returns only recordings with a hit, newest first. Throws if the
+ * vault is locked.
+ */
+export async function historySearch(query: string): Promise<SearchResult[]> {
+  if (!HAS_TAURI) return [];
+  return await invoke<SearchResult[]>("history_search", { query });
+}
+
 export async function historyDelete(id: string): Promise<void> {
   if (!HAS_TAURI) return;
   await invoke("history_delete", { id });

@@ -970,6 +970,23 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultChecked, appLocked]);
 
+  // Force every terminal to re-fit after a layout change (split created/closed,
+  // divider dragged, pane moved, workspace switched). In the flat-layer split
+  // model a pane's per-terminal ResizeObserver did NOT reliably fire on the
+  // initial split, so the pane kept its pre-split (full-height) row count — the
+  // remote then drew rows below the now-shorter pane and the bottom (e.g. a
+  // shell/TUI input line) was clipped, worse the smaller the pane. A window
+  // 'resize' runs every visible term's fit path (debounced so a divider drag
+  // doesn't spam it). Double rAF lets the new geometry settle before measuring.
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => window.dispatchEvent(new Event("resize"))),
+      );
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [workspaces, activeWorkspaceId]);
+
   // Persist the full workspace shape (layout tree + pane → host ids + focus +
   // active workspace). Survives across restarts.
   useEffect(() => {

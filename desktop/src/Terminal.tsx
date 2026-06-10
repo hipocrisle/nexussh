@@ -169,20 +169,31 @@ export function TerminalView({
     // busy tabs while a quiet tab stayed fine). mousedown resets the stash so a
     // plain click (no drag) copies nothing rather than re-copying the last one.
     let dragSelection = "";
+    let dragging = false;
     const selDisposable = term.onSelectionChange(() => {
       const s = term.getSelection();
       if (s) dragSelection = s;
     });
+    // mousedown on OUR container = a drag-select starts in this term.
     const mousedownHandler = () => {
+      dragging = true;
       dragSelection = "";
     };
+    // mouseup on the WINDOW, not just our container: users routinely drag the
+    // selection a little past the pane / main-area edge and release the button
+    // THERE, so a container-scoped mouseup never fired and the copy was lost
+    // (the "copying randomly stops working" report). We gate on `dragging` so
+    // only the term the drag STARTED in copies; every other term's window
+    // listener sees dragging=false and no-ops.
     const mouseupHandler = () => {
+      if (!dragging) return;
+      dragging = false;
       if (!settingsRef.current.puttyMouse) return;
       const sel = term.getSelection() || dragSelection;
       if (sel) writeClipboard(sel);
     };
     containerRef.current.addEventListener("mousedown", mousedownHandler);
-    containerRef.current.addEventListener("mouseup", mouseupHandler);
+    window.addEventListener("mouseup", mouseupHandler);
 
     // Custom right-click — xterm-helper-textarea swallows native menu, and
     // the browser menu is "Writing Direction" garbage anyway. Behaviour
@@ -312,7 +323,7 @@ export function TerminalView({
       window.removeEventListener("resize", onWinResize);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
-      containerRef.current?.removeEventListener("mouseup", mouseupHandler);
+      window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       onDataDisposable.dispose();
       onResizeDisposable.dispose();

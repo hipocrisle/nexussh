@@ -107,9 +107,6 @@ import {
   X as CloseIcon,
   Terminal as TerminalIcon,
   FolderOpen,
-  Network,
-  Monitor,
-  AppWindow,
 } from "lucide-react";
 import "./App.css";
 
@@ -1526,7 +1523,6 @@ function App() {
 
   // Caret next to "+" — choose what kind of session the new tab opens.
   function openNewTabMenu(x: number, y: number) {
-    const soon = t("tabnew.soon");
     setMenu({
       x,
       y,
@@ -1544,10 +1540,6 @@ function App() {
             setPickerOpen(true);
           },
         },
-        { separator: true, label: "" },
-        { label: t("tabnew.telnet"), icon: <Network size={13} />, shortcut: soon, disabled: true },
-        { label: t("tabnew.vnc"), icon: <Monitor size={13} />, shortcut: soon, disabled: true },
-        { label: t("tabnew.rdp"), icon: <AppWindow size={13} />, shortcut: soon, disabled: true },
       ],
     });
   }

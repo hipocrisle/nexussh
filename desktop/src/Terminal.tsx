@@ -159,14 +159,29 @@ export function TerminalView({
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
     // (keeping the visual selection), right-click pastes from clipboard
     // immediately. Shift+right-click still opens the regular context menu.
+    //
+    // We capture the selection AS IT CHANGES instead of reading it back in a
+    // deferred mouseup timer. A TUI that redraws (htop/tmux/Claude Code) clears
+    // xterm's selection on its next refresh, so a 0-ms-later getSelection()
+    // raced that redraw and intermittently returned "" — the copy silently
+    // no-op'd and the next paste yielded the STALE clipboard (the reported
+    // "selection copies nothing, pastes the previous buffer" glitch, which hit
+    // busy tabs while a quiet tab stayed fine). mousedown resets the stash so a
+    // plain click (no drag) copies nothing rather than re-copying the last one.
+    let dragSelection = "";
+    const selDisposable = term.onSelectionChange(() => {
+      const s = term.getSelection();
+      if (s) dragSelection = s;
+    });
+    const mousedownHandler = () => {
+      dragSelection = "";
+    };
     const mouseupHandler = () => {
       if (!settingsRef.current.puttyMouse) return;
-      // 0-ms timer lets xterm finalize its selection model first.
-      setTimeout(() => {
-        const sel = term.getSelection();
-        if (sel) writeClipboard(sel);
-      }, 0);
+      const sel = term.getSelection() || dragSelection;
+      if (sel) writeClipboard(sel);
     };
+    containerRef.current.addEventListener("mousedown", mousedownHandler);
     containerRef.current.addEventListener("mouseup", mouseupHandler);
 
     // Custom right-click — xterm-helper-textarea swallows native menu, and
@@ -296,7 +311,9 @@ export function TerminalView({
       cancelled = true;
       window.removeEventListener("resize", onWinResize);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
+      containerRef.current?.removeEventListener("mousedown", mousedownHandler);
       containerRef.current?.removeEventListener("mouseup", mouseupHandler);
+      selDisposable.dispose();
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();
@@ -324,12 +341,25 @@ export function TerminalView({
     });
   }, [visible]);
 
-  // Re-fit on container ResizeObserver — covers sidebar collapse and any
-  // other layout change that resizes our slot without firing window resize.
+  // Re-fit on container ResizeObserver — covers sidebar collapse, split-view
+  // pane resize, and any other layout change that resizes our slot without
+  // firing window resize.
+  //
+  // DOUBLE rAF (same as the tab-visible effect): a single frame after a split
+  // or divider drag still measures a TRANSITIONAL box — usually the larger,
+  // pre-shrink height — so fit() computed too many rows and pushed an oversized
+  // PTY size to the remote. tmux/Claude Code then drew rows below the pane,
+  // which the lower split clipped (the reported "text runs off the bottom of
+  // the top split" glitch). Waiting one more frame lets the new pane height
+  // settle so fit() measures the REAL visible size.
   useEffect(() => {
     if (!containerRef.current || !fitRef.current) return;
     const ro = new ResizeObserver(() => {
-      requestAnimationFrame(() => fitIfVisible(containerRef.current, fitRef.current));
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() =>
+          fitIfVisible(containerRef.current, fitRef.current),
+        ),
+      );
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();

@@ -13,7 +13,7 @@ import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { DialogHost } from "./DialogHost";
-import { askConfirm } from "./dialogs";
+import { askConfirm, askChoice } from "./dialogs";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 // Heavy panels are conditionally rendered — code-split them so the initial
 // bundle drops from ~775KB to ~500KB. React.lazy + Suspense unloads them
@@ -629,11 +629,20 @@ function App() {
 
   // "Always ask password" prompt — promise-based so openHost/openSftp can await
   // a masked, themed dialog instead of the plaintext native window.prompt().
-  const [pwPrompt, setPwPrompt] = useState<{
-    user: string;
-    host: string;
-    resolve: (v: { user: string; password: string } | null) => void;
-  } | null>(null);
+  // A QUEUE, not a single slot. On session restore several "always ask" hosts
+  // call askPassword concurrently; a single slot meant each setState clobbered
+  // the previous prompt — only the last dialog showed, its password resolved
+  // the wrong session, and every other session sat orphaned on "connecting"
+  // forever (restart disabled). Queuing shows one dialog at a time, each
+  // resolving its OWN session in order.
+  const [pwQueue, setPwQueue] = useState<
+    {
+      id: string;
+      user: string;
+      host: string;
+      resolve: (v: { user: string; password: string } | null) => void;
+    }[]
+  >([]);
   // Resolves to the (possibly just-entered) login + password, or null if
   // cancelled. For hosts WITH a login it just asks the password; for login-less
   // hosts (imported address-only) it asks both.
@@ -641,7 +650,10 @@ function App() {
     h: HostRecord,
   ): Promise<{ user: string; password: string } | null> {
     return new Promise((resolve) =>
-      setPwPrompt({ user: h.user, host: h.host, resolve }),
+      setPwQueue((q) => [
+        ...q,
+        { id: crypto.randomUUID(), user: h.user, host: h.host, resolve },
+      ]),
     );
   }
 
@@ -2855,19 +2867,32 @@ function App() {
             icon={<HistoryIcon size={12} />}
             onClick={async () => {
               // History on → open the panel. History off → ask to enable it via a
-              // themed modal (not a jerky scroll into Settings). On confirm we flip
-              // the toggle and open the now-active panel.
+              // themed modal (not a jerky scroll into Settings) that ALSO lets the
+              // user pick the recording mode up front (light vs full) instead of
+              // silently defaulting. On choice we flip the toggle + set the mode
+              // and open the now-active panel.
               if (settings.historyEnabled) {
                 setHistoryPanelOpen(true);
                 return;
               }
-              const ok = await askConfirm(t("history.enable_prompt"), {
+              const mode = await askChoice(t("history.enable_prompt"), {
                 title: t("history.enable_title"),
-                confirmLabel: t("history.enable_confirm"),
                 cancelLabel: t("dialog.cancel"),
+                options: [
+                  {
+                    value: "light",
+                    label: t("history.mode_light_label"),
+                    hint: t("history.mode_light_desc"),
+                  },
+                  {
+                    value: "full",
+                    label: t("history.mode_full_label"),
+                    hint: t("history.mode_full_desc"),
+                  },
+                ],
               });
-              if (ok) {
-                setSettings({ historyEnabled: true });
+              if (mode === "light" || mode === "full") {
+                setSettings({ historyEnabled: true, historyMode: mode });
                 setHistoryPanelOpen(true);
               }
             }}
@@ -3247,17 +3272,18 @@ function App() {
         </div>
       )}
 
-      {pwPrompt && (
+      {pwQueue[0] && (
         <PasswordPrompt
-          user={pwPrompt.user}
-          host={pwPrompt.host}
+          key={pwQueue[0].id}
+          user={pwQueue[0].user}
+          host={pwQueue[0].host}
           onSubmit={(creds) => {
-            pwPrompt.resolve(creds);
-            setPwPrompt(null);
+            pwQueue[0].resolve(creds);
+            setPwQueue((q) => q.slice(1));
           }}
           onCancel={() => {
-            pwPrompt.resolve(null);
-            setPwPrompt(null);
+            pwQueue[0].resolve(null);
+            setPwQueue((q) => q.slice(1));
           }}
         />
       )}

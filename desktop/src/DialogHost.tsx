@@ -3,10 +3,12 @@
 
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PromptDialog } from "./PromptDialog";
+import { ChoiceDialog } from "./ChoiceDialog";
 import { useDialogState } from "./dialogs";
 
 export function DialogHost() {
-  const { confirm, prompt, resolveConfirm, resolvePrompt } = useDialogState();
+  const { confirm, prompt, choice, resolveConfirm, resolvePrompt, resolveChoice } =
+    useDialogState();
   return (
     <>
       {confirm && (
@@ -30,6 +32,16 @@ export function DialogHost() {
           cancelLabel={prompt.cancelLabel}
           onSubmit={(v) => resolvePrompt(v)}
           onCancel={() => resolvePrompt(null)}
+        />
+      )}
+      {choice && (
+        <ChoiceDialog
+          message={choice.message}
+          title={choice.title}
+          options={choice.options}
+          cancelLabel={choice.cancelLabel}
+          onChoose={(v) => resolveChoice(v)}
+          onCancel={() => resolveChoice(null)}
         />
       )}
     </>

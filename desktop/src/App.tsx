@@ -1124,6 +1124,25 @@ function App() {
   }, []);
 
   // Global hotkeys: Ctrl/Cmd+T (picker → new workspace), Ctrl/Cmd+, (settings),
+  // Kill the WebView's built-in Ctrl+F find (the white box that searches the
+  // whole DOM incl. the sidebar). We have our own terminal/history find, so we
+  // suppress the browser one. CAPTURE + preventDefault only — NOT stopPropagation
+  // — so the focused terminal / history panel still opens its own find bar.
+  useEffect(() => {
+    const killNativeFind = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "f"
+      ) {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", killNativeFind, true);
+    return () => window.removeEventListener("keydown", killNativeFind, true);
+  }, []);
+
   // Ctrl+Shift+Up (open transcript overlay for focused session).
   //
   // IMPORTANT: use CAPTURE phase. xterm.js attaches its own keydown listener

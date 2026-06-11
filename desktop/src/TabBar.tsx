@@ -88,6 +88,12 @@ export function TabBar({
   );
 
   function onTabMouseDown(e: React.MouseEvent, id: string) {
+    // Middle button → suppress the browser's autoscroll grab; the actual close
+    // fires on auxclick (release), browser-style.
+    if (e.button === 1) {
+      e.preventDefault();
+      return;
+    }
     if (e.button !== 0) return;
     dragRef.current = { id, startX: e.clientX, started: false };
   }
@@ -177,6 +183,15 @@ export function TabBar({
               onClick={() => {
                 if (dragId) return; // swallow click at end of a drag
                 onSelect(t.id);
+              }}
+              onAuxClick={(e) => {
+                // Middle-click closes the tab, browser-style. closeWorkspace
+                // (the onClose target) only confirms for a multi-pane split, so
+                // a plain single tab closes instantly — exactly what we want.
+                if (e.button === 1) {
+                  e.preventDefault();
+                  onClose(t.id);
+                }
               }}
               onContextMenu={(e) => {
                 e.preventDefault();

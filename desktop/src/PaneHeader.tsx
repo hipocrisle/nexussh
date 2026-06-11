@@ -11,6 +11,9 @@ interface Props {
   focused: boolean;
   onClick: () => void; // focus the pane
   onClose: () => void;
+  /** Middle-click close — goes through a confirm in the parent (closing a pane
+   *  in a split kills a live session, so we warn first, unlike the × button). */
+  onMiddleClose: () => void;
   onMenu: (x: number, y: number) => void;
   onDragStart: (e: React.PointerEvent) => void;
 }
@@ -21,6 +24,7 @@ export function PaneHeader({
   focused,
   onClick,
   onClose,
+  onMiddleClose,
   onMenu,
   onDragStart,
 }: Props) {
@@ -34,6 +38,13 @@ export function PaneHeader({
     <div
       onPointerDown={onDragStart}
       onClick={onClick}
+      onAuxClick={(e) => {
+        if (e.button === 1) {
+          e.preventDefault();
+          e.stopPropagation();
+          onMiddleClose();
+        }
+      }}
       className="select-none h-6 flex items-center text-meta font-mono border-b cursor-pointer"
       style={{
         background: focused ? "var(--nx-bg-panel)" : "var(--nx-bg-secondary)",

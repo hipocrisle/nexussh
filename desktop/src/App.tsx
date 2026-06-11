@@ -1975,6 +1975,26 @@ function App() {
     );
   }
 
+  // Middle-click close of a split pane. Unlike the × button (silent), closing a
+  // pane via middle-click warns first when the session is live — a split pane is
+  // easy to hit by accident and you'd lose a running session.
+  async function closePaneConfirmed(wsId: string, paneId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const pane = ws.panes.find((p) => p.id === paneId);
+    if (!pane) return;
+    const live =
+      pane.session.status === "connected" ||
+      pane.session.status === "connecting";
+    if (settings.confirmClose && ws.panes.length > 1 && live) {
+      const ok = await askConfirm(t("app.confirm_close_pane"), {
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    closePane(wsId, paneId);
+  }
+
   // Move a pane out of its source workspace into a brand-new workspace as a
   // single pane. The session is NOT touched — the TerminalView keeps running
   // because it lives in the flat layer keyed by session.id; only the
@@ -2624,6 +2644,7 @@ function App() {
                   focused={p.id === ws.focusedPaneId}
                   onClick={() => setFocusedPane(ws.id, p.id)}
                   onClose={() => closePane(ws.id, p.id)}
+                  onMiddleClose={() => closePaneConfirmed(ws.id, p.id)}
                   onMenu={(x, y) => openPaneMenu(ws.id, p.id, x, y)}
                   onDragStart={(e) => startPaneDrag(e, ws.id, p.id)}
                 />

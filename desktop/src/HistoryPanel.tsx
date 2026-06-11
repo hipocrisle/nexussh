@@ -8,9 +8,19 @@
 // Recordings are stored encrypted under the vault key, so list/read throw a
 // "vault locked"-ish error when the vault is locked; we surface that as a hint.
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, Trash2, Lock, Search, X } from "lucide-react";
+import type { TFunction } from "i18next";
+import {
+  Loader2,
+  Trash2,
+  Lock,
+  Search,
+  X,
+  ChevronRight,
+  ChevronDown,
+  ChevronsDownUp,
+} from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, ISearchOptions } from "@xterm/addon-search";
@@ -64,6 +74,19 @@ function fmtDate(start: number): string {
   return new Date(start * 1000).toLocaleString();
 }
 
+/** Compact "last activity" label for a host node. Falls back to a plain date
+ *  for anything older than ~a week. `t` is the i18next translator. */
+function fmtRelative(start: number, nowSec: number, t: TFunction): string {
+  const diff = Math.max(0, nowSec - start);
+  if (diff < 60) return t("history.panel.rel_now");
+  if (diff < 3600) return t("history.panel.rel_min", { n: Math.floor(diff / 60) });
+  if (diff < 86400) return t("history.panel.rel_hour", { n: Math.floor(diff / 3600) });
+  const days = Math.floor(diff / 86400);
+  if (days === 1) return t("history.panel.rel_yesterday");
+  if (days < 7) return t("history.panel.rel_day", { n: days });
+  return new Date(start * 1000).toLocaleDateString();
+}
+
 /** base64 of RAW bytes → Uint8Array. atob yields a latin1 string where each
  *  char code is one byte; we never go through TextDecoder (would mangle bytes). */
 function b64ToBytes(b64: string): Uint8Array {
@@ -88,6 +111,29 @@ export function HistoryPanel({ onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [replayLoading, setReplayLoading] = useState(false);
+
+  // Recordings grouped under their host (#287). The flat list became a dump once
+  // dozens of sessions piled up, so we collapse them under one node per host and
+  // remember which nodes are open (in localStorage). Default: everything closed.
+  const [expandedHosts, setExpandedHosts] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("nx.history.expandedHosts");
+      if (raw) return new Set<string>(JSON.parse(raw));
+    } catch {
+      /* ignore corrupt/absent state */
+    }
+    return new Set();
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "nx.history.expandedHosts",
+        JSON.stringify([...expandedHosts]),
+      );
+    } catch {
+      /* storage full / unavailable — non-fatal */
+    }
+  }, [expandedHosts]);
 
   const termContainerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -458,6 +504,75 @@ export function HistoryPanel({ onClose }: Props) {
     setStats({ sessions: 0, bytes: 0 });
   }
 
+  // Group recordings by host_id, newest-active host first. Sessions inside each
+  // group keep the backend's newest-first order. Label = the most recent
+  // session's label (they're identical per host in practice).
+  const hostGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      { hostId: string; label: string; lastStart: number; sessions: SessionMeta[] }
+    >();
+    for (const s of sessions) {
+      const g = map.get(s.host_id);
+      if (!g) {
+        map.set(s.host_id, {
+          hostId: s.host_id,
+          label: s.label,
+          lastStart: s.start,
+          sessions: [s],
+        });
+      } else {
+        g.sessions.push(s);
+        if (s.start > g.lastStart) {
+          g.lastStart = s.start;
+          g.label = s.label;
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => b.lastStart - a.lastStart);
+  }, [sessions]);
+
+  // Recomputed once per render — fine for relative "x ago" labels.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const allExpanded =
+    hostGroups.length > 0 && hostGroups.every((g) => expandedHosts.has(g.hostId));
+
+  function toggleHost(id: string) {
+    setExpandedHosts((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    if (allExpanded) setExpandedHosts(new Set());
+    else setExpandedHosts(new Set(hostGroups.map((g) => g.hostId)));
+  }
+
+  async function onDeleteHost(g: { sessions: SessionMeta[] }) {
+    const ok = await askConfirm(
+      t("history.panel.delete_host", { count: g.sessions.length }),
+      { destructive: true },
+    );
+    if (!ok) return;
+    const ids = g.sessions.map((s) => s.id);
+    try {
+      for (const id of ids) await historyDelete(id);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    const idSet = new Set(ids);
+    setSessions((prev) => prev.filter((s) => !idSet.has(s.id)));
+    if (selected && idSet.has(selected)) setSelected(null);
+    const removedBytes = g.sessions.reduce((n, s) => n + s.bytes, 0);
+    setStats((prev) => ({
+      sessions: Math.max(0, prev.sessions - ids.length),
+      bytes: Math.max(0, prev.bytes - removedBytes),
+    }));
+  }
+
   function runFind(forward: boolean) {
     const addon = searchAddonRef.current;
     if (!addon || !searchQuery) return;
@@ -634,6 +749,19 @@ export function HistoryPanel({ onClose }: Props) {
                     )}
                   </div>
                 </div>
+                {searchResults === null && hostGroups.length > 0 && (
+                  <div className="shrink-0 px-2 py-1 border-b border-nx-divider flex items-center">
+                    <button
+                      onClick={toggleAll}
+                      className="flex items-center gap-1 text-micro font-mono text-nx-muted hover:text-nx-text"
+                    >
+                      <ChevronsDownUp size={12} className="shrink-0" />
+                      {allExpanded
+                        ? t("history.panel.collapse_all")
+                        : t("history.panel.expand_all")}
+                    </button>
+                  </div>
+                )}
                 <div className="flex-1 overflow-y-auto">
                   {searchResults !== null ? (
                     searchResults.length === 0 ? (
@@ -679,54 +807,100 @@ export function HistoryPanel({ onClose }: Props) {
                       })
                     )
                   ) : (
-                    sessions.map((s) => {
-                  const isSel = s.id === selected;
-                  return (
-                    <div
-                      key={s.id}
-                      data-active={isSel || undefined}
-                      onClick={() => setSelected(s.id)}
-                      className="nx-row px-3.5 py-2.5 cursor-pointer text-body select-none border-b border-nx-divider"
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span
-                          className={
-                            "truncate font-mono " +
-                            (isSel ? "text-nx-accent" : "text-nx-text")
-                          }
-                        >
-                          {s.label}
-                        </span>
-                        <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-soft">
-                          {modeLabel(s.mode)}
-                        </span>
-                        {s.truncated && (
-                          <span className="shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-[rgba(245,215,110,0.35)] bg-nx-elevated text-nx-warning">
-                            {t("history.panel.truncated")}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-meta text-nx-muted tabular-nums">
-                        <span className="truncate">{fmtDate(s.start)}</span>
-                        <span className="ml-auto shrink-0">
-                          {fmtDuration(s.start, s.end)}
-                        </span>
-                        <span className="shrink-0 text-nx-dim">
-                          {fmtBytes(s.bytes)}
-                        </span>
-                        <button
-                          onClick={(ev) => {
-                            ev.stopPropagation();
-                            onDelete(s.id);
-                          }}
-                          className="shrink-0 text-nx-muted hover:text-nx-error"
-                          title={t("history.panel.delete")}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </div>
-                  );
+                    hostGroups.map((g) => {
+                      const open = expandedHosts.has(g.hostId);
+                      return (
+                        <div key={g.hostId}>
+                          {/* Host node — collapses/expands its sessions */}
+                          <div
+                            onClick={() => toggleHost(g.hostId)}
+                            className="nx-row px-2.5 py-2 cursor-pointer text-body select-none border-b border-nx-divider flex items-center gap-1.5"
+                          >
+                            {open ? (
+                              <ChevronDown
+                                size={14}
+                                className="shrink-0 text-nx-muted"
+                              />
+                            ) : (
+                              <ChevronRight
+                                size={14}
+                                className="shrink-0 text-nx-muted"
+                              />
+                            )}
+                            <span className="truncate font-mono text-nx-text flex-1 min-w-0">
+                              {g.label}
+                            </span>
+                            <span className="shrink-0 text-meta text-nx-muted tabular-nums">
+                              {fmtRelative(g.lastStart, nowSec, t)}
+                            </span>
+                            <span className="shrink-0 inline-flex items-center px-1.5 text-[10px] rounded-sm border border-nx-border bg-nx-elevated text-nx-soft tabular-nums">
+                              {g.sessions.length}
+                            </span>
+                            <button
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                onDeleteHost(g);
+                              }}
+                              className="shrink-0 text-nx-muted hover:text-nx-error"
+                              title={t("history.panel.delete")}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                          {/* Sessions under this host (indented) */}
+                          {open &&
+                            g.sessions.map((s) => {
+                              const isSel = s.id === selected;
+                              return (
+                                <div
+                                  key={s.id}
+                                  data-active={isSel || undefined}
+                                  onClick={() => setSelected(s.id)}
+                                  className="nx-row pl-7 pr-3 py-2 cursor-pointer text-body select-none border-b border-nx-divider"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span
+                                      className={
+                                        "truncate font-mono text-meta tabular-nums " +
+                                        (isSel
+                                          ? "text-nx-accent"
+                                          : "text-nx-text")
+                                      }
+                                    >
+                                      {fmtDate(s.start)}
+                                    </span>
+                                    <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-soft">
+                                      {modeLabel(s.mode)}
+                                    </span>
+                                    {s.truncated && (
+                                      <span className="shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-[rgba(245,215,110,0.35)] bg-nx-elevated text-nx-warning">
+                                        {t("history.panel.truncated")}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="mt-1 flex items-center gap-2 text-meta text-nx-muted tabular-nums">
+                                    <span className="shrink-0">
+                                      {fmtDuration(s.start, s.end)}
+                                    </span>
+                                    <span className="ml-auto shrink-0 text-nx-dim">
+                                      {fmtBytes(s.bytes)}
+                                    </span>
+                                    <button
+                                      onClick={(ev) => {
+                                        ev.stopPropagation();
+                                        onDelete(s.id);
+                                      }}
+                                      className="shrink-0 text-nx-muted hover:text-nx-error"
+                                      title={t("history.panel.delete")}
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      );
                     })
                   )}
                 </div>

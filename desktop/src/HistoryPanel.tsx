@@ -391,6 +391,11 @@ export function HistoryPanel({ onClose }: Props) {
           if (typeof b64 !== "string") continue;
           term.write(b64ToBytes(b64));
         }
+        // xterm.write() is ASYNC (queued + parsed off-thread). Wait for the
+        // queue to fully drain before marking the replay ready — otherwise the
+        // search auto-jump runs against a half-filled buffer and finds 0 matches
+        // even when the recording clearly has many (the "11 hits → 0/0" bug).
+        await new Promise<void>((resolve) => term.write("", () => resolve()));
         if (alive && termRef.current === term) {
           try {
             fit.fit();

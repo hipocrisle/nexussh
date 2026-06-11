@@ -495,7 +495,9 @@ pub async fn history_search(
                 _ => continue,
             };
             let text = decode_events_to_text(&raw);
-            let (hits, snippets) = find_hits(&text, &needle_lc, 3);
+            // Up to 8 matching lines per recording — enough to make the
+            // expandable result list useful (#288) without bloating the payload.
+            let (hits, snippets) = find_hits(&text, &needle_lc, 8);
             if hits > 0 {
                 out.push(SearchResult {
                     meta,

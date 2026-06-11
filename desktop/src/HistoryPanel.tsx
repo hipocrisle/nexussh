@@ -163,24 +163,18 @@ export function HistoryPanel({ onClose }: Props) {
   const searchOptsRef = useRef(searchOpts);
   searchOptsRef.current = searchOpts;
 
-  // In-replay find bar — only meaningful while a recording is selected.
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  // Live match counter, driven by SearchAddon.onDidChangeResults.
-  const [searchInfo, setSearchInfo] = useState<{ idx: number; count: number }>({
-    idx: -1,
-    count: 0,
-  });
-  const searchInputRef = useRef<HTMLInputElement>(null);
-
-  // Global search across ALL recordings (#284). Backed by `history_search`;
-  // when the query is non-empty the left list shows matching recordings (with
-  // hit counts + a snippet) instead of the full session list.
+  // The ONE search box (#284, unified #288). Backed by `history_search`; when
+  // the query is non-empty the left list shows matching recordings, each
+  // expandable to its matching lines (snippets). There is no separate in-replay
+  // find bar any more — clicking a snippet opens that recording and best-effort
+  // highlights the query in the replay buffer via SearchAddon.
   const [globalQuery, setGlobalQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(
     null,
   );
   const [searching, setSearching] = useState(false);
+  // Which result rows are expanded to show their snippets (by recording id).
+  const [expandedResults, setExpandedResults] = useState<Set<string>>(new Set());
   // Query to jump to inside a replay once it has finished loading (set when a
   // global-search result is clicked, consumed by the auto-jump effect below).
   const pendingJumpRef = useRef<string | null>(null);
@@ -197,21 +191,12 @@ export function HistoryPanel({ onClose }: Props) {
   // the current puttyMouse value without re-creating the terminal.
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  // Keep latest setter in a ref so the mount-once term effect's key handler
-  // (registered when the replay term is built) always opens the live bar.
-  const openSearchRef = useRef<() => void>(() => {});
-  openSearchRef.current = () => {
-    setSearchOpen(true);
-    // Focus after the input has actually rendered.
-    requestAnimationFrame(() => searchInputRef.current?.focus());
-  };
   // Esc handler for the replay terminal's key handler (which closes over stale
-  // state). Re-assigned every render so it sees the live searchOpen value:
-  // close the find bar if open, otherwise close the whole panel.
+  // state). Re-assigned every render. Search lives in the single left-column box
+  // now (no in-replay find bar), so Esc just closes the whole panel.
   const escapeRef = useRef<() => void>(() => {});
   escapeRef.current = () => {
-    if (searchOpen) closeSearch();
-    else onClose();
+    onClose();
   };
 
   // Load list + stats on mount.
@@ -262,10 +247,6 @@ export function HistoryPanel({ onClose }: Props) {
     let alive = true;
     setReplayLoading(true);
     setError(null);
-    // New recording → drop any stale find query/bar.
-    setSearchOpen(false);
-    setSearchQuery("");
-    setSearchInfo({ idx: -1, count: 0 });
     setCtxMenu(null);
 
     // Re-create the terminal for this recording (clean buffer + fresh parser).
@@ -303,29 +284,14 @@ export function HistoryPanel({ onClose }: Props) {
           return false;
         }
       }
-      // Open the in-replay find bar.
-      if (ctrl && !ev.shiftKey && ev.key.toLowerCase() === "f") {
-        openSearchRef.current();
-        return false;
-      }
       // Esc while focus is inside the replay terminal: xterm normally swallows
-      // it, so useBackdropClose never sees it. Handle it here — if the find bar
-      // is open, close just the search; otherwise close the whole panel.
+      // it, so useBackdropClose never sees it. Handle it here — close the panel.
       if (ev.key === "Escape") {
         escapeRef.current();
         return false;
       }
       return true;
     });
-
-    // Live match counter — fires whenever decorations recompute (findNext/Prev,
-    // incremental typing). resultIndex is 0-based (or -1 when none/over limit),
-    // resultCount the total. We mirror it into searchInfo for the find-bar.
-    const resultsDisposable = searchAddon.onDidChangeResults(
-      ({ resultIndex, resultCount }) => {
-        setSearchInfo({ idx: resultIndex, count: resultCount });
-      },
-    );
 
     // PuTTY-style mouse: releasing a drag-selection auto-copies it (same as
     // Terminal.tsx's mouseupHandler). 0-ms timer lets xterm finalize selection.
@@ -357,11 +323,6 @@ export function HistoryPanel({ onClose }: Props) {
         {
           label: t("term_menu.select_all"),
           onClick: () => term.selectAll(),
-        },
-        { separator: true, label: "" },
-        {
-          label: t("history.panel.find"),
-          onClick: () => openSearchRef.current(),
         },
       ];
       setCtxMenu({ x: ev.clientX, y: ev.clientY, items });
@@ -409,7 +370,6 @@ export function HistoryPanel({ onClose }: Props) {
 
     return () => {
       alive = false;
-      resultsDisposable.dispose();
       container.removeEventListener("mouseup", mouseupHandler);
       container.removeEventListener("contextmenu", ctxHandler);
     };
@@ -436,7 +396,11 @@ export function HistoryPanel({ onClose }: Props) {
     const h = setTimeout(async () => {
       try {
         const res = await historySearch(q);
-        if (alive) setSearchResults(res);
+        if (alive) {
+          setSearchResults(res);
+          // Auto-expand the top result so its matching lines are visible at once.
+          setExpandedResults(new Set(res.length ? [res[0].meta.id] : []));
+        }
       } catch (e) {
         if (alive) {
           setSearchResults([]);
@@ -452,15 +416,15 @@ export function HistoryPanel({ onClose }: Props) {
     };
   }, [globalQuery]);
 
-  // After a clicked search result's replay finishes loading, open the in-replay
-  // find bar seeded with the query and jump to the first match.
+  // After a clicked search result's replay finishes loading, best-effort
+  // highlight + jump to the query in the replay buffer. SearchAddon searches the
+  // final rendered screen, so a match that was later overwritten on-screen won't
+  // be found here — but the snippet in the result list already shows its text.
   useEffect(() => {
     if (replayLoading || !selected) return;
     const q = pendingJumpRef.current;
     if (!q) return;
     pendingJumpRef.current = null;
-    setSearchOpen(true);
-    setSearchQuery(q);
     requestAnimationFrame(() => {
       searchAddonRef.current?.findNext(q, searchOptsRef.current);
     });
@@ -573,20 +537,13 @@ export function HistoryPanel({ onClose }: Props) {
     }));
   }
 
-  function runFind(forward: boolean) {
-    const addon = searchAddonRef.current;
-    if (!addon || !searchQuery) return;
-    if (forward) addon.findNext(searchQuery, searchOptsRef.current);
-    else addon.findPrevious(searchQuery, searchOptsRef.current);
-  }
-
-  function closeSearch() {
-    setSearchOpen(false);
-    setSearchQuery("");
-    setSearchInfo({ idx: -1, count: 0 });
-    searchAddonRef.current?.clearDecorations?.();
-    // Return focus to the replay terminal so wheel/Ctrl+F keep working.
-    termRef.current?.focus();
+  function toggleResult(id: string) {
+    setExpandedResults((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   function modeLabel(mode: string): string {
@@ -627,77 +584,8 @@ export function HistoryPanel({ onClose }: Props) {
           >
             {t("history.panel.clear")}
           </Button>
-          {selected &&
-            (searchOpen ? (
-              // Compact find bar lives in the header so it never overlays the
-              // replay output. Single row: input + idx/count + prev/next + close.
-              <div className="ml-auto flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx font-mono">
-                <Search size={12} className="text-nx-muted shrink-0" />
-                <input
-                  ref={searchInputRef}
-                  value={searchQuery}
-                  onChange={(e) => {
-                    const q = e.target.value;
-                    setSearchQuery(q);
-                    const addon = searchAddonRef.current;
-                    if (addon && q) {
-                      addon.findNext(q, searchOptsRef.current);
-                    } else if (addon) {
-                      addon.clearDecorations?.();
-                      setSearchInfo({ idx: -1, count: 0 });
-                    }
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      runFind(!e.shiftKey);
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      closeSearch();
-                    }
-                  }}
-                  placeholder={t("history.panel.search_placeholder")}
-                  className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
-                />
-                <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
-                  {searchInfo.count > 0
-                    ? `${searchInfo.idx + 1}/${searchInfo.count}`
-                    : searchQuery
-                      ? "0/0"
-                      : ""}
-                </span>
-                <button
-                  onClick={() => runFind(false)}
-                  className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
-                  title={t("history.panel.find_prev")}
-                >
-                  ‹
-                </button>
-                <button
-                  onClick={() => runFind(true)}
-                  className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
-                  title={t("history.panel.find_next")}
-                >
-                  ›
-                </button>
-                <button
-                  onClick={closeSearch}
-                  className="shrink-0 text-nx-muted hover:text-nx-error"
-                  title={t("history.panel.clear_search")}
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ) : (
-              <IconButton
-                className="ml-auto"
-                icon={<Search size={14} />}
-                onClick={() => openSearchRef.current()}
-                title={t("history.panel.search_placeholder")}
-              />
-            ))}
           <IconButton
-            className={selected ? undefined : "ml-auto"}
+            className="ml-auto"
             icon={<span className="text-base leading-none">×</span>}
             onClick={onClose}
             title={t("tabmenu.close")}
@@ -774,34 +662,58 @@ export function HistoryPanel({ onClose }: Props) {
                       searchResults.map((r) => {
                         const s = r.meta;
                         const isSel = s.id === selected;
+                        const open = expandedResults.has(s.id);
+                        const q = globalQuery.trim();
                         return (
-                          <div
-                            key={s.id}
-                            data-active={isSel || undefined}
-                            onClick={() => openResult(s, globalQuery.trim())}
-                            className="nx-row px-3.5 py-2.5 cursor-pointer text-body select-none border-b border-nx-divider"
-                          >
-                            <div className="flex items-center gap-2 min-w-0">
+                          <div key={s.id}>
+                            {/* Result header — toggles its snippets + opens the
+                             *  recording (best-effort highlight on open). */}
+                            <div
+                              data-active={isSel || undefined}
+                              onClick={() => {
+                                toggleResult(s.id);
+                                openResult(s, q);
+                              }}
+                              className="nx-row px-2.5 py-2.5 cursor-pointer text-body select-none border-b border-nx-divider flex items-center gap-1.5"
+                            >
+                              {open ? (
+                                <ChevronDown
+                                  size={14}
+                                  className="shrink-0 text-nx-muted"
+                                />
+                              ) : (
+                                <ChevronRight
+                                  size={14}
+                                  className="shrink-0 text-nx-muted"
+                                />
+                              )}
                               <span
                                 className={
-                                  "truncate font-mono " +
+                                  "truncate font-mono flex-1 min-w-0 " +
                                   (isSel ? "text-nx-accent" : "text-nx-text")
                                 }
                               >
                                 {s.label}
                               </span>
-                              <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-accent2 tabular-nums">
+                              <span className="shrink-0 text-meta text-nx-muted tabular-nums">
+                                {fmtDate(s.start)}
+                              </span>
+                              <span className="shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-accent2 tabular-nums">
                                 {t("history.panel.hits", { count: r.hits })}
                               </span>
                             </div>
-                            <div className="mt-1 text-meta text-nx-muted tabular-nums truncate">
-                              {fmtDate(s.start)}
-                            </div>
-                            {r.snippets[0] && (
-                              <div className="mt-1 text-micro text-nx-dim font-mono truncate">
-                                {r.snippets[0]}
-                              </div>
-                            )}
+                            {/* Matching lines (snippets). Click → open + jump. */}
+                            {open &&
+                              r.snippets.map((sn, i) => (
+                                <div
+                                  key={i}
+                                  onClick={() => openResult(s, q)}
+                                  className="nx-row pl-7 pr-3 py-1.5 cursor-pointer select-none border-b border-nx-divider text-micro text-nx-dim font-mono truncate hover:text-nx-text"
+                                  title={sn}
+                                >
+                                  {sn}
+                                </div>
+                              ))}
                           </div>
                         );
                       })

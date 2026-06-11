@@ -227,22 +227,6 @@ export function BehaviorSection({ s, set, t }: Props) {
       {s.historyEnabled && (
         <>
           <Row
-            label={tr("settings.behavior.history_mode")}
-            hint={tr("settings.behavior.history_mode_hint")}
-            t={t}
-          >
-            <Toggle
-              checked={s.historyMode === "full"}
-              onChange={(v) => set({ historyMode: v ? "full" : "light" })}
-              t={t}
-              label={tr("settings.behavior.history_full_label")}
-              onLabel={tr("settings.nav.on")}
-              offLabel={tr("settings.nav.off")}
-              enabledLabel={tr("settings.toggle.enabled")}
-              disabledLabel={tr("settings.toggle.disabled")}
-            />
-          </Row>
-          <Row
             label={tr("settings.behavior.history_usage")}
             hint={tr("settings.behavior.history_usage_hint")}
             t={t}

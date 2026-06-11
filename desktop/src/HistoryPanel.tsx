@@ -592,12 +592,6 @@ export function HistoryPanel({ onClose }: Props) {
     termRef.current?.focus();
   }
 
-  function modeLabel(mode: string): string {
-    if (mode === "light") return t("history.panel.mode_light");
-    if (mode === "full") return t("history.panel.mode_full");
-    return mode;
-  }
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
@@ -844,11 +838,8 @@ export function HistoryPanel({ onClose }: Props) {
                                     >
                                       {fmtDate(s.start)}
                                     </span>
-                                    <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-nx-border bg-nx-elevated text-nx-soft">
-                                      {modeLabel(s.mode)}
-                                    </span>
                                     {s.truncated && (
-                                      <span className="shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-[rgba(245,215,110,0.35)] bg-nx-elevated text-nx-warning">
+                                      <span className="ml-auto shrink-0 inline-flex items-center px-1.5 text-[9px] uppercase tracking-wider rounded-sm border border-[rgba(245,215,110,0.35)] bg-nx-elevated text-nx-warning">
                                         {t("history.panel.truncated")}
                                       </span>
                                     )}

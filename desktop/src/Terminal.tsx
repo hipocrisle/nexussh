@@ -2,11 +2,13 @@
 // One instance per session — kept mounted while the tab exists; visibility
 // is toggled by parent via CSS so xterm state persists across tab switches.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { SearchAddon, ISearchOptions } from "@xterm/addon-search";
+import { Search, X } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
 import {
   sshSend,
@@ -88,6 +90,54 @@ export function TerminalView({
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // ── In-terminal find (Ctrl+F / 🔍 button) ──────────────────────────────
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findInfo, setFindInfo] = useState<{ idx: number; count: number }>({
+    idx: -1,
+    count: 0,
+  });
+  const palette = THEMES[settings.theme];
+  // Outline-only decorations (a fill over coloured glyphs is unreadable).
+  const searchOpts: ISearchOptions = {
+    decorations: {
+      matchBorder: `${palette.accent2}99`,
+      matchOverviewRuler: palette.accent2,
+      activeMatchBorder: `${palette.warning}aa`,
+      activeMatchColorOverviewRuler: palette.warning,
+    },
+  };
+  const searchOptsRef = useRef(searchOpts);
+  searchOptsRef.current = searchOpts;
+  // Refs so the mount-once key handler / window listener get fresh setters.
+  const findOpenRef = useRef(false);
+  findOpenRef.current = findOpen;
+  const openFindRef = useRef<() => void>(() => {});
+  openFindRef.current = () => {
+    setFindOpen(true);
+    requestAnimationFrame(() => findInputRef.current?.focus());
+  };
+  function closeFind() {
+    setFindOpen(false);
+    setFindQuery("");
+    setFindInfo({ idx: -1, count: 0 });
+    searchAddorClear();
+    termRef.current?.focus();
+  }
+  function searchAddorClear() {
+    searchAddonRef.current?.clearDecorations?.();
+  }
+  const closeFindRef = useRef<() => void>(() => {});
+  closeFindRef.current = closeFind;
+  function runFind(forward: boolean) {
+    const a = searchAddonRef.current;
+    if (!a || !findQuery) return;
+    if (forward) a.findNext(findQuery, searchOptsRef.current);
+    else a.findPrevious(findQuery, searchOptsRef.current);
+  }
+
   // Initialize terminal once per session — uses INITIAL settings; later
   // changes are pushed via the effects below.
   useEffect(() => {
@@ -114,6 +164,13 @@ export function TerminalView({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new WebLinksAddon());
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
+    const searchResultsDisposable = searchAddon.onDidChangeResults(
+      ({ resultIndex, resultCount }) =>
+        setFindInfo({ idx: resultIndex, count: resultCount }),
+    );
     term.open(containerRef.current);
     fitIfVisible(containerRef.current, fit);
     termRef.current = term;
@@ -252,6 +309,17 @@ export function TerminalView({
         onReconnectRef.current?.();
         return false;
       }
+      // Ctrl+F → open in-terminal find. Esc closes it (when open).
+      const ctrlOnly =
+        ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey;
+      if (ctrlOnly && ev.key.toLowerCase() === "f") {
+        openFindRef.current();
+        return false;
+      }
+      if (findOpenRef.current && ev.key === "Escape") {
+        closeFindRef.current();
+        return false;
+      }
       const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
       if (ctrlShift && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
@@ -325,6 +393,7 @@ export function TerminalView({
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
+      searchResultsDisposable.dispose();
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
       unlistenData?.();
@@ -411,15 +480,87 @@ export function TerminalView({
     });
   }, [settings.font, settings.fontSize]);
 
+  // 🔍 button in the header dispatches nx:find with the active session id.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ sessionId?: string }>;
+      if (ce.detail?.sessionId === sessionId) openFindRef.current();
+    };
+    window.addEventListener("nx:find", handler);
+    return () => window.removeEventListener("nx:find", handler);
+  }, [sessionId]);
+
   return (
     <div
-      ref={containerRef}
-      className="w-full h-full"
-      style={{
-        background: THEMES[settings.theme].bgBase,
-        display: visible ? "block" : "none",
-        minHeight: 0,
-      }}
-    />
+      className="relative w-full h-full"
+      style={{ display: visible ? "block" : "none", minHeight: 0 }}
+    >
+      <div
+        ref={containerRef}
+        className="w-full h-full"
+        style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
+      />
+      {findOpen && (
+        <div
+          className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <Search size={12} className="text-nx-muted shrink-0" />
+          <input
+            ref={findInputRef}
+            value={findQuery}
+            onChange={(e) => {
+              const q = e.target.value;
+              setFindQuery(q);
+              const a = searchAddonRef.current;
+              if (a && q) a.findNext(q, searchOptsRef.current);
+              else if (a) {
+                a.clearDecorations?.();
+                setFindInfo({ idx: -1, count: 0 });
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                runFind(!e.shiftKey);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                closeFind();
+              }
+            }}
+            placeholder={t("terminal.find_placeholder")}
+            className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
+          />
+          <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
+            {findInfo.count > 0
+              ? `${findInfo.idx + 1}/${findInfo.count}`
+              : findQuery
+                ? "0/0"
+                : ""}
+          </span>
+          <button
+            onClick={() => runFind(false)}
+            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+            title={t("history.panel.find_prev")}
+          >
+            ‹
+          </button>
+          <button
+            onClick={() => runFind(true)}
+            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+            title={t("history.panel.find_next")}
+          >
+            ›
+          </button>
+          <button
+            onClick={closeFind}
+            className="shrink-0 text-nx-muted hover:text-nx-error"
+            title={t("history.panel.clear_search")}
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

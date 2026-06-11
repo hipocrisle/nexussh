@@ -8,12 +8,13 @@ import {
   Settings as SettingsIcon,
   HelpCircle,
   History as HistoryIcon,
+  Search,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
 import { TerminalView } from "./Terminal";
 import { DialogHost } from "./DialogHost";
-import { askConfirm, askChoice } from "./dialogs";
+import { askConfirm } from "./dialogs";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 // Heavy panels are conditionally rendered — code-split them so the initial
 // bundle drops from ~775KB to ~500KB. React.lazy + Suspense unloads them
@@ -1426,15 +1427,13 @@ function App() {
   // Resolve a host's effective recording decision: the per-host recordHistory
   // override wins over the global on/off + mode. undefined = inherit global.
   function historyArgsFor(h: HostRecord): { record: boolean; mode: string } {
+    // Recording is always "light" now (alt-screen / TUI redraws skipped). The
+    // "full" mode was removed — it filled history with htop/vim redraw garbage,
+    // truncated the real session via the size ring, and bloated files.
     const rh = h.recordHistory;
-    if (rh === undefined)
-      return { record: settings.historyEnabled, mode: settings.historyMode };
-    if (rh === "off" || rh === false)
-      return { record: false, mode: settings.historyMode };
-    if (rh === true)
-      // Legacy boolean (pre-mode-override) → record with the global mode.
-      return { record: true, mode: settings.historyMode };
-    return { record: true, mode: rh }; // "light" | "full"
+    if (rh === undefined) return { record: settings.historyEnabled, mode: "light" };
+    if (rh === "off" || rh === false) return { record: false, mode: "light" };
+    return { record: true, mode: "light" };
   }
 
   async function openHost(h: HostRecord) {
@@ -2855,6 +2854,19 @@ function App() {
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">
+          {activeId && (
+            <HeaderButton
+              icon={<Search size={12} />}
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("nx:find", { detail: { sessionId: activeId } }),
+                )
+              }
+              title={t("terminal.find_title")}
+            >
+              {t("terminal.find_label")}
+            </HeaderButton>
+          )}
           <HeaderButton
             icon={<RefreshCw size={12} />}
             onClick={() => setSyncPanelOpen(true)}
@@ -2905,24 +2917,11 @@ function App() {
                 setHistoryPanelOpen(true);
                 return;
               }
-              const mode = await askChoice(t("history.enable_prompt"), {
+              const ok = await askConfirm(t("history.enable_prompt"), {
                 title: t("history.enable_title"),
-                cancelLabel: t("dialog.cancel"),
-                options: [
-                  {
-                    value: "light",
-                    label: t("history.mode_light_label"),
-                    hint: t("history.mode_light_desc"),
-                  },
-                  {
-                    value: "full",
-                    label: t("history.mode_full_label"),
-                    hint: t("history.mode_full_desc"),
-                  },
-                ],
               });
-              if (mode === "light" || mode === "full") {
-                setSettings({ historyEnabled: true, historyMode: mode });
+              if (ok) {
+                setSettings({ historyEnabled: true, historyMode: "light" });
                 setHistoryPanelOpen(true);
               }
             }}

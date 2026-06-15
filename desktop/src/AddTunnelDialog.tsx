@@ -28,6 +28,7 @@ export function AddTunnelDialog({ connectArgs, label, host, onClose, onStarted }
   const [remoteHost, setRemoteHost] = useState("127.0.0.1");
   const [remotePort, setRemotePort] = useState("");
   const [scheme, setScheme] = useState<"http" | "https">("https");
+  const [path, setPath] = useState("");
   const [saveToHost, setSaveToHost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +70,7 @@ export function AddTunnelDialog({ connectArgs, label, host, onClose, onStarted }
             remoteHost: rhost,
             remotePort: rport,
             scheme,
+            path: path.trim() || undefined,
           };
           await saveHost({ ...host, forwards: [...existing, fwd] });
         }
@@ -158,6 +160,15 @@ export function AddTunnelDialog({ connectArgs, label, host, onClose, onStarted }
               placeholder={t("dialog.forward_rport_ph")}
             />
           </div>
+        </div>
+
+        <div className="mt-4">
+          <RowLabel>{t("tunnel.path")}</RowLabel>
+          <Input
+            value={path}
+            onChange={setPath}
+            placeholder={t("tunnel.path_ph")}
+          />
         </div>
 
         {host && (

@@ -204,6 +204,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         remoteHost: "127.0.0.1",
         remotePort: 0,
         scheme: "https",
+        path: "",
         autoStart: false,
       },
     ]);
@@ -280,6 +281,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               ...f,
               name: f.name?.trim() || undefined,
               remoteHost: f.remoteHost.trim() || "127.0.0.1",
+              path: f.path?.trim() || undefined,
             }));
           return cleaned.length > 0 ? cleaned : undefined;
         })(),
@@ -612,6 +614,13 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                     <option value="https">https</option>
                     <option value="http">http</option>
                   </select>
+                  <input
+                    value={f.path ?? ""}
+                    onChange={(e) => updateForward(f.id, { path: e.target.value })}
+                    placeholder={t("dialog.forward_path_ph")}
+                    title={t("dialog.forward_path")}
+                    className="nx-focus w-[72px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
+                  />
                   <label
                     className="shrink-0 flex items-center"
                     title={t("dialog.forward_autostart")}

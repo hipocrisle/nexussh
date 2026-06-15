@@ -6,7 +6,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Loader2, RefreshCw, Globe, Plus, Square, Play } from "lucide-react";
-import { TunnelInfo, PortForward, tunnelList, tunnelClose } from "./tunnel";
+import { TunnelInfo, PortForward, tunnelList, tunnelClose, buildOpenUrl } from "./tunnel";
 import type { ConnectArgs } from "./ssh";
 import { listHosts } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
@@ -113,14 +113,32 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
     refresh();
   }
 
-  async function onOpenBrowser(tn: TunnelInfo) {
-    const scheme = schemeForPort(tn.remote_port);
-    const url = `${scheme}://localhost:${tn.local_port}`;
+  async function open(url: string) {
     try {
       await openUrl(url);
     } catch {
       window.open(url, "_blank");
     }
+  }
+
+  async function onOpenBrowser(tn: TunnelInfo) {
+    // TunnelInfo from the backend carries no scheme/path. Best-effort: recover
+    // them from a saved forward that matches this tunnel's local port (and
+    // remote host:port, to disambiguate). Fall back to the port heuristic.
+    const match = saved.find(
+      (r) =>
+        r.forward.localPort === tn.local_port &&
+        r.forward.remoteHost === tn.remote_host &&
+        r.forward.remotePort === tn.remote_port,
+    );
+    const scheme = match?.forward.scheme ?? schemeForPort(tn.remote_port);
+    await open(buildOpenUrl(scheme, tn.local_port, match?.forward.path));
+  }
+
+  async function onOpenSaved(fwd: PortForward) {
+    await open(
+      buildOpenUrl(fwd.scheme ?? schemeForPort(fwd.remotePort), fwd.localPort, fwd.path),
+    );
   }
 
   return (
@@ -251,9 +269,14 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
                         </div>
                       </div>
                       {active ? (
-                        <span className="text-meta text-nx-soft font-mono px-2">
-                          {t("tunnel.saved_running")}
-                        </span>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          leadingIcon={<Globe size={12} />}
+                          onClick={() => onOpenSaved(row.forward)}
+                        >
+                          {t("tunnel.open_in_browser")}
+                        </Button>
                       ) : (
                         <Button
                           variant="secondary"

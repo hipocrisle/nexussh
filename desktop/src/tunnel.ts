@@ -13,7 +13,22 @@ export interface PortForward {
   remoteHost: string;
   remotePort: number;
   scheme?: "http" | "https";
+  /** Optional URL path appended on "open in browser" (e.g. a 3x-ui panel that
+   *  lives under "/secret/"). Normalized to exactly one leading slash. */
+  path?: string;
   autoStart?: boolean;
+}
+
+/** Build the "open in browser" URL for a forward, normalizing the path so it
+ *  always has exactly one leading slash (empty/blank path → bare root). */
+export function buildOpenUrl(
+  scheme: "http" | "https",
+  localPort: number,
+  path?: string,
+): string {
+  const p = (path ?? "").trim();
+  const suffix = p === "" ? "" : "/" + p.replace(/^\/+/, "");
+  return `${scheme}://localhost:${localPort}${suffix}`;
 }
 
 /** A live tunnel as reported by the backend. */

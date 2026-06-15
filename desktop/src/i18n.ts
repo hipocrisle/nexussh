@@ -349,6 +349,12 @@ const ru = {
     copy_to_remote: "Копировать на сервер →",
     copy_to_local: "← Копировать на компьютер",
     copy_skipped_dir: "Папки пропущены (только файлы): {{name}}",
+    resume_title: "Файл уже существует",
+    resume_prompt:
+      "«{{name}}» уже есть ({{have}} из {{total}}). Докачать недостающее или перезаписать заново?",
+    resume_action: "Докачать",
+    resume_overwrite: "Перезаписать",
+    resume_complete: "«{{name}}» уже загружено полностью",
   },
   tunnel: {
     title: "проброс портов",
@@ -1148,6 +1154,12 @@ const en = {
     copy_to_remote: "Copy to server →",
     copy_to_local: "← Copy to computer",
     copy_skipped_dir: "Folders skipped (files only): {{name}}",
+    resume_title: "File already exists",
+    resume_prompt:
+      '"{{name}}" already exists ({{have}} of {{total}}). Resume the rest or overwrite from scratch?',
+    resume_action: "Resume",
+    resume_overwrite: "Overwrite",
+    resume_complete: '"{{name}}" is already fully transferred',
   },
   tunnel: {
     title: "port forwards",

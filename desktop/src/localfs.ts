@@ -21,3 +21,8 @@ export async function localHome(): Promise<string> {
 export async function localList(path: string): Promise<LocalEntry[]> {
   return await invoke<LocalEntry[]>("fs_local_list", { path });
 }
+
+/** Size of a local file in bytes (0 if it doesn't exist / isn't readable). */
+export async function localSize(path: string): Promise<number> {
+  return await invoke<number>("fs_local_size", { path });
+}

@@ -23,6 +23,14 @@ pub fn fs_local_home() -> String {
         .unwrap_or_else(|_| "/".to_string())
 }
 
+/// Size in bytes of a local file, or 0 if it doesn't exist / can't be read.
+/// Used by the SFTP panel to detect a partially-downloaded target and offer to
+/// resume it.
+#[tauri::command]
+pub fn fs_local_size(path: String) -> u64 {
+    std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+}
+
 /// List a local directory: dirs first, then case-insensitive by name (mirrors
 /// `sftp_list`). Entries whose metadata can't be read are skipped rather than
 /// aborting the whole listing. Returns a clear error string on failure.

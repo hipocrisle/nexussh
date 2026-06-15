@@ -262,6 +262,7 @@ pub fn run() {
             sftp::sftp_disconnect,
             localfs::fs_local_home,
             localfs::fs_local_list,
+            localfs::fs_local_size,
             tunnel::ssh_tunnel_open,
             tunnel::ssh_tunnel_close,
             tunnel::ssh_tunnel_list,

@@ -53,8 +53,15 @@ export async function sftpDownload(
   remotePath: string,
   localPath: string,
   transferId: string,
+  resume = false,
 ): Promise<void> {
-  await invoke("sftp_download", { sftpId, remotePath, localPath, transferId });
+  await invoke("sftp_download", {
+    sftpId,
+    remotePath,
+    localPath,
+    transferId,
+    resume,
+  });
 }
 
 export async function sftpUpload(
@@ -62,8 +69,15 @@ export async function sftpUpload(
   localPath: string,
   remotePath: string,
   transferId: string,
+  resume = false,
 ): Promise<void> {
-  await invoke("sftp_upload", { sftpId, localPath, remotePath, transferId });
+  await invoke("sftp_upload", {
+    sftpId,
+    localPath,
+    remotePath,
+    transferId,
+    resume,
+  });
 }
 
 export function onSftpProgress(

@@ -13,12 +13,14 @@
 use russh::client::{self};
 use russh_sftp::client::fs::Metadata;
 use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::SeekFrom;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -288,6 +290,7 @@ pub async fn sftp_download(
     remote_path: String,
     local_path: String,
     transfer_id: String,
+    resume: bool,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
     // Best-effort total for the progress bar; 0 means "unknown" (UI shows an
@@ -300,11 +303,41 @@ pub async fn sftp_download(
         .and_then(|m| m.size)
         .unwrap_or(0);
 
+    // When resuming, pick up after the bytes already present locally.
+    let offset = if resume {
+        tokio::fs::metadata(&local_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Already complete (a known total we've reached) → emit a final 100% and
+    // return without re-opening anything.
+    if offset >= total && total > 0 {
+        let mut last = std::time::Instant::now();
+        emit_progress(&app, &mut last, &transfer_id, total, total, "download", true);
+        return Ok(());
+    }
+
     // open() is read-only; stream chunk-by-chunk so memory stays bounded.
     let mut remote = h.sftp.open(remote_path).await?;
-    let mut local = tokio::fs::File::create(&local_path).await?;
+    // Local handle: resume → keep existing bytes and append at the offset;
+    // fresh → create/truncate (identical to the non-resume behaviour).
+    let mut local = if resume && offset > 0 {
+        let mut f = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&local_path)
+            .await?;
+        f.seek(SeekFrom::Start(offset)).await?;
+        remote.seek(SeekFrom::Start(offset)).await?;
+        f
+    } else {
+        tokio::fs::File::create(&local_path).await?
+    };
 
-    let mut transferred: u64 = 0;
+    let mut transferred: u64 = offset;
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut last = std::time::Instant::now();
     loop {
@@ -339,16 +372,50 @@ pub async fn sftp_upload(
     local_path: String,
     remote_path: String,
     transfer_id: String,
+    resume: bool,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
     let mut local = tokio::fs::File::open(&local_path).await?;
     let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
 
-    // NB: SftpSession::write() opens with WRITE only (no CREATE) → fails with
-    // "No such file" for new files. create() uses CREATE|TRUNCATE|WRITE.
-    let mut remote = h.sftp.create(remote_path).await?;
+    // When resuming, continue after the bytes already on the remote side.
+    let offset = if resume {
+        h.sftp
+            .metadata(remote_path.clone())
+            .await
+            .ok()
+            .and_then(|m| m.size)
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    let mut transferred: u64 = 0;
+    // Already complete → emit a final 100% and return.
+    if offset >= total && total > 0 {
+        let mut last = std::time::Instant::now();
+        emit_progress(&app, &mut last, &transfer_id, total, total, "upload", true);
+        return Ok(());
+    }
+
+    // Remote handle. Fresh upload → create() (CREATE|TRUNCATE|WRITE). Resume →
+    // WRITE|CREATE *without* TRUNCATE so the existing prefix is kept, then seek
+    // to the offset (writes are offset-addressed, not APPEND, so this lands the
+    // remainder exactly after what's already there).
+    let mut remote = if resume && offset > 0 {
+        let mut f = h
+            .sftp
+            .open_with_flags(remote_path, OpenFlags::WRITE | OpenFlags::CREATE)
+            .await?;
+        f.seek(SeekFrom::Start(offset)).await?;
+        local.seek(SeekFrom::Start(offset)).await?;
+        f
+    } else {
+        // NB: SftpSession::write() opens with WRITE only (no CREATE) → fails with
+        // "No such file" for new files. create() uses CREATE|TRUNCATE|WRITE.
+        h.sftp.create(remote_path).await?
+    };
+
+    let mut transferred: u64 = offset;
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut last = std::time::Instant::now();
     loop {

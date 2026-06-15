@@ -42,11 +42,11 @@ import {
   sftpDisconnect,
   onSftpProgress,
 } from "./sftp";
-import { LocalEntry, localHome, localList } from "./localfs";
+import { LocalEntry, localHome, localList, localSize } from "./localfs";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton, Checkbox, Input } from "./components/primitives";
-import { askPrompt, askConfirm } from "./dialogs";
+import { askPrompt, askConfirm, askChoice } from "./dialogs";
 
 interface Props {
   connectArgs: ConnectArgs;
@@ -342,6 +342,45 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     });
   }, []);
 
+  // Decide what to do when a transfer target already exists. Returns:
+  //   "overwrite" — start fresh (resume=false); the default for new / equal-or-
+  //                 larger targets where there's nothing to resume.
+  //   "resume"    — continue from the existing bytes (resume=true).
+  //   "skip"      — already fully transferred; caller should report and skip.
+  //   null        — user cancelled.
+  // `targetSize` is the bytes already present at the destination, `sourceSize`
+  // the full size of the file being transferred.
+  const resolveResume = useCallback(
+    async (
+      name: string,
+      targetSize: number,
+      sourceSize: number,
+    ): Promise<"overwrite" | "resume" | "skip" | null> => {
+      // Nothing there yet, or unknown source size → plain overwrite (no prompt).
+      if (targetSize <= 0 || sourceSize <= 0) return "overwrite";
+      // Already complete (or stale-larger) — nothing to resume.
+      if (targetSize >= sourceSize) return "skip";
+      const choice = await askChoice(
+        t("sftp.resume_prompt", {
+          name,
+          have: fmtSize(targetSize),
+          total: fmtSize(sourceSize),
+        }),
+        {
+          title: t("sftp.resume_title"),
+          cancelLabel: t("sftp.cancel"),
+          options: [
+            { value: "resume", label: t("sftp.resume_action") },
+            { value: "overwrite", label: t("sftp.resume_overwrite") },
+          ],
+        },
+      );
+      if (choice === "resume" || choice === "overwrite") return choice;
+      return null; // cancelled
+    },
+    [t],
+  );
+
   const load = useCallback(async (id: string, path: string) => {
     setLoading(true);
     setError(null);
@@ -476,9 +515,17 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     if (typeof picked !== "string") return;
     const base = picked.replace(/\\/g, "/").split("/").pop() || "upload";
     setError(null);
+    const srcSize = await localSize(picked);
+    const remoteHave = entries.find((e) => !e.is_dir && e.name === base)?.size ?? 0;
+    const mode = await resolveResume(base, remoteHave, srcSize);
+    if (mode === null) return; // cancelled
+    if (mode === "skip") {
+      setError(t("sftp.resume_complete", { name: base }));
+      return;
+    }
     const tid = startTransfer(base, "upload");
     try {
-      await sftpUpload(sftpId, picked, joinPath(cwd, base), tid);
+      await sftpUpload(sftpId, picked, joinPath(cwd, base), tid, mode === "resume");
       refresh();
     } catch (e) {
       setError(String(e));
@@ -505,9 +552,22 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     const dest = await saveDialog({ defaultPath: entry.name });
     if (typeof dest !== "string") return;
     setError(null);
+    const have = await localSize(dest);
+    const mode = await resolveResume(entry.name, have, entry.size);
+    if (mode === null) return; // cancelled
+    if (mode === "skip") {
+      setError(t("sftp.resume_complete", { name: entry.name }));
+      return;
+    }
     const tid = startTransfer(entry.name, "download");
     try {
-      await sftpDownload(sftpId, joinPath(cwd, entry.name), dest, tid);
+      await sftpDownload(
+        sftpId,
+        joinPath(cwd, entry.name),
+        dest,
+        tid,
+        mode === "resume",
+      );
     } catch (e) {
       setError(String(e));
     } finally {
@@ -541,9 +601,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     if (typeof dir !== "string") return;
     setError(null);
     for (const name of names) {
+      const dest = `${dir}/${name}`;
+      const srcSize = entries.find((e) => e.name === name)?.size ?? 0;
+      const have = await localSize(dest);
+      const mode = await resolveResume(name, have, srcSize);
+      if (mode === null) continue; // cancelled this file
+      if (mode === "skip") {
+        setError(t("sftp.resume_complete", { name }));
+        continue;
+      }
       const tid = startTransfer(name, "download");
       try {
-        await sftpDownload(sftpId, joinPath(cwd, name), `${dir}/${name}`, tid);
+        await sftpDownload(sftpId, joinPath(cwd, name), dest, tid, mode === "resume");
       } catch (e) {
         setError(`${name}: ${String(e)}`);
         endTransfer(tid);
@@ -566,9 +635,22 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     );
     setError(null);
     for (const f of files) {
+      const remoteHave = entries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
+      const mode = await resolveResume(f.name, remoteHave, f.size);
+      if (mode === null) continue; // cancelled this file
+      if (mode === "skip") {
+        setError(t("sftp.resume_complete", { name: f.name }));
+        continue;
+      }
       const tid = startTransfer(f.name, "upload");
       try {
-        await sftpUpload(sftpId, localJoin(localCwd, f.name), joinPath(cwd, f.name), tid);
+        await sftpUpload(
+          sftpId,
+          localJoin(localCwd, f.name),
+          joinPath(cwd, f.name),
+          tid,
+          mode === "resume",
+        );
       } catch (e) {
         setError(`${f.name}: ${String(e)}`);
         endTransfer(tid);
@@ -589,9 +671,22 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     const skippedDirs = entries.filter((e) => e.is_dir && selected.has(e.name));
     setLocalError(null);
     for (const f of files) {
+      const localHave = localEntries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
+      const mode = await resolveResume(f.name, localHave, f.size);
+      if (mode === null) continue; // cancelled this file
+      if (mode === "skip") {
+        setLocalError(t("sftp.resume_complete", { name: f.name }));
+        continue;
+      }
       const tid = startTransfer(f.name, "download");
       try {
-        await sftpDownload(sftpId, joinPath(cwd, f.name), localJoin(localCwd, f.name), tid);
+        await sftpDownload(
+          sftpId,
+          joinPath(cwd, f.name),
+          localJoin(localCwd, f.name),
+          tid,
+          mode === "resume",
+        );
       } catch (e) {
         setLocalError(`${f.name}: ${String(e)}`);
         endTransfer(tid);

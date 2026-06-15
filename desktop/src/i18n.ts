@@ -373,6 +373,10 @@ const ru = {
     hk_open: "Открыть папку",
     hk_up: "На уровень вверх",
     hk_dblclick: "Двойной клик — открыть папку",
+    tr_downloading: "скачивание",
+    tr_uploading: "загрузка",
+    tr_cancel: "Отменить передачу",
+    tr_cancelling: "отмена…",
   },
   tunnel: {
     title: "проброс портов",
@@ -1197,6 +1201,10 @@ const en = {
     hk_open: "Open directory",
     hk_up: "Go up a level",
     hk_dblclick: "Double-click to open a directory",
+    tr_downloading: "downloading",
+    tr_uploading: "uploading",
+    tr_cancel: "Cancel transfer",
+    tr_cancelling: "cancelling…",
   },
   tunnel: {
     title: "port forwards",

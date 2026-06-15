@@ -53,8 +53,18 @@ import {
   sftpRemove,
   sftpChmod,
   sftpDisconnect,
+  sftpCancel,
+  isCancelled,
   onSftpProgress,
 } from "./sftp";
+import {
+  Transfer,
+  useTransfers,
+  addTransfer,
+  updateTransfer,
+  markCancelling,
+  removeTransfer,
+} from "./transfers";
 import { LocalEntry, localHome, localList, localSize } from "./localfs";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
@@ -65,15 +75,6 @@ interface Props {
   connectArgs: ConnectArgs;
   title: string;
   onClose: () => void;
-}
-
-/** A streaming transfer with live progress (total === 0 ⇒ unknown size). */
-interface Transfer {
-  id: string;
-  name: string;
-  phase: "download" | "upload";
-  transferred: number;
-  total: number;
 }
 
 // ── Generic row entry (lowest common denominator of SftpEntry / LocalEntry) ──
@@ -348,8 +349,10 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   );
   const [remoteSel, setRemoteSel] = useState<PaneSel>(emptySel());
   const selected = remoteSel.selected;
-  // Active transfers keyed by transferId → live progress for the bar.
-  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
+  // Active transfers keyed by transferId → live progress for the bar. Kept in a
+  // module-level store (transfers.ts), not component state, so the bars + their
+  // labels survive the panel being closed and reopened mid-transfer.
+  const transfers = useTransfers();
   // chmod can target a single entry OR a batch (selection) — store the list.
   const [chmodTargets, setChmodTargets] = useState<SftpEntry[] | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
@@ -439,25 +442,19 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   }
 
   // Listen for streaming progress events; drop a transfer shortly after it
-  // reaches 100% so the bar lingers briefly then clears.
+  // reaches 100% so the bar lingers briefly then clears. The transfer record
+  // (with its labels) lives in the module store and is created in startTransfer,
+  // so here we only merge progress into an existing entry.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     onSftpProgress((p: SftpProgress) => {
-      setTransfers((prev) => ({
-        ...prev,
-        [p.id]: {
-          ...(prev[p.id] ?? { name: prev[p.id]?.name ?? "" }),
-          ...p,
-        },
-      }));
+      updateTransfer(p.id, {
+        transferred: p.transferred,
+        total: p.total,
+        phase: p.phase,
+      });
       if (p.total > 0 && p.transferred >= p.total) {
-        setTimeout(() => {
-          setTransfers((prev) => {
-            const next = { ...prev };
-            delete next[p.id];
-            return next;
-          });
-        }, 800);
+        setTimeout(() => removeTransfer(p.id), 800);
       }
     }).then((u) => {
       unlisten = u;
@@ -467,23 +464,29 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     };
   }, []);
 
-  // Register a transfer (so its name shows before the first progress event),
-  // returning the generated id to hand to the backend.
-  const startTransfer = useCallback((name: string, phase: Transfer["phase"]) => {
-    const id = crypto.randomUUID();
-    setTransfers((prev) => ({
-      ...prev,
-      [id]: { id, name, phase, transferred: 0, total: 0 },
-    }));
-    return id;
-  }, []);
+  // Register a transfer (so its label shows before the first progress event),
+  // returning the generated id to hand to the backend. `dest` is the full
+  // destination path (local for a download, remote for an upload) and is shown,
+  // middle-truncated, on the bar.
+  const startTransfer = useCallback(
+    (name: string, phase: Transfer["phase"], dest: string) => {
+      const id = crypto.randomUUID();
+      addTransfer({ id, name, phase, dest });
+      return id;
+    },
+    [],
+  );
 
   const endTransfer = useCallback((id: string) => {
-    setTransfers((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
+    removeTransfer(id);
+  }, []);
+
+  // Cancel a running transfer: ask the backend to stop, and reflect "cancelling"
+  // on the bar until the download/upload promise rejects (handled by each caller
+  // treating the CANCELLED sentinel as a normal user-cancel).
+  const cancelTransfer = useCallback((id: string) => {
+    markCancelling(id);
+    sftpCancel(id).catch(() => {});
   }, []);
 
   // Decide what to do when a transfer target already exists. Returns:
@@ -611,14 +614,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
             skipped.push(p);
             continue;
           }
-          const tid = startTransfer(base, "upload");
+          const remoteDest = joinPath(dir, base);
+          const tid = startTransfer(base, "upload", remoteDest);
           try {
-            await sftpUpload(id, p, joinPath(dir, base), tid);
+            await sftpUpload(id, p, remoteDest, tid);
           } catch (e) {
-            // A dropped directory (or unreadable path) lands here — note and
-            // continue rather than aborting the whole batch.
-            skipped.push(base);
-            setError(`${base}: ${String(e)}`);
+            // User-cancelled drops are not errors — just stop this file.
+            if (!isCancelled(e)) {
+              // A dropped directory (or unreadable path) lands here — note and
+              // continue rather than aborting the whole batch.
+              skipped.push(base);
+              setError(`${base}: ${String(e)}`);
+            }
           } finally {
             endTransfer(tid);
           }
@@ -679,12 +686,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       setError(t("sftp.resume_complete", { name: base }));
       return;
     }
-    const tid = startTransfer(base, "upload");
+    const remoteDest = joinPath(cwd, base);
+    const tid = startTransfer(base, "upload", remoteDest);
     try {
-      await sftpUpload(sftpId, picked, joinPath(cwd, base), tid, mode === "resume");
+      await sftpUpload(sftpId, picked, remoteDest, tid, mode === "resume");
       refresh();
     } catch (e) {
-      setError(String(e));
+      if (!isCancelled(e)) setError(String(e));
     } finally {
       endTransfer(tid);
     }
@@ -715,7 +723,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       setError(t("sftp.resume_complete", { name: entry.name }));
       return;
     }
-    const tid = startTransfer(entry.name, "download");
+    const tid = startTransfer(entry.name, "download", dest);
     try {
       await sftpDownload(
         sftpId,
@@ -725,7 +733,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         mode === "resume",
       );
     } catch (e) {
-      setError(String(e));
+      if (!isCancelled(e)) setError(String(e));
     } finally {
       endTransfer(tid);
     }
@@ -764,12 +772,14 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         setError(t("sftp.resume_complete", { name: f.name }));
         continue;
       }
-      const tid = startTransfer(f.name, "download");
+      const tid = startTransfer(f.name, "download", dest);
       try {
         await sftpDownload(sftpId, joinPath(cwd, f.name), dest, tid, mode === "resume");
       } catch (e) {
-        setError(`${f.name}: ${String(e)}`);
         endTransfer(tid);
+        // Cancelling one file just skips it; a real error stops the batch.
+        if (isCancelled(e)) continue;
+        setError(`${f.name}: ${String(e)}`);
         break;
       }
       endTransfer(tid);
@@ -802,18 +812,20 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         setError(t("sftp.resume_complete", { name: f.name }));
         continue;
       }
-      const tid = startTransfer(f.name, "upload");
+      const remoteDest = joinPath(cwd, f.name);
+      const tid = startTransfer(f.name, "upload", remoteDest);
       try {
         await sftpUpload(
           sftpId,
           localJoin(localCwd, f.name),
-          joinPath(cwd, f.name),
+          remoteDest,
           tid,
           mode === "resume",
         );
       } catch (e) {
-        setError(`${f.name}: ${String(e)}`);
         endTransfer(tid);
+        if (isCancelled(e)) continue;
+        setError(`${f.name}: ${String(e)}`);
         break;
       }
       endTransfer(tid);
@@ -839,18 +851,20 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         setLocalError(t("sftp.resume_complete", { name: f.name }));
         continue;
       }
-      const tid = startTransfer(f.name, "download");
+      const localDest = localJoin(localCwd, f.name);
+      const tid = startTransfer(f.name, "download", localDest);
       try {
         await sftpDownload(
           sftpId,
           joinPath(cwd, f.name),
-          localJoin(localCwd, f.name),
+          localDest,
           tid,
           mode === "resume",
         );
       } catch (e) {
-        setLocalError(`${f.name}: ${String(e)}`);
         endTransfer(tid);
+        if (isCancelled(e)) continue;
+        setLocalError(`${f.name}: ${String(e)}`);
         break;
       }
       endTransfer(tid);
@@ -1287,7 +1301,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         {Object.values(transfers).length > 0 && (
           <div className="px-4 py-2 border-t border-nx-divider shrink-0 flex flex-col gap-2 max-h-32 overflow-y-auto">
             {Object.values(transfers).map((tr) => (
-              <TransferBar key={tr.id} tr={tr} />
+              <TransferBar key={tr.id} tr={tr} onCancel={cancelTransfer} />
             ))}
           </div>
         )}
@@ -1337,10 +1351,29 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   );
 }
 
-/** A single transfer's progress bar (download/upload). */
-function TransferBar({ tr }: { tr: Transfer }) {
+/** Middle-truncate a long path so both head and tail stay visible. */
+function truncMiddle(s: string, max = 48): string {
+  if (s.length <= max) return s;
+  const keep = max - 1; // room for the ellipsis
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return s.slice(0, head) + "…" + s.slice(s.length - tail);
+}
+
+/** A single transfer's progress bar (download/upload) with file/dest labels and
+ *  a cancel button. */
+function TransferBar({
+  tr,
+  onCancel,
+}: {
+  tr: Transfer;
+  onCancel: (id: string) => void;
+}) {
+  const { t } = useTranslation();
   const pct = tr.total > 0 ? Math.min(100, (tr.transferred / tr.total) * 100) : 0;
   const indeterminate = tr.total === 0;
+  const dirLabel =
+    tr.phase === "upload" ? t("sftp.tr_uploading") : t("sftp.tr_downloading");
   return (
     <div className="font-mono text-meta">
       <div className="flex items-center gap-2 mb-1">
@@ -1349,7 +1382,17 @@ function TransferBar({ tr }: { tr: Transfer }) {
         ) : (
           <Download size={11} className="text-nx-accent shrink-0" />
         )}
-        <span className="text-nx-soft truncate flex-1">{tr.name}</span>
+        <span className="text-nx-soft truncate min-w-0">{tr.name}</span>
+        {/* Direction + destination — survives panel close/reopen so the user
+            can always tell what's transferring and where. */}
+        <span
+          className="text-nx-muted truncate min-w-0 flex-1"
+          title={`${dirLabel} → ${tr.dest}`}
+        >
+          <span className="text-nx-dim">{dirLabel}</span>{" "}
+          <span className="text-nx-accent2">{tr.phase === "upload" ? "↑" : "↓"}</span>{" "}
+          {truncMiddle(tr.dest)}
+        </span>
         <span className="text-nx-muted tabular-nums shrink-0">
           {fmtSize(tr.transferred)}
           {tr.total > 0 ? ` / ${fmtSize(tr.total)}` : ""}
@@ -1357,11 +1400,24 @@ function TransferBar({ tr }: { tr: Transfer }) {
             <span className="text-nx-accent ml-1.5">{Math.round(pct)}%</span>
           )}
         </span>
+        {tr.cancelling ? (
+          <span className="text-nx-warning shrink-0 text-micro">
+            {t("sftp.tr_cancelling")}
+          </span>
+        ) : (
+          <IconButton
+            icon={<X size={11} />}
+            onClick={() => onCancel(tr.id)}
+            title={t("sftp.tr_cancel")}
+            className="shrink-0 !p-0.5"
+          />
+        )}
       </div>
       <div className="h-1.5 rounded-full bg-nx-elevated overflow-hidden">
         <div
           className={
-            "h-full bg-nx-accent rounded-full transition-[width] duration-150 " +
+            "h-full rounded-full transition-[width] duration-150 " +
+            (tr.cancelling ? "bg-nx-warning " : "bg-nx-accent ") +
             (indeterminate ? "animate-pulse w-1/3" : "")
           }
           style={indeterminate ? undefined : { width: `${pct}%` }}

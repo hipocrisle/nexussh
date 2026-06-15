@@ -212,6 +212,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(ssh::SessionManager::new()))
         .manage(Arc::new(sftp::SftpManager::new()))
+        .manage(Arc::new(sftp::CancelRegistry::new()))
         .manage(Arc::new(tunnel::TunnelManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
@@ -259,6 +260,7 @@ pub fn run() {
             sftp::sftp_rename,
             sftp::sftp_remove,
             sftp::sftp_chmod,
+            sftp::sftp_cancel,
             sftp::sftp_disconnect,
             localfs::fs_local_home,
             localfs::fs_local_list,

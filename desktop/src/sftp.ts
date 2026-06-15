@@ -80,6 +80,24 @@ export async function sftpUpload(
   });
 }
 
+/**
+ * Error message a download/upload promise rejects with when the user cancelled
+ * it (matches the Rust `CANCELLED` sentinel). Callers treat this as a normal
+ * user-cancel rather than a real failure. Tauri surfaces command errors as
+ * strings, so the rejection's stringified form ends with this token.
+ */
+export const SFTP_CANCELLED = "cancelled";
+
+/** True if a download/upload rejection was a user cancellation, not a failure. */
+export function isCancelled(e: unknown): boolean {
+  return String(e).includes(SFTP_CANCELLED);
+}
+
+/** Ask the backend to stop an in-flight transfer (by its transferId). */
+export async function sftpCancel(id: string): Promise<void> {
+  await invoke("sftp_cancel", { id });
+}
+
 export function onSftpProgress(
   cb: (p: SftpProgress) => void,
 ): Promise<UnlistenFn> {

@@ -16,7 +16,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::SeekFrom;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -78,6 +78,65 @@ pub struct SftpManager {
 impl SftpManager {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+/// Sentinel error string returned by a transfer the user cancelled. The
+/// frontend matches on this exact text to treat the rejection as a normal
+/// user-cancel (no error toast) rather than a real failure.
+pub const CANCELLED: &str = "cancelled";
+
+/// Registry of transfer ids that have been asked to cancel. A transfer's chunk
+/// loop checks its id once per chunk and bails (returning `CANCELLED`) when
+/// present. Entries are always removed when the transfer finishes — success,
+/// error, or cancel — so a later transfer that reuses an id can't be
+/// mis-cancelled by a stale flag. A plain `std::sync::Mutex` is fine: the
+/// critical sections are tiny and synchronous (never held across `.await`).
+#[derive(Default)]
+pub struct CancelRegistry {
+    ids: std::sync::Mutex<HashSet<String>>,
+}
+
+impl CancelRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark a transfer id as cancelled.
+    fn request(&self, id: &str) {
+        if let Ok(mut set) = self.ids.lock() {
+            set.insert(id.to_string());
+        }
+    }
+
+    /// True if this id has a pending cancel request.
+    fn is_cancelled(&self, id: &str) -> bool {
+        self.ids
+            .lock()
+            .map(|set| set.contains(id))
+            .unwrap_or(false)
+    }
+
+    /// Drop an id from the registry (call when the transfer ends, however it
+    /// ends) so the flag can't leak into a later transfer reusing the id.
+    fn clear(&self, id: &str) {
+        if let Ok(mut set) = self.ids.lock() {
+            set.remove(id);
+        }
+    }
+}
+
+/// RAII cleanup: removes the transfer id from the cancel registry on Drop, so
+/// every exit path of a transfer (normal finish, `?`-propagated error, or the
+/// explicit cancel return) leaves no stale flag behind.
+struct CancelGuard<'a> {
+    registry: &'a CancelRegistry,
+    id: &'a str,
+}
+
+impl Drop for CancelGuard<'_> {
+    fn drop(&mut self) {
+        self.registry.clear(self.id);
     }
 }
 
@@ -286,12 +345,24 @@ fn emit_progress(
 pub async fn sftp_download(
     app: AppHandle,
     state: State<'_, Arc<SftpManager>>,
+    cancels: State<'_, Arc<CancelRegistry>>,
     sftp_id: String,
     remote_path: String,
     local_path: String,
     transfer_id: String,
     resume: bool,
 ) -> Result<(), SftpError> {
+    // Make sure no stale cancel flag from a previous transfer reusing this id is
+    // lingering, and always clear our own entry when we return (success / error
+    // / cancel) so it can't leak into a later transfer.
+    cancels.clear(&transfer_id);
+    // `&**cancels`: State derefs to Arc<CancelRegistry>, which derefs to
+    // CancelRegistry — deref coercion doesn't fire in struct-literal fields, so
+    // deref explicitly to land on `&CancelRegistry`.
+    let _guard = CancelGuard {
+        registry: &**cancels,
+        id: &transfer_id,
+    };
     let h = get_session(&state, &sftp_id).await?;
     // Best-effort total for the progress bar; 0 means "unknown" (UI shows an
     // indeterminate / byte-count state).
@@ -341,6 +412,12 @@ pub async fn sftp_download(
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut last = std::time::Instant::now();
     loop {
+        // Cancellation: checked once per chunk. The `_guard` clears the registry
+        // entry on return; the partial local file is left as-is (same as a
+        // failed transfer — resume can pick it up, or the user overwrites).
+        if cancels.is_cancelled(&transfer_id) {
+            return Err(SftpError::Other(CANCELLED.to_string()));
+        }
         let n = remote.read(&mut buf).await?;
         if n == 0 {
             break;
@@ -368,12 +445,23 @@ pub async fn sftp_download(
 pub async fn sftp_upload(
     app: AppHandle,
     state: State<'_, Arc<SftpManager>>,
+    cancels: State<'_, Arc<CancelRegistry>>,
     sftp_id: String,
     local_path: String,
     remote_path: String,
     transfer_id: String,
     resume: bool,
 ) -> Result<(), SftpError> {
+    // Clear any stale flag and ensure our entry is removed on every exit path
+    // (success / error / cancel) — see the download command for the rationale.
+    cancels.clear(&transfer_id);
+    // `&**cancels`: State derefs to Arc<CancelRegistry>, which derefs to
+    // CancelRegistry — deref coercion doesn't fire in struct-literal fields, so
+    // deref explicitly to land on `&CancelRegistry`.
+    let _guard = CancelGuard {
+        registry: &**cancels,
+        id: &transfer_id,
+    };
     let h = get_session(&state, &sftp_id).await?;
     let mut local = tokio::fs::File::open(&local_path).await?;
     let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
@@ -419,6 +507,11 @@ pub async fn sftp_upload(
     let mut buf = vec![0u8; CHUNK_BYTES];
     let mut last = std::time::Instant::now();
     loop {
+        // Cancellation: checked once per chunk. The partial remote file is left
+        // as-is (same as a failed upload — resume can continue it, or overwrite).
+        if cancels.is_cancelled(&transfer_id) {
+            return Err(SftpError::Other(CANCELLED.to_string()));
+        }
         let n = local.read(&mut buf).await?;
         if n == 0 {
             break;
@@ -499,6 +592,14 @@ pub async fn sftp_remove(
         h.sftp.remove_file(path).await?;
     }
     Ok(())
+}
+
+/// Ask a running transfer to stop. The transfer's chunk loop notices the flag
+/// on its next iteration, cleans up, and rejects with the `CANCELLED` sentinel.
+/// A no-op if the id isn't currently transferring.
+#[tauri::command]
+pub fn sftp_cancel(state: State<'_, Arc<CancelRegistry>>, id: String) {
+    state.request(&id);
 }
 
 #[tauri::command]

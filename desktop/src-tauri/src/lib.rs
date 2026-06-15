@@ -5,6 +5,7 @@ mod bundle;
 mod cleanup;
 mod history;
 mod import_sources;
+mod localfs;
 mod sftp;
 mod ssh;
 mod ssh_config;
@@ -259,6 +260,8 @@ pub fn run() {
             sftp::sftp_remove,
             sftp::sftp_chmod,
             sftp::sftp_disconnect,
+            localfs::fs_local_home,
+            localfs::fs_local_list,
             tunnel::ssh_tunnel_open,
             tunnel::ssh_tunnel_close,
             tunnel::ssh_tunnel_list,

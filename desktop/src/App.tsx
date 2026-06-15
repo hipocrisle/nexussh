@@ -1699,7 +1699,7 @@ function App() {
     }
     setAddTunnel({
       connectArgs: buildConnectArgs(host, auth),
-      label: `${host.user}@${host.host}`,
+      label: host.name || `${host.user}@${host.host}`,
       host: h,
     });
   }
@@ -1726,7 +1726,7 @@ function App() {
       localPort: fwd.localPort,
       remoteHost: fwd.remoteHost,
       remotePort: fwd.remotePort,
-      label: `${host.user}@${host.host}`,
+      label: host.name || `${host.user}@${host.host}`,
     });
   }
 

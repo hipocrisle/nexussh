@@ -5,10 +5,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Loader2, RefreshCw, Globe, Plus, Square, Play } from "lucide-react";
+import { Loader2, RefreshCw, Globe, Plus, Square, Play, Trash2 } from "lucide-react";
 import { TunnelInfo, PortForward, tunnelList, tunnelClose, buildOpenUrl } from "./tunnel";
 import type { ConnectArgs } from "./ssh";
-import { listHosts } from "./hosts";
+import { listHosts, saveHost } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton } from "./components/primitives";
 import { AddTunnelDialog } from "./AddTunnelDialog";
@@ -69,7 +69,11 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
       const rows: SavedForwardRow[] = [];
       for (const h of hosts) {
         for (const f of h.forwards ?? []) {
-          rows.push({ hostId: h.id, hostLabel: h.name || h.host, forward: f });
+          rows.push({
+            hostId: h.id,
+            hostLabel: h.name || `${h.user}@${h.host}`,
+            forward: f,
+          });
         }
       }
       if (aliveRef.current) setSaved(rows);
@@ -103,6 +107,33 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
     }
   }
 
+  // Delete a saved forward from its host (and stop it if it's currently running).
+  async function onDeleteSaved(row: SavedForwardRow) {
+    setError(null);
+    try {
+      const hosts = await listHosts();
+      const h = hosts.find((x) => x.id === row.hostId);
+      if (h) {
+        await saveHost({
+          ...h,
+          forwards: (h.forwards ?? []).filter((f) => f.id !== row.forward.id),
+        });
+      }
+      const running = tunnels.find(
+        (tn) =>
+          tn.label === row.hostLabel &&
+          tn.local_port === row.forward.localPort &&
+          tn.remote_host === row.forward.remoteHost &&
+          tn.remote_port === row.forward.remotePort,
+      );
+      if (running) await tunnelClose(running.id);
+    } catch (e) {
+      if (aliveRef.current) setError(String(e));
+    }
+    await loadSaved();
+    await refresh();
+  }
+
   async function onStop(id: string) {
     setError(null);
     try {
@@ -127,6 +158,7 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
     // remote host:port, to disambiguate). Fall back to the port heuristic.
     const match = saved.find(
       (r) =>
+        r.hostLabel === tn.label &&
         r.forward.localPort === tn.local_port &&
         r.forward.remoteHost === tn.remote_host &&
         r.forward.remotePort === tn.remote_port,
@@ -243,8 +275,13 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
                 </div>
               ) : (
                 saved.map((row) => {
+                  // Host-aware: a tunnel only counts as "this saved forward's"
+                  // when its host label matches too — otherwise two hosts sharing
+                  // the same local→remote ports get conflated (a forward on host A
+                  // would look "running" because host B has an identical tunnel).
                   const active = tunnels.some(
                     (tn) =>
+                      tn.label === row.hostLabel &&
                       tn.local_port === row.forward.localPort &&
                       tn.remote_host === row.forward.remoteHost &&
                       tn.remote_port === row.forward.remotePort,
@@ -294,6 +331,11 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
                           {t("tunnel.saved_start")}
                         </Button>
                       )}
+                      <IconButton
+                        icon={<Trash2 size={13} />}
+                        onClick={() => onDeleteSaved(row)}
+                        title={t("tunnel.saved_delete")}
+                      />
                     </div>
                   );
                 })

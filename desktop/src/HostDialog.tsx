@@ -2,10 +2,11 @@
 
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Lock, KeyRound, Shield, ChevronDown, Folder } from "lucide-react";
+import { X, Lock, KeyRound, Shield, ChevronDown, Folder, Pencil, Plus } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import type { PortForward } from "./tunnel";
 import { FolderPicker } from "./FolderPicker";
+import { ForwardEditDialog } from "./ForwardEditDialog";
 import { useIsMobile } from "./useIsMobile";
 import {
   vaultKeys,
@@ -98,6 +99,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
   const [forwards, setForwards] = useState<PortForward[]>([]);
+  // Open forward editor: null = closed, { initial?: PortForward } = open.
+  // `initial` undefined → adding new; set → editing that forward.
+  const [forwardEdit, setForwardEdit] = useState<
+    { initial?: PortForward } | null
+  >(null);
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
@@ -193,27 +199,39 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         h.port === port,
     );
 
-  // --- Port-forward (ssh -L) row editing -----------------------------------
-  function addForward() {
-    setForwards((fs) => [
-      ...fs,
-      {
-        id: crypto.randomUUID(),
-        name: "",
-        localPort: 0,
-        remoteHost: "127.0.0.1",
-        remotePort: 0,
-        scheme: "https",
-        path: "",
-        autoStart: false,
-      },
-    ]);
-  }
-  function updateForward(id: string, patch: Partial<PortForward>) {
-    setForwards((fs) => fs.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  // --- Port-forward (ssh -L) editing ---------------------------------------
+  // Add or update a forward returned by ForwardEditDialog. Match by id to
+  // decide whether it's an in-place update or a brand-new entry.
+  function upsertForward(f: PortForward) {
+    setForwards((fs) =>
+      fs.some((x) => x.id === f.id)
+        ? fs.map((x) => (x.id === f.id ? f : x))
+        : [...fs, f],
+    );
+    setForwardEdit(null);
   }
   function removeForward(id: string) {
     setForwards((fs) => fs.filter((f) => f.id !== id));
+  }
+  // Toggle autostart inline from the compact list, without opening the editor.
+  function setForwardAutoStart(id: string, autoStart: boolean) {
+    setForwards((fs) =>
+      fs.map((f) => (f.id === id ? { ...f, autoStart: autoStart || undefined } : f)),
+    );
+  }
+
+  // Compact one-line summary: "name" if set, else "local → host:port".
+  function forwardPrimary(f: PortForward): string {
+    if (f.name && f.name.trim()) return f.name.trim();
+    const local = f.localPort ? String(f.localPort) : "auto";
+    return `${local} → ${f.remoteHost}:${f.remotePort}`;
+  }
+  function forwardSuffix(f: PortForward): string {
+    const p = (f.path ?? "").trim();
+    const parts: string[] = [];
+    if (f.scheme) parts.push(f.scheme);
+    if (p) parts.push("/" + p.replace(/^\/+/, ""));
+    return parts.join(" ");
   }
 
   async function doSave() {
@@ -571,83 +589,72 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             <div className={kicker + " mt-6 mb-3 block"}>
               // {t("dialog.col_forwards")}
             </div>
-            <div className="space-y-2">
-              {forwards.map((f) => (
-                <div key={f.id} className="flex items-center gap-1.5">
-                  <input
-                    value={f.name ?? ""}
-                    onChange={(e) => updateForward(f.id, { name: e.target.value })}
-                    placeholder={t("dialog.forward_name_ph")}
-                    className="nx-focus w-[88px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
-                  />
-                  <input
-                    value={f.localPort ? String(f.localPort) : ""}
-                    onChange={(e) =>
-                      updateForward(f.id, { localPort: parseInt(e.target.value, 10) || 0 })
-                    }
-                    inputMode="numeric"
-                    placeholder={t("dialog.forward_local_ph")}
-                    className="nx-focus w-[72px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
-                  />
-                  <input
-                    value={f.remoteHost}
-                    onChange={(e) => updateForward(f.id, { remoteHost: e.target.value })}
-                    placeholder={t("dialog.forward_rhost_ph")}
-                    className="nx-focus min-w-0 flex-1 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
-                  />
-                  <input
-                    value={f.remotePort ? String(f.remotePort) : ""}
-                    onChange={(e) =>
-                      updateForward(f.id, { remotePort: parseInt(e.target.value, 10) || 0 })
-                    }
-                    inputMode="numeric"
-                    placeholder={t("dialog.forward_rport_ph")}
-                    className="nx-focus w-[60px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
-                  />
-                  <select
-                    value={f.scheme ?? "https"}
-                    onChange={(e) =>
-                      updateForward(f.id, { scheme: e.target.value as "http" | "https" })
-                    }
-                    className="nx-focus shrink-0 px-1 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text"
-                  >
-                    <option value="https">https</option>
-                    <option value="http">http</option>
-                  </select>
-                  <input
-                    value={f.path ?? ""}
-                    onChange={(e) => updateForward(f.id, { path: e.target.value })}
-                    placeholder={t("dialog.forward_path_ph")}
-                    title={t("dialog.forward_path")}
-                    className="nx-focus w-[72px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
-                  />
-                  <label
-                    className="shrink-0 flex items-center"
-                    title={t("dialog.forward_autostart")}
-                  >
-                    <Checkbox
-                      checked={!!f.autoStart}
-                      onChange={(v) => updateForward(f.id, { autoStart: v })}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => removeForward(f.id)}
-                    title={t("dialog.forward_remove")}
-                    className="shrink-0 p-1 text-nx-muted hover:text-nx-error"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <button
+            {forwards.length === 0 ? (
+              <p className="text-meta text-nx-muted font-mono">
+                {t("dialog.forwards_empty")}
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {forwards.map((f) => {
+                  const suffix = forwardSuffix(f);
+                  return (
+                    <div
+                      key={f.id}
+                      className="flex items-center gap-2 bg-nx-panel border border-nx-border rounded-nx px-2.5 py-1.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-body text-nx-text truncate">
+                          {forwardPrimary(f)}
+                        </div>
+                        {suffix && (
+                          <div className="font-mono text-micro text-nx-muted truncate">
+                            {suffix}
+                          </div>
+                        )}
+                      </div>
+                      <label
+                        className="shrink-0 flex items-center gap-1.5 cursor-pointer"
+                        title={t("dialog.forward_autostart")}
+                      >
+                        <Checkbox
+                          checked={!!f.autoStart}
+                          onChange={(v) => setForwardAutoStart(f.id, v)}
+                        />
+                        <span className="text-micro uppercase tracking-[0.1em] text-nx-muted">
+                          {t("dialog.forward_autostart")}
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setForwardEdit({ initial: f })}
+                        title={t("dialog.forward_edit")}
+                        className="nx-focus shrink-0 p-1 text-nx-muted hover:text-nx-text rounded-nx-sm"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeForward(f.id)}
+                        title={t("dialog.forward_remove")}
+                        className="nx-focus shrink-0 p-1 text-nx-muted hover:text-nx-error rounded-nx-sm"
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <Button
               type="button"
-              onClick={addForward}
-              className="nx-focus mt-2 text-meta font-mono text-nx-accent hover:underline"
+              variant="secondary"
+              size="sm"
+              leadingIcon={<Plus size={13} />}
+              onClick={() => setForwardEdit({})}
+              className="mt-2.5"
             >
               {t("dialog.add_forward")}
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -673,6 +680,14 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
           </div>
         </div>
       </form>
+
+      {forwardEdit && (
+        <ForwardEditDialog
+          initial={forwardEdit.initial}
+          onClose={() => setForwardEdit(null)}
+          onSave={upsertForward}
+        />
+      )}
     </div>
   );
 }

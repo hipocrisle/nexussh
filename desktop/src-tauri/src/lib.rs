@@ -261,6 +261,8 @@ pub fn run() {
             sftp::sftp_remove,
             sftp::sftp_chmod,
             sftp::sftp_chmod_recursive,
+            sftp::sftp_read_text,
+            sftp::sftp_write_text,
             sftp::sftp_cancel,
             sftp::sftp_disconnect,
             localfs::fs_local_home,

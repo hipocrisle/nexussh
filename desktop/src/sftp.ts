@@ -125,6 +125,45 @@ export async function sftpChmodRecursive(
   return await invoke<number>("sftp_chmod_recursive", { sftpId, path, mode });
 }
 
+/** Result of reading a remote file as text for the built-in viewer/editor. */
+export interface SftpTextRead {
+  /** UTF-8 (lossy) content. Empty when `too_large`. */
+  content: string;
+  /** First `max_bytes` only — the file is larger. VIEW may show it; EDIT refuses. */
+  truncated: boolean;
+  /** File exceeds `max_bytes`; no content returned. EDIT refuses. */
+  too_large: boolean;
+  /** Read window contains NUL bytes — likely binary; UI warns + refuses edit. */
+  binary: boolean;
+  /** Full file size in bytes (0 if unknown). */
+  size: number;
+}
+
+/**
+ * Read a remote text file (up to `maxBytes`) for the built-in viewer/editor.
+ * A file larger than `maxBytes` comes back with `too_large` (no content) — use
+ * the streaming download for big files. Binary content is flagged, not shown.
+ */
+export async function sftpReadText(
+  sftpId: string,
+  path: string,
+  maxBytes: number,
+): Promise<SftpTextRead> {
+  return await invoke<SftpTextRead>("sftp_read_text", { sftpId, path, maxBytes });
+}
+
+/**
+ * Overwrite a remote text file with `content` (UTF-8), truncating to the new
+ * length. The existing file mode is preserved when the server reports it.
+ */
+export async function sftpWriteText(
+  sftpId: string,
+  path: string,
+  content: string,
+): Promise<void> {
+  await invoke("sftp_write_text", { sftpId, path, content });
+}
+
 export async function sftpMkdir(sftpId: string, path: string): Promise<void> {
   await invoke("sftp_mkdir", { sftpId, path });
 }

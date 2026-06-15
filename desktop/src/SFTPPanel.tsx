@@ -67,6 +67,7 @@ import {
   removeTransfer,
 } from "./transfers";
 import { LocalEntry, localHome, localList, localSize, localDrives } from "./localfs";
+import { FileViewer } from "./FileViewer";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton, Checkbox, Input } from "./components/primitives";
@@ -166,6 +167,10 @@ const CODE_EXT = ["YML", "YAML", "JSON", "TS", "JS", "SH", "PY", "MD", "CONF", "
 // Using a typed payload (rather than text/plain) lets the destination pane tell
 // an internal drag from anything else and read which side it came from.
 const DND_PANE_MIME = "application/x-nexussh-pane";
+
+// Size guard for the built-in viewer/editor: a file larger than this is shown
+// as "too large" (VIEW only / no edit) rather than slurped into the webview.
+const VIEWER_MAX_BYTES = 2 * 1024 * 1024;
 
 const GRID = "28px 22px 1fr 110px 160px 130px 110px";
 
@@ -361,6 +366,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const transfers = useTransfers();
   // chmod can target a single entry OR a batch (selection) — store the list.
   const [chmodTargets, setChmodTargets] = useState<SftpEntry[] | null>(null);
+  // Built-in file viewer/editor (F3 view / F4 edit). Null when closed; carries
+  // the remote path/name + initial mode of the file being opened.
+  const [viewer, setViewer] = useState<{
+    path: string;
+    name: string;
+    mode: "view" | "edit";
+  } | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const idRef = useRef<string | null>(null);
   // True while OS files are being dragged over the panel (drop-zone overlay).
@@ -781,6 +793,15 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     return c ? [c] : [];
   }
 
+  // Open the built-in viewer/editor for the remote cursor row (F3 view / F4
+  // edit). No-op for a directory, ".." (cursor -1), or when no cursor is set —
+  // the viewer is text-files-only.
+  function openViewer(mode: "view" | "edit") {
+    const c = entries[remoteSel.cursor];
+    if (!c || c.is_dir) return;
+    setViewer({ path: joinPath(cwd, c.name), name: c.name, mode });
+  }
+
   // Toolbar download: 1 file → Save-As dialog; many → pick a folder, fan out.
   // Directories in the selection are skipped (no recursive download backend).
   async function onDownloadSelected() {
@@ -1003,6 +1024,11 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         e.stopPropagation();
       };
 
+      // While the viewer/editor is open it owns all the keys (its own
+      // capture-phase handler runs first and stops propagation); do nothing here
+      // so F-keys can't double-act on the panel behind it.
+      if (viewer) return;
+
       if (e.key === "F1") {
         consume();
         setHelpOpen((v) => !v);
@@ -1013,6 +1039,24 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       // overlay). Swallow other function keys so they don't act behind it.
       if (helpOpen) {
         if (/^F[1-9]$|^F1[0-2]$/.test(e.key)) consume();
+        return;
+      }
+
+      // F3 = view, F4 = edit the remote cursor file (text files only).
+      if (e.key === "F3") {
+        consume();
+        openViewer("view");
+        return;
+      }
+      if (e.key === "F4") {
+        consume();
+        openViewer("edit");
+        return;
+      }
+      // F2 only acts inside the editor (handled by the viewer's own handler);
+      // swallow it here so a stray F2 with the viewer closed does nothing.
+      if (e.key === "F2") {
+        consume();
         return;
       }
 
@@ -1059,7 +1103,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dualPane, activePane, helpOpen, entries, remoteSel]);
+  }, [dualPane, activePane, helpOpen, entries, remoteSel, viewer, cwd]);
 
   // Build the right-click menu. If the clicked row is part of the active
   // multi-selection, operations apply to the WHOLE selection; otherwise they
@@ -1413,6 +1457,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       </div>
 
       {helpOpen && <SftpHelpOverlay onClose={() => setHelpOpen(false)} />}
+
+      {viewer && sftpId && (
+        <FileViewer
+          sftpId={sftpId}
+          path={viewer.path}
+          name={viewer.name}
+          mode={viewer.mode}
+          maxBytes={VIEWER_MAX_BYTES}
+          onClose={() => setViewer(null)}
+          onSaved={refresh}
+        />
+      )}
 
       {ctx && (
         <ContextMenu
@@ -2044,6 +2100,9 @@ function SftpHelpOverlay({ onClose }: { onClose: () => void }) {
   const rows: { keys: string; desc: string }[] = [
     { keys: "F1", desc: t("sftp.hk_help") },
     { keys: "Tab", desc: t("sftp.hk_switch_pane") },
+    { keys: "F2", desc: t("sftp.hk_save") },
+    { keys: "F3", desc: t("sftp.hk_view") },
+    { keys: "F4", desc: t("sftp.hk_edit") },
     { keys: "F5", desc: t("sftp.hk_copy") },
     { keys: "F6", desc: t("sftp.hk_rename") },
     { keys: "F7", desc: t("sftp.hk_mkdir") },

@@ -535,6 +535,150 @@ pub async fn sftp_upload(
     Ok(())
 }
 
+/// Result of reading a remote file as text for the built-in viewer/editor.
+#[derive(Serialize)]
+pub struct SftpTextRead {
+    /// UTF-8 (lossy) decoded content. Empty when `too_large` is set (we don't
+    /// ship bytes the UI can't safely edit anyway).
+    pub content: String,
+    /// Set when we read the full `max_bytes` window but the file is larger — the
+    /// `content` is the first `max_bytes` only. VIEW may still show it; EDIT must
+    /// refuse (a partial save would truncate the rest of the file).
+    pub truncated: bool,
+    /// Set when the file's size is known to exceed `max_bytes` and we returned no
+    /// content at all. EDIT must refuse.
+    pub too_large: bool,
+    /// Set when the read window contains NUL bytes — almost certainly binary, so
+    /// the UI shows a warning instead of garbage and refuses to edit.
+    pub binary: bool,
+    /// Full file size in bytes (best-effort; 0 if the server didn't report it).
+    pub size: u64,
+}
+
+/// Read a remote text file for the built-in viewer/editor. Reads up to
+/// `max_bytes`; for a larger file we return `too_large` (no content) so EDIT
+/// can refuse — the streaming `sftp_download` is the path for big files. Decodes
+/// UTF-8 lossily for display and flags binary content (NUL bytes in the window).
+#[tauri::command]
+pub async fn sftp_read_text(
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    path: String,
+    max_bytes: u64,
+) -> Result<SftpTextRead, SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+
+    // Best-effort full size for the header / too-large decision.
+    let size = h
+        .sftp
+        .metadata(path.clone())
+        .await
+        .ok()
+        .and_then(|m| m.size)
+        .unwrap_or(0);
+
+    // Known-too-large → bail early without opening the file.
+    if size > max_bytes {
+        return Ok(SftpTextRead {
+            content: String::new(),
+            truncated: false,
+            too_large: true,
+            binary: false,
+            size,
+        });
+    }
+
+    // Read up to max_bytes + 1 so we can detect a file that grew past the limit
+    // since the metadata probe (or whose size the server didn't report).
+    let cap = max_bytes.saturating_add(1);
+    let mut file = h.sftp.open(path).await?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; CHUNK_BYTES];
+    loop {
+        let n = file.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() as u64 >= cap {
+            break;
+        }
+    }
+
+    // More than max_bytes actually present → treat as too-large (no partial edit).
+    if buf.len() as u64 > max_bytes {
+        return Ok(SftpTextRead {
+            content: String::new(),
+            truncated: false,
+            too_large: true,
+            binary: false,
+            size: if size == 0 { buf.len() as u64 } else { size },
+        });
+    }
+
+    let binary = buf.contains(&0);
+    let content = String::from_utf8_lossy(&buf).into_owned();
+    Ok(SftpTextRead {
+        content,
+        truncated: false,
+        too_large: false,
+        binary,
+        size: if size == 0 { buf.len() as u64 } else { size },
+    })
+}
+
+/// Overwrite a remote text file with `content` (UTF-8 bytes), truncating to the
+/// new length. The existing file mode is preserved when the server reports it
+/// (read metadata first, reapply after the write) — if the mode isn't available
+/// the server's default for a freshly-created file applies.
+#[tauri::command]
+pub async fn sftp_write_text(
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    path: String,
+    content: String,
+) -> Result<(), SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+
+    // Capture the current mode so we can reapply it after the truncating write
+    // (CREATE on a server may otherwise reset perms to a default).
+    let prev_mode = h
+        .sftp
+        .metadata(path.clone())
+        .await
+        .ok()
+        .and_then(|m| m.permissions);
+
+    // WRITE|CREATE|TRUNCATE: overwrite from scratch at the new length.
+    let mut file = h
+        .sftp
+        .open_with_flags(
+            path.clone(),
+            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+        )
+        .await?;
+    file.write_all(content.as_bytes()).await?;
+    file.flush().await?;
+    // Drop the handle before re-stat/chmod so the write is fully closed.
+    drop(file);
+
+    // Reapply the original mode if we had one (best-effort — a failure here
+    // doesn't lose the content, so don't fail the whole save over it).
+    if let Some(mode) = prev_mode {
+        let _ = h
+            .sftp
+            .set_metadata(
+                path,
+                Metadata {
+                    permissions: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .await;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sftp_chmod(
     state: State<'_, Arc<SftpManager>>,

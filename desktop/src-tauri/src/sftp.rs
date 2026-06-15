@@ -555,6 +555,76 @@ pub async fn sftp_chmod(
     Ok(())
 }
 
+/// Recursively chmod a directory tree: applies `mode` to `path` and everything
+/// beneath it. Traversal is iterative (explicit stack of dirs to visit) so a
+/// very deep tree can't blow the call stack.
+///
+/// Symlinks: the entry's mode is set on the link itself (the same `set_metadata`
+/// the non-recursive command uses — SFTP has no lchmod, and on most servers
+/// chmod of a symlink path affects the link target's perms only if the server
+/// follows it; russh-sftp issues SSH_FXP_SETSTAT which is server-defined). We
+/// deliberately do NOT descend INTO a symlinked directory — only real
+/// subdirectories (reported by the server's file-type) are pushed onto the
+/// traversal stack, so we never wander out of the tree via a link.
+///
+/// Returns the number of entries touched (the root dir plus every descendant).
+#[tauri::command]
+pub async fn sftp_chmod_recursive(
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    path: String,
+    mode: u32,
+) -> Result<u64, SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+
+    let set_mode = |p: String| {
+        let sftp = &h.sftp;
+        let p2 = p.clone();
+        async move {
+            sftp.set_metadata(
+                p2,
+                Metadata {
+                    permissions: Some(mode),
+                    ..Default::default()
+                },
+            )
+            .await
+        }
+    };
+
+    // Apply to the root directory itself first.
+    set_mode(path.clone()).await?;
+    let mut touched: u64 = 1;
+
+    // Iterative DFS over real subdirectories only.
+    let mut stack: Vec<String> = vec![path];
+    while let Some(dir) = stack.pop() {
+        let entries = h.sftp.read_dir(dir.clone()).await?;
+        for entry in entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = if dir.ends_with('/') {
+                format!("{dir}{name}")
+            } else {
+                format!("{dir}/{name}")
+            };
+            let ft = entry.file_type();
+            // chmod the entry (link itself for symlinks — we don't follow them).
+            set_mode(child.clone()).await?;
+            touched += 1;
+            // Descend only into REAL directories, never through symlinks, so we
+            // can't escape the original tree.
+            if ft.is_dir() && !ft.is_symlink() {
+                stack.push(child);
+            }
+        }
+    }
+
+    Ok(touched)
+}
+
 #[tauri::command]
 pub async fn sftp_mkdir(
     state: State<'_, Arc<SftpManager>>,

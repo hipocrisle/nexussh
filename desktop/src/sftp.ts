@@ -112,6 +112,19 @@ export async function sftpChmod(
   await invoke("sftp_chmod", { sftpId, path, mode });
 }
 
+/**
+ * Recursively chmod a directory and everything under it. Returns the number of
+ * entries touched. Symlinks are chmod'd as the link entry and are NOT followed
+ * into other trees. Use only for directory targets; plain files use sftpChmod.
+ */
+export async function sftpChmodRecursive(
+  sftpId: string,
+  path: string,
+  mode: number,
+): Promise<number> {
+  return await invoke<number>("sftp_chmod_recursive", { sftpId, path, mode });
+}
+
 export async function sftpMkdir(sftpId: string, path: string): Promise<void> {
   await invoke("sftp_mkdir", { sftpId, path });
 }

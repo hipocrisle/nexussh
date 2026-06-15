@@ -23,6 +23,35 @@ pub fn fs_local_home() -> String {
         .unwrap_or_else(|_| "/".to_string())
 }
 
+/// Available local drive roots. On Windows this probes `A:\`..`Z:\` and returns
+/// the ones that exist (fixed disks, USB, mapped network drives, etc.) so the
+/// local pane can offer a drive picker. On non-Windows there is a single root,
+/// so we return just `["/"]` — the UI hides the picker when only one root is
+/// reported, keeping Linux/mac clutter-free.
+#[tauri::command]
+pub fn fs_local_drives() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut out = Vec::new();
+        for letter in b'A'..=b'Z' {
+            let root = format!("{}:\\", letter as char);
+            if Path::new(&root).exists() {
+                out.push(root);
+            }
+        }
+        // Fall back to C:\ if probing somehow found nothing, so the pane still
+        // has a usable root.
+        if out.is_empty() {
+            out.push("C:\\".to_string());
+        }
+        out
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec!["/".to_string()]
+    }
+}
+
 /// Size in bytes of a local file, or 0 if it doesn't exist / can't be read.
 /// Used by the SFTP panel to detect a partially-downloaded target and offer to
 /// resume it.

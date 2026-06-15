@@ -52,6 +52,7 @@ import {
   sftpRename,
   sftpRemove,
   sftpChmod,
+  sftpChmodRecursive,
   sftpDisconnect,
   sftpCancel,
   isCancelled,
@@ -65,7 +66,7 @@ import {
   markCancelling,
   removeTransfer,
 } from "./transfers";
-import { LocalEntry, localHome, localList, localSize } from "./localfs";
+import { LocalEntry, localHome, localList, localSize, localDrives } from "./localfs";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton, Checkbox, Input } from "./components/primitives";
@@ -374,6 +375,25 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [localError, setLocalError] = useState<string | null>(null);
   const [localSel, setLocalSel] = useState<PaneSel>(emptySel());
   const localSelected = localSel.selected;
+  // Local drive roots (Windows: C:\, D:\, …; Linux/mac: just "/"). The picker is
+  // shown only when more than one root exists, so it's effectively Windows-only.
+  const [localDriveList, setLocalDriveList] = useState<string[]>([]);
+
+  // Enumerate drive roots once when dual-pane first opens (cheap; static enough
+  // that re-probing on every nav isn't worth it).
+  useEffect(() => {
+    if (!dualPane || localDriveList.length > 0) return;
+    localDrives()
+      .then(setLocalDriveList)
+      .catch(() => setLocalDriveList([]));
+  }, [dualPane, localDriveList.length]);
+
+  // Which drive root the current local path lives under (for highlighting the
+  // active drive button). Matches case-insensitively on the leading "X:".
+  const currentDrive =
+    localDriveList.find((d) =>
+      localCwd.toLowerCase().startsWith(d.slice(0, 2).toLowerCase()),
+    ) ?? null;
 
   const loadLocal = useCallback(async (path: string) => {
     setLocalLoading(true);
@@ -1215,6 +1235,15 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
               onRefresh={refreshLocal}
               count={localEntries.length}
               selectedCount={localSelected.size}
+              extraActions={
+                localDriveList.length > 1 ? (
+                  <DrivePicker
+                    drives={localDriveList}
+                    current={currentDrive}
+                    onSelect={(d) => navigateLocal(d)}
+                  />
+                ) : undefined
+              }
             >
               {localError && (
                 <div className="px-3 py-1.5 text-meta font-mono text-nx-error border-b border-nx-divider truncate shrink-0">
@@ -1333,11 +1362,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         <ChmodDialog
           entries={chmodTargets}
           onClose={() => setChmodTargets(null)}
-          onApply={async (mode) => {
+          onApply={async (mode, recursive) => {
             setError(null);
             try {
               for (const e of chmodTargets) {
-                await sftpChmod(sftpId, joinPath(cwd, e.name), mode);
+                const target = joinPath(cwd, e.name);
+                // Recursive only makes sense for directories; files always use
+                // the plain single chmod regardless of the checkbox.
+                if (recursive && e.is_dir) {
+                  await sftpChmodRecursive(sftpId, target, mode);
+                } else {
+                  await sftpChmod(sftpId, target, mode);
+                }
               }
               setChmodTargets(null);
               refresh();
@@ -1810,6 +1846,44 @@ function Pane({
   );
 }
 
+/** Drive-root selector for the local pane (Windows). A compact row of buttons,
+ *  one per drive root; the active drive is highlighted. Shown only when the
+ *  backend reports more than one root, so Linux/mac never see it. */
+function DrivePicker({
+  drives,
+  current,
+  onSelect,
+}: {
+  drives: string[];
+  current: string | null;
+  onSelect: (drive: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <span className="flex items-center gap-1" title={t("sftp.drive")}>
+      <HardDrive size={12} className="text-nx-muted shrink-0" />
+      {drives.map((d) => {
+        const label = d.slice(0, 2); // "C:" from "C:\"
+        const isActive = current === d;
+        return (
+          <button
+            key={d}
+            onClick={() => onSelect(d)}
+            className={
+              "px-1.5 py-0.5 rounded-nx-sm border text-micro font-mono uppercase " +
+              (isActive
+                ? "border-nx-accent text-nx-accent bg-nx-elevated"
+                : "border-nx-border text-nx-soft hover:text-nx-text hover:border-nx-soft")
+            }
+          >
+            {label}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
 /** SFTP hotkey cheat-sheet (F1). Dismiss on Esc / backdrop click. */
 function SftpHelpOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useTranslation();
@@ -1892,12 +1966,18 @@ function ChmodDialog({
 }: {
   entries: SftpEntry[];
   onClose: () => void;
-  onApply: (mode: number) => void;
+  onApply: (mode: number, recursive: boolean) => Promise<void> | void;
 }) {
   const { t } = useTranslation();
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const single = entries.length === 1 ? entries[0] : null;
   const [mode, setMode] = useState<number>((single ? single.permissions : 0) & 0o777);
+  // Recursive option is only meaningful when at least one target is a directory.
+  const anyDir = entries.some((e) => e.is_dir);
+  const [recursive, setRecursive] = useState(false);
+  // Busy while a (possibly long) recursive chmod runs — disables the controls
+  // and shows a working indicator.
+  const [busy, setBusy] = useState(false);
 
   const octal = mode.toString(8).padStart(3, "0");
   const bit = (group: number, perm: number) => (mode >> (group * 3)) & perm;
@@ -1983,13 +2063,38 @@ function ChmodDialog({
               className="w-20 tabular-nums text-center"
             />
           </div>
+
+          {/* Recursive option — only when a directory is among the targets. */}
+          {anyDir && (
+            <label className="flex items-center gap-2 text-meta font-mono text-nx-soft cursor-pointer">
+              <Checkbox checked={recursive} onChange={() => setRecursive((v) => !v)} />
+              <span>{t("sftp.chmod_recursive")}</span>
+            </label>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-nx-divider">
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          {busy && (
+            <span className="mr-auto flex items-center gap-1.5 text-meta font-mono text-nx-muted">
+              <Loader2 size={13} className="animate-spin" /> {t("sftp.chmod_applying")}
+            </span>
+          )}
+          <Button variant="secondary" size="sm" onClick={onClose} disabled={busy}>
             {t("sftp.cancel")}
           </Button>
-          <Button variant="primary" size="sm" onClick={() => onApply(mode)}>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onApply(mode, recursive && anyDir);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
             {t("sftp.apply")}
           </Button>
         </div>

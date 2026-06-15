@@ -26,3 +26,12 @@ export async function localList(path: string): Promise<LocalEntry[]> {
 export async function localSize(path: string): Promise<number> {
   return await invoke<number>("fs_local_size", { path });
 }
+
+/**
+ * Available local drive roots. On Windows these are the existing drive letters
+ * (e.g. ["C:\\", "D:\\"]); on Linux/mac it's just ["/"]. The UI shows a drive
+ * picker only when more than one root is returned.
+ */
+export async function localDrives(): Promise<string[]> {
+  return await invoke<string[]>("fs_local_drives");
+}

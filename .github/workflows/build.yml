@@ -33,6 +33,29 @@ jobs:
         with:
           node-version: "22"
 
+      # Guard against the manifest/build version drift that caused the updater
+      # loop: the updater manifest derives its version from the git TAG, while
+      # the built app's version comes from tauri.conf.json. If they diverge
+      # (e.g. tag v2.2.1-beta.1 but config left at 2.2.1), `version !=
+      # current_version` is never satisfied and clients loop forever. Fail fast.
+      - name: Verify tag matches app version (no manifest/build drift)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        working-directory: desktop
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CONF_VER=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          PKG_VER=$(node -p "require('./package.json').version")
+          echo "tag=$TAG_VER  tauri.conf.json=$CONF_VER  package.json=$PKG_VER"
+          if [ "$CONF_VER" != "$TAG_VER" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME != tauri.conf.json version $CONF_VER — bump the version before tagging."
+            exit 1
+          fi
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME != package.json version $PKG_VER — bump the version before tagging."
+            exit 1
+          fi
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -196,6 +219,18 @@ jobs:
           gh release upload channel-stable latest.json --repo "$REPO" --clobber
           gh release upload "$TAG" latest.json --repo "$REPO" --clobber
           gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+
+          # Prune older STABLE versioned releases — keep ONLY this one (latest
+          # sits on top) plus the rolling channel-stable/channel-beta. Betas
+          # never create versioned releases, so they are unaffected.
+          for t in $(gh release list --repo "$REPO" --json tagName,isPrerelease \
+                       --jq '.[] | select(.isPrerelease==false) | .tagName'); do
+            case "$t" in
+              "$TAG"|channel-*|*-beta.*) continue ;;
+              v*) echo "prune old stable release $t"
+                  gh release delete "$t" --repo "$REPO" --yes --cleanup-tag || true ;;
+            esac
+          done
 
       # ── BETA ──────────────────────────────────────────────────────────────
       # No versioned release. Installers + manifest live on the single rolling

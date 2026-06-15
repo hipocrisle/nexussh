@@ -1,6 +1,7 @@
 // Thin TypeScript wrapper around the Rust SFTP commands.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { ConnectArgs } from "./ssh";
 
 export interface SftpEntry {
@@ -39,20 +40,44 @@ export async function sftpList(
   return await invoke<SftpEntry[]>("sftp_list", { sftpId, path });
 }
 
+/** Progress event for an in-flight transfer (`total === 0` means unknown). */
+export interface SftpProgress {
+  id: string;
+  transferred: number;
+  total: number;
+  phase: "download" | "upload";
+}
+
 export async function sftpDownload(
   sftpId: string,
   remotePath: string,
   localPath: string,
+  transferId: string,
 ): Promise<void> {
-  await invoke("sftp_download", { sftpId, remotePath, localPath });
+  await invoke("sftp_download", { sftpId, remotePath, localPath, transferId });
 }
 
 export async function sftpUpload(
   sftpId: string,
   localPath: string,
   remotePath: string,
+  transferId: string,
 ): Promise<void> {
-  await invoke("sftp_upload", { sftpId, localPath, remotePath });
+  await invoke("sftp_upload", { sftpId, localPath, remotePath, transferId });
+}
+
+export function onSftpProgress(
+  cb: (p: SftpProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<SftpProgress>("sftp-progress", (e) => cb(e.payload));
+}
+
+export async function sftpChmod(
+  sftpId: string,
+  path: string,
+  mode: number,
+): Promise<void> {
+  await invoke("sftp_chmod", { sftpId, path, mode });
 }
 
 export async function sftpMkdir(sftpId: string, path: string): Promise<void> {

@@ -3,7 +3,7 @@
 // for up/download (model A: separate SFTP connection, decoupled from the
 // interactive shell session).
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -17,10 +17,12 @@ import {
   Loader2,
   Link2,
   KeyRound,
+  X,
 } from "lucide-react";
 import type { ConnectArgs } from "./ssh";
 import {
   SftpEntry,
+  SftpProgress,
   sftpConnect,
   sftpRealpath,
   sftpList,
@@ -29,17 +31,28 @@ import {
   sftpMkdir,
   sftpRename,
   sftpRemove,
+  sftpChmod,
   sftpDisconnect,
+  onSftpProgress,
 } from "./sftp";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
-import { Button, IconButton, Checkbox } from "./components/primitives";
+import { Button, IconButton, Checkbox, Input } from "./components/primitives";
 import { askPrompt, askConfirm } from "./dialogs";
 
 interface Props {
   connectArgs: ConnectArgs;
   title: string;
   onClose: () => void;
+}
+
+/** A streaming transfer with live progress (total === 0 ⇒ unknown size). */
+interface Transfer {
+  id: string;
+  name: string;
+  phase: "download" | "upload";
+  transferred: number;
+  total: number;
 }
 
 function fmtSize(n: number): string {
@@ -175,14 +188,64 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [cwd, setCwd] = useState("/");
   const [entries, setEntries] = useState<SftpEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; entry: SftpEntry } | null>(
     null,
   );
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Active transfers keyed by transferId → live progress for the bar.
+  const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
+  const [chmodTarget, setChmodTarget] = useState<SftpEntry | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const idRef = useRef<string | null>(null);
+
+  // Listen for streaming progress events; drop a transfer shortly after it
+  // reaches 100% so the bar lingers briefly then clears.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onSftpProgress((p: SftpProgress) => {
+      setTransfers((prev) => ({
+        ...prev,
+        [p.id]: {
+          ...(prev[p.id] ?? { name: prev[p.id]?.name ?? "" }),
+          ...p,
+        },
+      }));
+      if (p.total > 0 && p.transferred >= p.total) {
+        setTimeout(() => {
+          setTransfers((prev) => {
+            const next = { ...prev };
+            delete next[p.id];
+            return next;
+          });
+        }, 800);
+      }
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Register a transfer (so its name shows before the first progress event),
+  // returning the generated id to hand to the backend.
+  const startTransfer = useCallback((name: string, phase: Transfer["phase"]) => {
+    const id = crypto.randomUUID();
+    setTransfers((prev) => ({
+      ...prev,
+      [id]: { id, name, phase, transferred: 0, total: 0 },
+    }));
+    return id;
+  }, []);
+
+  const endTransfer = useCallback((id: string) => {
+    setTransfers((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async (id: string, path: string) => {
     setLoading(true);
@@ -245,15 +308,15 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     const picked = await openDialog({ multiple: false, title: t("sftp.upload") });
     if (typeof picked !== "string") return;
     const base = picked.replace(/\\/g, "/").split("/").pop() || "upload";
-    setBusy(t("sftp.uploading", { name: base }));
     setError(null);
+    const tid = startTransfer(base, "upload");
     try {
-      await sftpUpload(sftpId, picked, joinPath(cwd, base));
+      await sftpUpload(sftpId, picked, joinPath(cwd, base), tid);
       refresh();
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy(null);
+      endTransfer(tid);
     }
   }
 
@@ -274,14 +337,14 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     if (!sftpId) return;
     const dest = await saveDialog({ defaultPath: entry.name });
     if (typeof dest !== "string") return;
-    setBusy(t("sftp.downloading", { name: entry.name }));
     setError(null);
+    const tid = startTransfer(entry.name, "download");
     try {
-      await sftpDownload(sftpId, joinPath(cwd, entry.name), dest);
+      await sftpDownload(sftpId, joinPath(cwd, entry.name), dest, tid);
     } catch (e) {
       setError(String(e));
     } finally {
-      setBusy(null);
+      endTransfer(tid);
     }
   }
 
@@ -310,18 +373,17 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     const dir = await openDialog({ directory: true, title: t("sftp.download") });
     if (typeof dir !== "string") return;
     setError(null);
-    let done = 0;
     for (const name of names) {
-      setBusy(t("sftp.downloading_n", { done: done + 1, total: names.length }));
+      const tid = startTransfer(name, "download");
       try {
-        await sftpDownload(sftpId, joinPath(cwd, name), `${dir}/${name}`);
-        done++;
+        await sftpDownload(sftpId, joinPath(cwd, name), `${dir}/${name}`, tid);
       } catch (e) {
         setError(`${name}: ${String(e)}`);
+        endTransfer(tid);
         break;
       }
+      endTransfer(tid);
     }
-    setBusy(null);
   }
 
   async function onRename(entry: SftpEntry) {
@@ -362,6 +424,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       items.push({ label: t("sftp.download"), onClick: () => onDownload(entry) });
     }
     items.push({ label: t("sftp.rename"), onClick: () => onRename(entry) });
+    items.push({ label: t("sftp.chmod"), onClick: () => setChmodTarget(entry) });
     items.push({ separator: true, label: "" });
     items.push({
       label: t("sftp.delete"),
@@ -536,13 +599,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           )}
         </div>
 
+        {/* Active transfers — one progress bar per in-flight transfer. */}
+        {Object.values(transfers).length > 0 && (
+          <div className="px-4 py-2 border-t border-nx-divider shrink-0 flex flex-col gap-2 max-h-32 overflow-y-auto">
+            {Object.values(transfers).map((tr) => (
+              <TransferBar key={tr.id} tr={tr} />
+            ))}
+          </div>
+        )}
+
         {/* Footer status */}
         <div className="px-4 py-2 border-t border-nx-divider font-mono text-meta shrink-0 flex items-center gap-2">
-          {busy ? (
-            <span className="text-nx-accent flex items-center gap-1.5">
-              <Loader2 size={12} className="animate-spin" /> {busy}
-            </span>
-          ) : error ? (
+          {error ? (
             <span className="text-nx-error truncate">✗ {error}</span>
           ) : (
             <span className="text-nx-muted">
@@ -560,6 +628,168 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           onClose={() => setCtx(null)}
         />
       )}
+
+      {chmodTarget && sftpId && (
+        <ChmodDialog
+          entry={chmodTarget}
+          onClose={() => setChmodTarget(null)}
+          onApply={async (mode) => {
+            setError(null);
+            try {
+              await sftpChmod(sftpId, joinPath(cwd, chmodTarget.name), mode);
+              setChmodTarget(null);
+              refresh();
+            } catch (e) {
+              setError(String(e));
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A single transfer's progress bar (download/upload). */
+function TransferBar({ tr }: { tr: Transfer }) {
+  const pct = tr.total > 0 ? Math.min(100, (tr.transferred / tr.total) * 100) : 0;
+  const indeterminate = tr.total === 0;
+  return (
+    <div className="font-mono text-meta">
+      <div className="flex items-center gap-2 mb-1">
+        {tr.phase === "upload" ? (
+          <Upload size={11} className="text-nx-accent shrink-0" />
+        ) : (
+          <Download size={11} className="text-nx-accent shrink-0" />
+        )}
+        <span className="text-nx-soft truncate flex-1">{tr.name}</span>
+        <span className="text-nx-muted tabular-nums shrink-0">
+          {fmtSize(tr.transferred)}
+          {tr.total > 0 ? ` / ${fmtSize(tr.total)}` : ""}
+          {!indeterminate && (
+            <span className="text-nx-accent ml-1.5">{Math.round(pct)}%</span>
+          )}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-nx-elevated overflow-hidden">
+        <div
+          className={
+            "h-full bg-nx-accent rounded-full transition-[width] duration-150 " +
+            (indeterminate ? "animate-pulse w-1/3" : "")
+          }
+          style={indeterminate ? undefined : { width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Octal-permission editor: 3×3 rwx grid kept in sync with an octal field. */
+function ChmodDialog({
+  entry,
+  onClose,
+  onApply,
+}: {
+  entry: SftpEntry;
+  onClose: () => void;
+  onApply: (mode: number) => void;
+}) {
+  const { t } = useTranslation();
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
+  const [mode, setMode] = useState<number>(entry.permissions & 0o777);
+
+  const octal = mode.toString(8).padStart(3, "0");
+  const bit = (group: number, perm: number) => (mode >> (group * 3)) & perm;
+  const toggle = (group: number, perm: number) => {
+    setMode((m) => m ^ (perm << (group * 3)));
+  };
+  const onOctalChange = (v: string) => {
+    const cleaned = v.replace(/[^0-7]/g, "").slice(0, 3);
+    if (cleaned === "") {
+      setMode(0);
+      return;
+    }
+    setMode(parseInt(cleaned, 8) & 0o777);
+  };
+
+  // group index: 2 = owner, 1 = group, 0 = other (matches octal digit order)
+  const groups: { idx: number; label: string }[] = [
+    { idx: 2, label: t("sftp.chmod_owner") },
+    { idx: 1, label: t("sftp.chmod_group") },
+    { idx: 0, label: t("sftp.chmod_other") },
+  ];
+  const perms: { bit: number; label: string }[] = [
+    { bit: 4, label: t("sftp.chmod_read") },
+    { bit: 2, label: t("sftp.chmod_write") },
+    { bit: 1, label: t("sftp.chmod_exec") },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      {...backdropProps}
+    >
+      <div
+        {...contentProps}
+        className="nx-modal-enter w-full max-w-sm flex flex-col bg-nx-bg border border-nx-border rounded-nx shadow-glow-md overflow-hidden"
+      >
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-divider">
+          <h2 className="text-base font-mono text-nx-accent">{t("sftp.chmod_title")}</h2>
+          <span className="text-meta text-nx-muted font-mono truncate">{entry.name}</span>
+          <IconButton
+            className="ml-auto"
+            icon={<X size={14} />}
+            onClick={onClose}
+            title={t("sftp.cancel")}
+          />
+        </div>
+
+        <div className="px-4 py-4 flex flex-col gap-4">
+          {/* rwx grid */}
+          <div
+            className="grid items-center gap-x-3 gap-y-2 text-meta font-mono"
+            style={{ gridTemplateColumns: "70px 1fr 1fr 1fr" }}
+          >
+            <div />
+            {perms.map((p) => (
+              <div key={p.bit} className="text-center text-nx-muted uppercase tracking-wider text-micro">
+                {p.label}
+              </div>
+            ))}
+            {groups.map((g) => (
+              <Fragment key={g.idx}>
+                <div className="text-nx-soft">{g.label}</div>
+                {perms.map((p) => (
+                  <div key={p.bit} className="flex justify-center">
+                    <Checkbox
+                      checked={bit(g.idx, p.bit) !== 0}
+                      onChange={() => toggle(g.idx, p.bit)}
+                    />
+                  </div>
+                ))}
+              </Fragment>
+            ))}
+          </div>
+
+          {/* octal field */}
+          <div className="flex items-center gap-2">
+            <span className="text-meta font-mono text-nx-muted">{t("sftp.chmod_octal")}</span>
+            <Input
+              value={octal}
+              onChange={(v) => onOctalChange(v)}
+              className="w-20 tabular-nums text-center"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-nx-divider">
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            {t("sftp.cancel")}
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => onApply(mode)}>
+            {t("sftp.apply")}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

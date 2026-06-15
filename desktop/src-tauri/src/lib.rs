@@ -257,6 +257,7 @@ pub fn run() {
             sftp::sftp_mkdir,
             sftp::sftp_rename,
             sftp::sftp_remove,
+            sftp::sftp_chmod,
             sftp::sftp_disconnect,
             tunnel::ssh_tunnel_open,
             tunnel::ssh_tunnel_close,

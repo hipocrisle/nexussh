@@ -6,25 +6,30 @@
 //! - commands: sftp_connect / sftp_realpath / sftp_list / sftp_download /
 //!   sftp_upload / sftp_mkdir / sftp_rename / sftp_remove / sftp_disconnect
 //!
-//! v1 transfers read/write the whole file in memory (no streaming/progress
-//! yet) — fine for config-sized files; large-file streaming is a follow-up.
+//! v2 transfers stream in fixed-size chunks (no whole-file buffering) and emit
+//! `sftp-progress` events so the UI can show a progress bar — large files work
+//! without OOM since only one chunk is held at a time.
 
 use russh::client::{self};
+use russh_sftp::client::fs::Metadata;
 use russh_sftp::client::SftpSession;
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
-use tokio::io::AsyncWriteExt;
+use tauri::{AppHandle, Emitter, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::ssh::{known_hosts_path, AuthMethod, ConnectArgs, TofuHandler};
 
-/// Cap for in-memory SFTP transfers (whole-file read/write). A malicious or
-/// buggy server could otherwise hand back an arbitrarily large file and OOM
-/// the client. 512 MiB is generous for the config-sized files this targets.
-const MAX_TRANSFER_BYTES: u64 = 512 * 1024 * 1024;
+/// Streaming chunk size — keeps peak memory bounded regardless of file size.
+const CHUNK_BYTES: usize = 64 * 1024;
+
+/// Progress events are throttled to at most one per this interval so a fast
+/// transfer doesn't flood the event loop (a final 100% event is always sent).
+const PROGRESS_INTERVAL_MS: u128 = 150;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SftpError {
@@ -248,43 +253,145 @@ pub async fn sftp_list(
     Ok(out)
 }
 
+/// Emit a throttled `sftp-progress` event. `last` tracks the wall-clock of the
+/// previous emit; pass `force = true` for the terminal (100%) event so it is
+/// never dropped by the throttle.
+fn emit_progress(
+    app: &AppHandle,
+    last: &mut std::time::Instant,
+    transfer_id: &str,
+    transferred: u64,
+    total: u64,
+    phase: &str,
+    force: bool,
+) {
+    if !force && last.elapsed().as_millis() < PROGRESS_INTERVAL_MS {
+        return;
+    }
+    *last = std::time::Instant::now();
+    let _ = app.emit(
+        "sftp-progress",
+        json!({
+            "id": transfer_id,
+            "transferred": transferred,
+            "total": total,
+            "phase": phase,
+        }),
+    );
+}
+
 #[tauri::command]
 pub async fn sftp_download(
+    app: AppHandle,
     state: State<'_, Arc<SftpManager>>,
     sftp_id: String,
     remote_path: String,
     local_path: String,
+    transfer_id: String,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
-    // Stat first and refuse oversized files — `read` buffers the whole file in
-    // memory, so a malicious server could otherwise OOM the client.
-    if let Ok(meta) = h.sftp.metadata(remote_path.clone()).await {
-        if meta.size.unwrap_or(0) > MAX_TRANSFER_BYTES {
-            return Err(SftpError::Other(format!(
-                "file too large (> {} MiB) — streaming download not yet supported",
-                MAX_TRANSFER_BYTES / (1024 * 1024)
-            )));
+    // Best-effort total for the progress bar; 0 means "unknown" (UI shows an
+    // indeterminate / byte-count state).
+    let total = h
+        .sftp
+        .metadata(remote_path.clone())
+        .await
+        .ok()
+        .and_then(|m| m.size)
+        .unwrap_or(0);
+
+    // open() is read-only; stream chunk-by-chunk so memory stays bounded.
+    let mut remote = h.sftp.open(remote_path).await?;
+    let mut local = tokio::fs::File::create(&local_path).await?;
+
+    let mut transferred: u64 = 0;
+    let mut buf = vec![0u8; CHUNK_BYTES];
+    let mut last = std::time::Instant::now();
+    loop {
+        let n = remote.read(&mut buf).await?;
+        if n == 0 {
+            break;
         }
+        local.write_all(&buf[..n]).await?;
+        transferred += n as u64;
+        emit_progress(
+            &app, &mut last, &transfer_id, transferred, total, "download", false,
+        );
     }
-    let data = h.sftp.read(remote_path).await?;
-    tokio::fs::write(&local_path, data).await?;
+    local.flush().await?;
+    emit_progress(
+        &app,
+        &mut last,
+        &transfer_id,
+        transferred,
+        if total == 0 { transferred } else { total },
+        "download",
+        true,
+    );
     Ok(())
 }
 
 #[tauri::command]
 pub async fn sftp_upload(
+    app: AppHandle,
     state: State<'_, Arc<SftpManager>>,
     sftp_id: String,
     local_path: String,
     remote_path: String,
+    transfer_id: String,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
-    let data = tokio::fs::read(&local_path).await?;
+    let mut local = tokio::fs::File::open(&local_path).await?;
+    let total = local.metadata().await.map(|m| m.len()).unwrap_or(0);
+
     // NB: SftpSession::write() opens with WRITE only (no CREATE) → fails with
     // "No such file" for new files. create() uses CREATE|TRUNCATE|WRITE.
-    let mut file = h.sftp.create(remote_path).await?;
-    file.write_all(&data).await?;
-    file.flush().await?;
+    let mut remote = h.sftp.create(remote_path).await?;
+
+    let mut transferred: u64 = 0;
+    let mut buf = vec![0u8; CHUNK_BYTES];
+    let mut last = std::time::Instant::now();
+    loop {
+        let n = local.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        remote.write_all(&buf[..n]).await?;
+        transferred += n as u64;
+        emit_progress(
+            &app, &mut last, &transfer_id, transferred, total, "upload", false,
+        );
+    }
+    remote.flush().await?;
+    emit_progress(
+        &app,
+        &mut last,
+        &transfer_id,
+        transferred,
+        if total == 0 { transferred } else { total },
+        "upload",
+        true,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sftp_chmod(
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    path: String,
+    mode: u32,
+) -> Result<(), SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+    h.sftp
+        .set_metadata(
+            path,
+            Metadata {
+                permissions: Some(mode),
+                ..Default::default()
+            },
+        )
+        .await?;
     Ok(())
 }
 

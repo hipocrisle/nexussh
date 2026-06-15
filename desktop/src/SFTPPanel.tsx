@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import { useTranslation } from "react-i18next";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Folder,
   File as FileIcon,
@@ -198,6 +199,8 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [chmodTarget, setChmodTarget] = useState<SftpEntry | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const idRef = useRef<string | null>(null);
+  // True while OS files are being dragged over the panel (drop-zone overlay).
+  const [dragOver, setDragOver] = useState(false);
 
   // Listen for streaming progress events; drop a transfer shortly after it
   // reaches 100% so the bar lingers briefly then clears.
@@ -298,6 +301,78 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   function refresh() {
     if (sftpId) load(sftpId, cwd);
   }
+
+  // Drag-and-drop upload: keep the current dir / connection in refs so the
+  // single webview listener always sees the latest values without re-binding.
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  const dropBusyRef = useRef(false);
+
+  const uploadPaths = useCallback(
+    async (paths: string[]) => {
+      const id = idRef.current;
+      if (!id || paths.length === 0 || dropBusyRef.current) return;
+      dropBusyRef.current = true;
+      const dir = cwdRef.current;
+      setError(null);
+      const skipped: string[] = [];
+      try {
+        for (const p of paths) {
+          const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
+          const base = norm.split("/").pop();
+          if (!base) {
+            skipped.push(p);
+            continue;
+          }
+          const tid = startTransfer(base, "upload");
+          try {
+            await sftpUpload(id, p, joinPath(dir, base), tid);
+          } catch (e) {
+            // A dropped directory (or unreadable path) lands here — note and
+            // continue rather than aborting the whole batch.
+            skipped.push(base);
+            setError(`${base}: ${String(e)}`);
+          } finally {
+            endTransfer(tid);
+          }
+        }
+        if (skipped.length > 0) {
+          setError(t("sftp.drop_skipped_dir", { name: skipped.join(", ") }));
+        }
+      } finally {
+        dropBusyRef.current = false;
+        if (idRef.current) load(idRef.current, cwdRef.current);
+      }
+    },
+    [startTransfer, endTransfer, load, t],
+  );
+
+  // Register the OS drag-drop listener while the panel is mounted; the whole
+  // webview receives the event, so we only act because this panel is open.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let active = true;
+    getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const payload = e.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragOver(true);
+        } else if (payload.type === "leave") {
+          setDragOver(false);
+        } else if (payload.type === "drop") {
+          setDragOver(false);
+          uploadPaths(payload.paths);
+        }
+      })
+      .then((u) => {
+        if (active) unlisten = u;
+        else u();
+      });
+    return () => {
+      active = false;
+      if (unlisten) unlisten();
+    };
+  }, [uploadPaths]);
 
   function navigate(path: string) {
     if (sftpId) load(sftpId, path);
@@ -445,8 +520,20 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     >
       <div
         {...contentProps}
-        className="nx-modal-enter w-full max-w-5xl h-[80vh] flex flex-col bg-nx-bg border border-nx-border rounded-nx shadow-glow-md overflow-hidden"
+        className="nx-modal-enter relative w-full max-w-5xl h-[80vh] flex flex-col bg-nx-bg border border-nx-border rounded-nx shadow-glow-md overflow-hidden"
       >
+        {/* Drop-zone overlay — shown while OS files are dragged over the panel. */}
+        {dragOver && sftpId && (
+          <div className="absolute inset-0 z-[55] flex items-center justify-center bg-nx-bg/80 backdrop-blur-sm border-2 border-dashed border-nx-accent rounded-nx pointer-events-none">
+            <div className="flex flex-col items-center gap-3 px-6 text-center">
+              <Upload size={32} className="text-nx-accent" />
+              <span className="font-mono text-body text-nx-soft max-w-md break-all">
+                {t("sftp.drop_hint", { path: cwd })}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-divider shrink-0">
           <h2 className="text-lg font-mono text-nx-accent">&gt; sftp</h2>

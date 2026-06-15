@@ -341,6 +341,8 @@ const ru = {
     chmod_exec: "выполнение",
     apply: "Применить",
     cancel: "Отмена",
+    drop_hint: "Отпустите файлы для загрузки в {{path}}",
+    drop_skipped_dir: "Папки пропущены: {{name}}",
   },
   tunnel: {
     title: "проброс портов",
@@ -1132,6 +1134,8 @@ const en = {
     chmod_exec: "execute",
     apply: "Apply",
     cancel: "Cancel",
+    drop_hint: "Drop files to upload into {{path}}",
+    drop_skipped_dir: "Folders skipped: {{name}}",
   },
   tunnel: {
     title: "port forwards",

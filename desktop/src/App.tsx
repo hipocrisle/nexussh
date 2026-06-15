@@ -1277,6 +1277,11 @@ function App() {
       } else if (meta && e.shiftKey && k === "e") {
         // Ctrl/Cmd+Shift+E — split focused pane down.
         inActiveWs((wsId) => splitFocusedPane(wsId, "col"));
+      } else if (meta && !e.shiftKey && !e.altKey && k === "h") {
+        // Ctrl/Cmd+H — open the session History panel (same as the header button).
+        e.preventDefault();
+        e.stopPropagation();
+        setHistoryPanelOpen(true);
       } else if (e.ctrlKey && !e.altKey && !e.metaKey && e.key === "Tab") {
         // Ctrl+Tab / Ctrl+Shift+Tab — cycle workspaces.
         if (workspaces.length > 1 && activeWorkspaceId) {

@@ -218,6 +218,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
             <Key label="Del" onTap={() => emitRaw("\x1b[3~")} />
           </div>
           <div className="flex gap-1.5">
+            <Key label="Tab" onTap={() => emitRaw("\t")} title="Tab (автодополнение)" />
             <Key label="⌃D" onTap={() => onSend("\x04")} title="Ctrl+D" />
             <Key label="⌃Z" onTap={() => onSend("\x1a")} title="Ctrl+Z" />
             <Key label="⌃L" onTap={() => onSend("\x0c")} title="Ctrl+L (clear)" />
@@ -275,7 +276,11 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
         <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} />
         <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} />
-        <Key label="Tab" onTap={() => emitRaw("\t")} />
+        <Key
+          label="CC"
+          title="Claude Code: показать переписку (Ctrl+O)"
+          onTap={() => emitRaw("\x0f")}
+        />
         <Key
           label="Fn"
           armed={panel === "fn"}

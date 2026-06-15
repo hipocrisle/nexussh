@@ -5,9 +5,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Loader2, RefreshCw, Globe, Plus, Square } from "lucide-react";
-import { TunnelInfo, tunnelList, tunnelClose } from "./tunnel";
+import { Loader2, RefreshCw, Globe, Plus, Square, Play } from "lucide-react";
+import { TunnelInfo, PortForward, tunnelList, tunnelClose } from "./tunnel";
 import type { ConnectArgs } from "./ssh";
+import { listHosts } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton } from "./components/primitives";
 import { AddTunnelDialog } from "./AddTunnelDialog";
@@ -18,6 +19,16 @@ interface Props {
    *  ad-hoc tunnel against this connection. Without it the button is hidden
    *  (no host context → nothing to connect to). */
   newTunnel?: { connectArgs: ConnectArgs; label: string } | null;
+  /** Resolves the host's auth (prompting if needed), builds its ConnectArgs and
+   *  opens the saved forward. Provided by App.tsx where the auth logic lives. */
+  onStartSaved?: (hostId: string, fwd: PortForward) => Promise<TunnelInfo | null>;
+}
+
+/** A saved forward flattened with its owning host, for the "Saved" list. */
+interface SavedForwardRow {
+  hostId: string;
+  hostLabel: string;
+  forward: PortForward;
 }
 
 /** Heuristic: 443/8443 → https, everything else http. */
@@ -25,9 +36,11 @@ function schemeForPort(port: number): "http" | "https" {
   return port === 443 || port === 8443 ? "https" : "http";
 }
 
-export function TunnelsPanel({ onClose, newTunnel }: Props) {
+export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
   const { t } = useTranslation();
   const [tunnels, setTunnels] = useState<TunnelInfo[]>([]);
+  const [saved, setSaved] = useState<SavedForwardRow[]>([]);
+  const [startingId, setStartingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -48,15 +61,47 @@ export function TunnelsPanel({ onClose, newTunnel }: Props) {
     }
   }, []);
 
+  // Saved forwards rarely change while the panel is open, so load them once
+  // (not on the 4s active-tunnel poll).
+  const loadSaved = useCallback(async () => {
+    try {
+      const hosts = await listHosts();
+      const rows: SavedForwardRow[] = [];
+      for (const h of hosts) {
+        for (const f of h.forwards ?? []) {
+          rows.push({ hostId: h.id, hostLabel: h.name || h.host, forward: f });
+        }
+      }
+      if (aliveRef.current) setSaved(rows);
+    } catch {
+      /* host list unreadable (vault locked) — show no saved rows */
+    }
+  }, []);
+
   useEffect(() => {
     aliveRef.current = true;
     refresh();
+    loadSaved();
     const iv = window.setInterval(refresh, 4000);
     return () => {
       aliveRef.current = false;
       window.clearInterval(iv);
     };
-  }, [refresh]);
+  }, [refresh, loadSaved]);
+
+  async function onStartSavedRow(row: SavedForwardRow) {
+    if (!onStartSaved) return;
+    setError(null);
+    setStartingId(row.forward.id);
+    try {
+      await onStartSaved(row.hostId, row.forward);
+      await refresh();
+    } catch (e) {
+      if (aliveRef.current) setError(String(e));
+    } finally {
+      if (aliveRef.current) setStartingId(null);
+    }
+  }
 
   async function onStop(id: string) {
     setError(null);
@@ -125,7 +170,7 @@ export function TunnelsPanel({ onClose, newTunnel }: Props) {
               <Loader2 size={16} className="animate-spin" /> {t("tunnel.loading")}
             </div>
           ) : tunnels.length === 0 ? (
-            <div className="flex items-center justify-center h-32 text-nx-muted font-mono text-body">
+            <div className="flex items-center justify-center h-24 text-nx-muted font-mono text-body">
               {t("tunnel.empty")}
             </div>
           ) : (
@@ -166,6 +211,71 @@ export function TunnelsPanel({ onClose, newTunnel }: Props) {
                 </Button>
               </div>
             ))
+          )}
+
+          {/* Saved forwards — one-click start from any host's saved tunnels. */}
+          {!loading && onStartSaved && (
+            <>
+              <div className="px-4 pt-4 pb-1.5 text-micro uppercase tracking-[0.2em] text-nx-muted font-mono">
+                {t("tunnel.saved_header")}
+              </div>
+              {saved.length === 0 ? (
+                <div className="px-4 pb-3 text-meta text-nx-muted font-mono">
+                  {t("tunnel.saved_empty")}
+                </div>
+              ) : (
+                saved.map((row) => {
+                  const active = tunnels.some(
+                    (tn) =>
+                      tn.local_port === row.forward.localPort &&
+                      tn.remote_host === row.forward.remoteHost &&
+                      tn.remote_port === row.forward.remotePort,
+                  );
+                  return (
+                    <div
+                      key={`${row.hostId}:${row.forward.id}`}
+                      className="flex items-center gap-3 px-4 py-2.5 border-b border-nx-divider"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="font-mono text-body text-nx-text truncate">
+                          <span className="text-nx-accent">
+                            {row.forward.name || `localhost:${row.forward.localPort}`}
+                          </span>
+                          <span className="text-nx-muted mx-1.5">→</span>
+                          <span className="text-nx-soft">
+                            {row.forward.remoteHost}:{row.forward.remotePort}
+                          </span>
+                        </div>
+                        <div className="text-meta text-nx-muted font-mono truncate">
+                          {row.hostLabel}
+                        </div>
+                      </div>
+                      {active ? (
+                        <span className="text-meta text-nx-soft font-mono px-2">
+                          {t("tunnel.saved_running")}
+                        </span>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          leadingIcon={
+                            startingId === row.forward.id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <Play size={11} />
+                            )
+                          }
+                          disabled={startingId !== null}
+                          onClick={() => onStartSavedRow(row)}
+                        >
+                          {t("tunnel.saved_start")}
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </>
           )}
         </div>
 

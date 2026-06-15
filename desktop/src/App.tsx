@@ -70,7 +70,7 @@ import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
-import { tunnelOpen } from "./tunnel";
+import { tunnelOpen, tunnelList, TunnelInfo, PortForward } from "./tunnel";
 import {
   VaultStatus,
   vaultStatus,
@@ -645,9 +645,11 @@ function App() {
     newTunnel: { connectArgs: ConnectArgs; label: string } | null;
   } | null>(null);
   // Ad-hoc "start a tunnel" dialog opened straight from a host's context menu.
+  // `host` (when set) lets the dialog offer "save to host" persistence.
   const [addTunnel, setAddTunnel] = useState<{
     connectArgs: ConnectArgs;
     label: string;
+    host?: HostRecord;
   } | null>(null);
   // Transient toast (e.g. "tunnel started"). Auto-dismisses after a few sec.
   const [toast, setToast] = useState<string | null>(null);
@@ -735,6 +737,22 @@ function App() {
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  // Active tunnel count → drives the header "tunnels" button highlight.
+  // Polled (cheap in-process call) so it reflects tunnels closed from the panel.
+  const [activeTunnels, setActiveTunnels] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const tick = () =>
+      tunnelList()
+        .then((l) => alive && setActiveTunnels(l.length))
+        .catch(() => {});
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
   // Sessions currently being recorded → paused?. Drives the ● REC chip.
   const [recSids, setRecSids] = useState<Record<string, boolean>>({});
 
@@ -1681,6 +1699,33 @@ function App() {
     }
     setAddTunnel({
       connectArgs: buildConnectArgs(host, auth),
+      label: `${host.user}@${host.host}`,
+      host: h,
+    });
+  }
+
+  // Start a saved per-host forward (from the Tunnels panel's "Saved" section).
+  // Resolves "always ask" auth like openTunnelFor, builds the host's ConnectArgs,
+  // and opens the tunnel. Returns the live TunnelInfo, or null if cancelled.
+  async function startSavedForward(
+    hostId: string,
+    fwd: PortForward,
+  ): Promise<TunnelInfo | null> {
+    const all = await listHosts();
+    const h = all.find((x) => x.id === hostId);
+    if (!h) return null;
+    let auth = h.auth;
+    let host = h;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const creds = await askPassword(h);
+      if (!creds) return null;
+      host = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
+    }
+    return await tunnelOpen(buildConnectArgs(host, auth), {
+      localPort: fwd.localPort,
+      remoteHost: fwd.remoteHost,
+      remotePort: fwd.remotePort,
       label: `${host.user}@${host.host}`,
     });
   }
@@ -3065,19 +3110,6 @@ function App() {
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">
-          {activeId && (
-            <HeaderButton
-              icon={<Search size={12} />}
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent("nx:find", { detail: { sessionId: activeId } }),
-                )
-              }
-              title={t("terminal.find_title")}
-            >
-              {t("terminal.find_label")}
-            </HeaderButton>
-          )}
           <HeaderButton
             icon={<RefreshCw size={12} />}
             onClick={() => setSyncPanelOpen(true)}
@@ -3120,6 +3152,7 @@ function App() {
             icon={<NetworkIcon size={12} />}
             onClick={() => openTunnelsPanel()}
             title={t("tunnel.title")}
+            active={activeTunnels > 0}
           >
             {t("tunnel.header")}
           </HeaderButton>
@@ -3148,10 +3181,21 @@ function App() {
                 ? t("history.open_panel")
                 : t("history.enable_hint")
             }
-            tint="var(--nx-accent2)"
+            tint={settings.historyEnabled ? "var(--nx-accent2)" : undefined}
           >
             {t("history.button")}
           </HeaderButton>
+          {activeId && (
+            <HeaderButton
+              icon={<Search size={12} />}
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent("nx:find", { detail: { sessionId: activeId } }),
+                )
+              }
+              title={t("terminal.find_title")}
+            />
+          )}
           <HeaderButton
             icon={<HelpCircle size={12} />}
             onClick={() => setShortcutsOpen(true)}
@@ -3371,6 +3415,7 @@ function App() {
         {tunnelsPanel?.open && (
           <TunnelsPanel
             newTunnel={tunnelsPanel.newTunnel}
+            onStartSaved={startSavedForward}
             onClose={() => setTunnelsPanel(null)}
           />
         )}
@@ -3378,6 +3423,7 @@ function App() {
           <AddTunnelDialog
             connectArgs={addTunnel.connectArgs}
             label={addTunnel.label}
+            host={addTunnel.host}
             onClose={() => setAddTunnel(null)}
             onStarted={(info) => {
               setAddTunnel(null);

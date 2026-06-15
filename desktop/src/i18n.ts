@@ -339,6 +339,11 @@ const ru = {
     started: "Туннель запущен: localhost:{{port}}",
     dialog_title: "новый туннель",
     err_port_required: "Укажите удалённый порт",
+    save_to_host: "Сохранить у хоста",
+    saved_header: "Сохранённые",
+    saved_empty: "нет сохранённых туннелей",
+    saved_start: "Старт",
+    saved_running: "запущен",
   },
   history: {
     button: "история",
@@ -1101,6 +1106,11 @@ const en = {
     started: "Tunnel started: localhost:{{port}}",
     dialog_title: "new tunnel",
     err_port_required: "Remote port is required",
+    save_to_host: "Save to host",
+    saved_header: "Saved",
+    saved_empty: "no saved tunnels",
+    saved_start: "Start",
+    saved_running: "running",
   },
   history: {
     button: "history",

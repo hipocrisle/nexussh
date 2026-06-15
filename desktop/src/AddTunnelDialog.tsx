@@ -6,24 +6,29 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Loader2 } from "lucide-react";
 import type { ConnectArgs } from "./ssh";
-import { TunnelInfo, tunnelOpen } from "./tunnel";
+import { TunnelInfo, PortForward, tunnelOpen } from "./tunnel";
+import { HostRecord, saveHost } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
-import { Button, Input, RowLabel } from "./components/primitives";
+import { Button, Input, RowLabel, Checkbox } from "./components/primitives";
 import { Select } from "./Select";
 
 interface Props {
   connectArgs: ConnectArgs;
   label: string;
+  /** When provided, offers a "save to host" checkbox that appends the started
+   *  forward to this host's `forwards[]` (deduped) and persists it. */
+  host?: HostRecord;
   onClose: () => void;
   onStarted: (info: TunnelInfo) => void;
 }
 
-export function AddTunnelDialog({ connectArgs, label, onClose, onStarted }: Props) {
+export function AddTunnelDialog({ connectArgs, label, host, onClose, onStarted }: Props) {
   const { t } = useTranslation();
   const [localPort, setLocalPort] = useState("0");
   const [remoteHost, setRemoteHost] = useState("127.0.0.1");
   const [remotePort, setRemotePort] = useState("");
   const [scheme, setScheme] = useState<"http" | "https">("https");
+  const [saveToHost, setSaveToHost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
@@ -38,13 +43,36 @@ export function AddTunnelDialog({ connectArgs, label, onClose, onStarted }: Prop
       return;
     }
     setBusy(true);
+    const lport = parseInt(localPort, 10) || 0;
+    const rhost = remoteHost.trim() || "127.0.0.1";
     try {
       const info = await tunnelOpen(connectArgs, {
-        localPort: parseInt(localPort, 10) || 0,
-        remoteHost: remoteHost.trim() || "127.0.0.1",
+        localPort: lport,
+        remoteHost: rhost,
         remotePort: rport,
         label,
       });
+      // Persist to the host's saved forwards when requested. Dedup on the
+      // local/remote tuple so re-starting + re-saving doesn't pile up copies.
+      if (saveToHost && host) {
+        const existing = host.forwards ?? [];
+        const dup = existing.some(
+          (f) =>
+            f.localPort === lport &&
+            f.remoteHost === rhost &&
+            f.remotePort === rport,
+        );
+        if (!dup) {
+          const fwd: PortForward = {
+            id: crypto.randomUUID(),
+            localPort: lport,
+            remoteHost: rhost,
+            remotePort: rport,
+            scheme,
+          };
+          await saveHost({ ...host, forwards: [...existing, fwd] });
+        }
+      }
       onStarted(info);
     } catch (e) {
       setError(String(e));
@@ -112,8 +140,8 @@ export function AddTunnelDialog({ connectArgs, label, onClose, onStarted }: Prop
           </div>
         </div>
 
-        <div className="grid grid-cols-[1fr_90px] gap-3 mt-4">
-          <div>
+        <div className="grid grid-cols-[1fr_132px] gap-3 mt-4">
+          <div className="min-w-0">
             <RowLabel>{t("tunnel.remote_host")}</RowLabel>
             <Input
               value={remoteHost}
@@ -121,8 +149,8 @@ export function AddTunnelDialog({ connectArgs, label, onClose, onStarted }: Prop
               placeholder={t("dialog.forward_rhost_ph")}
             />
           </div>
-          <div>
-            <RowLabel>{t("tunnel.remote_port")}</RowLabel>
+          <div className="min-w-0">
+            <RowLabel className="whitespace-nowrap">{t("tunnel.remote_port")}</RowLabel>
             <Input
               value={remotePort}
               onChange={setRemotePort}
@@ -131,6 +159,16 @@ export function AddTunnelDialog({ connectArgs, label, onClose, onStarted }: Prop
             />
           </div>
         </div>
+
+        {host && (
+          <div className="mt-5">
+            <Checkbox
+              checked={saveToHost}
+              onChange={setSaveToHost}
+              label={t("tunnel.save_to_host")}
+            />
+          </div>
+        )}
 
         {error && (
           <div className="text-nx-error text-body font-mono mt-5 break-words">

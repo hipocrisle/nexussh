@@ -1,39 +1,92 @@
-// TunnelsPanel — lists active SSH local-port forwards (ssh -L) and lets the
-// user open one in the browser, stop it, or start a new ad-hoc tunnel. Opened
-// from the header menu. Mirrors SFTPPanel's modal structure/styling.
+// TunnelsPanel — ONE unified list of SSH local-port forwards (ssh -L). Each
+// forward shows up exactly once: saved forwards are merged with the live
+// `tunnelList`, so a saved forward that is currently running renders a single
+// row (not one "active" + one "saved" duplicate). Active tunnels with no saved
+// definition appear as ad-hoc rows. Opened from the header menu; mirrors
+// SFTPPanel's modal structure/styling.
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Loader2, RefreshCw, Globe, Plus, Square, Play, Trash2 } from "lucide-react";
-import { TunnelInfo, PortForward, tunnelList, tunnelClose, buildOpenUrl } from "./tunnel";
+import {
+  Loader2,
+  RefreshCw,
+  Globe,
+  Plus,
+  Square,
+  Play,
+  Trash2,
+  Pencil,
+} from "lucide-react";
+import {
+  TunnelInfo,
+  PortForward,
+  tunnelList,
+  tunnelClose,
+  buildOpenUrl,
+} from "./tunnel";
 import type { ConnectArgs } from "./ssh";
 import { listHosts, saveHost } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
 import { Button, IconButton } from "./components/primitives";
 import { AddTunnelDialog } from "./AddTunnelDialog";
+import { ForwardEditDialog } from "./ForwardEditDialog";
+import type { HostRecord } from "./hosts";
 
 interface Props {
   onClose: () => void;
   /** Optional: when provided, the "+ New tunnel" button is wired to start an
    *  ad-hoc tunnel against this connection. Without it the button is hidden
-   *  (no host context → nothing to connect to). */
-  newTunnel?: { connectArgs: ConnectArgs; label: string } | null;
+   *  (no host context → nothing to connect to). `host` (when set) lets the add
+   *  dialog persist the started forward to that host's config. */
+  newTunnel?: {
+    connectArgs: ConnectArgs;
+    label: string;
+    host?: HostRecord;
+  } | null;
   /** Resolves the host's auth (prompting if needed), builds its ConnectArgs and
    *  opens the saved forward. Provided by App.tsx where the auth logic lives. */
   onStartSaved?: (hostId: string, fwd: PortForward) => Promise<TunnelInfo | null>;
 }
 
-/** A saved forward flattened with its owning host, for the "Saved" list. */
+/** A saved forward flattened with its owning host. */
 interface SavedForwardRow {
   hostId: string;
   hostLabel: string;
   forward: PortForward;
 }
 
+/** One row in the unified list. Either a saved forward (with optional live
+ *  tunnel attached) or an ad-hoc active tunnel that has no saved definition. */
+interface MergedRow {
+  /** Stable React key. */
+  key: string;
+  /** Set for saved forwards; absent for ad-hoc active tunnels. */
+  saved?: SavedForwardRow;
+  /** Set when this forward is currently running. */
+  live?: TunnelInfo;
+  /** Display fields, resolved from whichever source we have. */
+  primary: string;
+  remoteHost: string;
+  remotePort: number;
+  subline: string;
+}
+
 /** Heuristic: 443/8443 → https, everything else http. */
 function schemeForPort(port: number): "http" | "https" {
   return port === 443 || port === 8443 ? "https" : "http";
+}
+
+/** Host-aware match: a live tunnel belongs to a saved forward only when the
+ *  host label matches too, so two hosts sharing identical ports aren't
+ *  conflated. */
+function tunnelMatchesForward(tn: TunnelInfo, row: SavedForwardRow): boolean {
+  return (
+    tn.label === row.hostLabel &&
+    tn.local_port === row.forward.localPort &&
+    tn.remote_host === row.forward.remoteHost &&
+    tn.remote_port === row.forward.remotePort
+  );
 }
 
 export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
@@ -44,6 +97,7 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [editing, setEditing] = useState<SavedForwardRow | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const aliveRef = useRef(true);
 
@@ -93,6 +147,37 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
     };
   }, [refresh, loadSaved]);
 
+  // --- Build the unified, de-duplicated list ---------------------------------
+  // 1. Each saved forward becomes one row; attach the live tunnel if running,
+  //    and remember its id so we don't list it again as ad-hoc.
+  // 2. Any remaining (unmatched) live tunnel is an ad-hoc row.
+  const matchedLiveIds = new Set<string>();
+  const rows: MergedRow[] = [];
+  for (const row of saved) {
+    const live = tunnels.find((tn) => tunnelMatchesForward(tn, row));
+    if (live) matchedLiveIds.add(live.id);
+    rows.push({
+      key: `saved:${row.hostId}:${row.forward.id}`,
+      saved: row,
+      live,
+      primary: row.forward.name || `localhost:${row.forward.localPort}`,
+      remoteHost: row.forward.remoteHost,
+      remotePort: row.forward.remotePort,
+      subline: row.hostLabel,
+    });
+  }
+  for (const tn of tunnels) {
+    if (matchedLiveIds.has(tn.id)) continue;
+    rows.push({
+      key: `live:${tn.id}`,
+      live: tn,
+      primary: `localhost:${tn.local_port}`,
+      remoteHost: tn.remote_host,
+      remotePort: tn.remote_port,
+      subline: tn.label,
+    });
+  }
+
   async function onStartSavedRow(row: SavedForwardRow) {
     if (!onStartSaved) return;
     setError(null);
@@ -119,14 +204,32 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
           forwards: (h.forwards ?? []).filter((f) => f.id !== row.forward.id),
         });
       }
-      const running = tunnels.find(
-        (tn) =>
-          tn.label === row.hostLabel &&
-          tn.local_port === row.forward.localPort &&
-          tn.remote_host === row.forward.remoteHost &&
-          tn.remote_port === row.forward.remotePort,
-      );
+      const running = tunnels.find((tn) => tunnelMatchesForward(tn, row));
       if (running) await tunnelClose(running.id);
+    } catch (e) {
+      if (aliveRef.current) setError(String(e));
+    }
+    await loadSaved();
+    await refresh();
+  }
+
+  // Persist an edited forward back onto its host, preserving its id.
+  async function onSaveEdit(updated: PortForward) {
+    if (!editing) return;
+    const row = editing;
+    setEditing(null);
+    setError(null);
+    try {
+      const hosts = await listHosts();
+      const h = hosts.find((x) => x.id === row.hostId);
+      if (h) {
+        await saveHost({
+          ...h,
+          forwards: (h.forwards ?? []).map((f) =>
+            f.id === row.forward.id ? updated : f,
+          ),
+        });
+      }
     } catch (e) {
       if (aliveRef.current) setError(String(e));
     }
@@ -152,25 +255,13 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
     }
   }
 
-  async function onOpenBrowser(tn: TunnelInfo) {
-    // TunnelInfo from the backend carries no scheme/path. Best-effort: recover
-    // them from a saved forward that matches this tunnel's local port (and
-    // remote host:port, to disambiguate). Fall back to the port heuristic.
-    const match = saved.find(
-      (r) =>
-        r.hostLabel === tn.label &&
-        r.forward.localPort === tn.local_port &&
-        r.forward.remoteHost === tn.remote_host &&
-        r.forward.remotePort === tn.remote_port,
-    );
-    const scheme = match?.forward.scheme ?? schemeForPort(tn.remote_port);
-    await open(buildOpenUrl(scheme, tn.local_port, match?.forward.path));
-  }
-
-  async function onOpenSaved(fwd: PortForward) {
-    await open(
-      buildOpenUrl(fwd.scheme ?? schemeForPort(fwd.remotePort), fwd.localPort, fwd.path),
-    );
+  // Open a row in the browser. Saved rows use their stored scheme/path; ad-hoc
+  // rows fall back to the port heuristic with no path.
+  async function onOpenRow(r: MergedRow) {
+    const localPort = r.live ? r.live.local_port : r.saved!.forward.localPort;
+    const scheme =
+      r.saved?.forward.scheme ?? schemeForPort(r.remotePort);
+    await open(buildOpenUrl(scheme, localPort, r.saved?.forward.path));
   }
 
   return (
@@ -213,134 +304,105 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
           />
         </div>
 
-        {/* Body */}
+        {/* Body — single unified list */}
         <div className="flex-1 min-h-0 overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center h-32 text-nx-muted font-mono text-body gap-2">
               <Loader2 size={16} className="animate-spin" /> {t("tunnel.loading")}
             </div>
-          ) : tunnels.length === 0 ? (
+          ) : rows.length === 0 ? (
             <div className="flex items-center justify-center h-24 text-nx-muted font-mono text-body">
-              {t("tunnel.empty")}
+              {t("tunnel.none")}
             </div>
           ) : (
-            tunnels.map((tn) => (
-              <div
-                key={tn.id}
-                className="flex items-center gap-3 px-4 py-2.5 border-b border-nx-divider"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="font-mono text-body text-nx-text truncate">
-                    <span className="text-nx-accent">localhost:{tn.local_port}</span>
-                    <span className="text-nx-muted mx-1.5">→</span>
-                    <span className="text-nx-soft">
-                      {tn.remote_host}:{tn.remote_port}
-                    </span>
-                  </div>
-                  {tn.label && (
-                    <div className="text-meta text-nx-muted font-mono truncate">
-                      {tn.label}
+            rows.map((r) => {
+              const running = !!r.live;
+              const isSaved = !!r.saved;
+              return (
+                <div
+                  key={r.key}
+                  className="flex items-center gap-3 px-4 py-2.5 border-b border-nx-divider"
+                >
+                  {/* Status dot */}
+                  <span
+                    className={`shrink-0 w-1.5 h-1.5 rounded-full ${
+                      running ? "bg-nx-accent" : "bg-nx-muted/50"
+                    }`}
+                    title={running ? t("tunnel.saved_running") : t("tunnel.stop")}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono text-body text-nx-text truncate">
+                      <span className="text-nx-accent">{r.primary}</span>
+                      <span className="text-nx-muted mx-1.5">→</span>
+                      <span className="text-nx-soft">
+                        {r.remoteHost}:{r.remotePort}
+                      </span>
                     </div>
-                  )}
-                </div>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  leadingIcon={<Globe size={12} />}
-                  onClick={() => onOpenBrowser(tn)}
-                >
-                  {t("tunnel.open_in_browser")}
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  leadingIcon={<Square size={11} />}
-                  onClick={() => onStop(tn.id)}
-                >
-                  {t("tunnel.stop")}
-                </Button>
-              </div>
-            ))
-          )}
-
-          {/* Saved forwards — one-click start from any host's saved tunnels. */}
-          {!loading && onStartSaved && (
-            <>
-              <div className="px-4 pt-4 pb-1.5 text-micro uppercase tracking-[0.2em] text-nx-muted font-mono">
-                {t("tunnel.saved_header")}
-              </div>
-              {saved.length === 0 ? (
-                <div className="px-4 pb-3 text-meta text-nx-muted font-mono">
-                  {t("tunnel.saved_empty")}
-                </div>
-              ) : (
-                saved.map((row) => {
-                  // Host-aware: a tunnel only counts as "this saved forward's"
-                  // when its host label matches too — otherwise two hosts sharing
-                  // the same local→remote ports get conflated (a forward on host A
-                  // would look "running" because host B has an identical tunnel).
-                  const active = tunnels.some(
-                    (tn) =>
-                      tn.label === row.hostLabel &&
-                      tn.local_port === row.forward.localPort &&
-                      tn.remote_host === row.forward.remoteHost &&
-                      tn.remote_port === row.forward.remotePort,
-                  );
-                  return (
-                    <div
-                      key={`${row.hostId}:${row.forward.id}`}
-                      className="flex items-center gap-3 px-4 py-2.5 border-b border-nx-divider"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-mono text-body text-nx-text truncate">
-                          <span className="text-nx-accent">
-                            {row.forward.name || `localhost:${row.forward.localPort}`}
-                          </span>
-                          <span className="text-nx-muted mx-1.5">→</span>
-                          <span className="text-nx-soft">
-                            {row.forward.remoteHost}:{row.forward.remotePort}
-                          </span>
-                        </div>
-                        <div className="text-meta text-nx-muted font-mono truncate">
-                          {row.hostLabel}
-                        </div>
+                    {r.subline && (
+                      <div className="text-meta text-nx-muted font-mono truncate">
+                        {r.subline}
                       </div>
-                      {active ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          leadingIcon={<Globe size={12} />}
-                          onClick={() => onOpenSaved(row.forward)}
-                        >
-                          {t("tunnel.open_in_browser")}
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          leadingIcon={
-                            startingId === row.forward.id ? (
-                              <Loader2 size={12} className="animate-spin" />
-                            ) : (
-                              <Play size={11} />
-                            )
-                          }
-                          disabled={startingId !== null}
-                          onClick={() => onStartSavedRow(row)}
-                        >
-                          {t("tunnel.saved_start")}
-                        </Button>
-                      )}
+                    )}
+                  </div>
+
+                  {/* Primary action: open (running) or start (saved+stopped) */}
+                  {running ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        leadingIcon={<Globe size={12} />}
+                        onClick={() => onOpenRow(r)}
+                      >
+                        {t("tunnel.open_in_browser")}
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        leadingIcon={<Square size={11} />}
+                        onClick={() => onStop(r.live!.id)}
+                      >
+                        {t("tunnel.stop")}
+                      </Button>
+                    </>
+                  ) : (
+                    isSaved && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        leadingIcon={
+                          startingId === r.saved!.forward.id ? (
+                            <Loader2 size={12} className="animate-spin" />
+                          ) : (
+                            <Play size={11} />
+                          )
+                        }
+                        disabled={startingId !== null}
+                        onClick={() => onStartSavedRow(r.saved!)}
+                      >
+                        {t("tunnel.saved_start")}
+                      </Button>
+                    )
+                  )}
+
+                  {/* Saved rows also get edit + delete */}
+                  {isSaved && (
+                    <>
+                      <IconButton
+                        icon={<Pencil size={13} />}
+                        onClick={() => setEditing(r.saved!)}
+                        title={t("tunnel.edit")}
+                      />
                       <IconButton
                         icon={<Trash2 size={13} />}
-                        onClick={() => onDeleteSaved(row)}
+                        onClick={() => onDeleteSaved(r.saved!)}
                         title={t("tunnel.saved_delete")}
                       />
-                    </div>
-                  );
-                })
-              )}
-            </>
+                    </>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
 
@@ -360,11 +422,21 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
         <AddTunnelDialog
           connectArgs={newTunnel.connectArgs}
           label={newTunnel.label}
+          host={newTunnel.host}
           onClose={() => setAddOpen(false)}
           onStarted={() => {
             setAddOpen(false);
+            loadSaved();
             refresh();
           }}
+        />
+      )}
+
+      {editing && (
+        <ForwardEditDialog
+          initial={editing.forward}
+          onClose={() => setEditing(null)}
+          onSave={onSaveEdit}
         />
       )}
     </div>

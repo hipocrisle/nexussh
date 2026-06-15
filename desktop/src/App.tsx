@@ -32,9 +32,6 @@ const SFTPPanel = lazy(() =>
 const TunnelsPanel = lazy(() =>
   import("./TunnelsPanel").then((m) => ({ default: m.TunnelsPanel })),
 );
-const AddTunnelDialog = lazy(() =>
-  import("./AddTunnelDialog").then((m) => ({ default: m.AddTunnelDialog })),
-);
 import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
@@ -642,14 +639,11 @@ function App() {
   // panel's "+ New tunnel" button to an ad-hoc forward against that host.
   const [tunnelsPanel, setTunnelsPanel] = useState<{
     open: boolean;
-    newTunnel: { connectArgs: ConnectArgs; label: string } | null;
-  } | null>(null);
-  // Ad-hoc "start a tunnel" dialog opened straight from a host's context menu.
-  // `host` (when set) lets the dialog offer "save to host" persistence.
-  const [addTunnel, setAddTunnel] = useState<{
-    connectArgs: ConnectArgs;
-    label: string;
-    host?: HostRecord;
+    newTunnel: {
+      connectArgs: ConnectArgs;
+      label: string;
+      host?: HostRecord;
+    } | null;
   } | null>(null);
   // Transient toast (e.g. "tunnel started"). Auto-dismisses after a few sec.
   const [toast, setToast] = useState<string | null>(null);
@@ -1686,8 +1680,9 @@ function App() {
     setTunnelsPanel({ open: true, newTunnel: null });
   }
 
-  // Start an ad-hoc tunnel for a host: resolve "always ask", then open the
-  // AddTunnelDialog pre-wired to that host's connection (context-menu entry).
+  // Open the Tunnels panel with a host as context (context-menu entry). Resolves
+  // "always ask" auth, then shows the unified list (this host's saved forwards
+  // plus all others) with the "+ New tunnel" button wired to this host.
   async function openTunnelFor(h: HostRecord) {
     let auth = h.auth;
     let host = h;
@@ -1697,10 +1692,13 @@ function App() {
       host = { ...h, user: creds.user };
       auth = { kind: "password", password: creds.password };
     }
-    setAddTunnel({
-      connectArgs: buildConnectArgs(host, auth),
-      label: host.name || `${host.user}@${host.host}`,
-      host: h,
+    setTunnelsPanel({
+      open: true,
+      newTunnel: {
+        connectArgs: buildConnectArgs(host, auth),
+        label: host.name || `${host.user}@${host.host}`,
+        host: h,
+      },
     });
   }
 
@@ -3417,18 +3415,6 @@ function App() {
             newTunnel={tunnelsPanel.newTunnel}
             onStartSaved={startSavedForward}
             onClose={() => setTunnelsPanel(null)}
-          />
-        )}
-        {addTunnel && (
-          <AddTunnelDialog
-            connectArgs={addTunnel.connectArgs}
-            label={addTunnel.label}
-            host={addTunnel.host}
-            onClose={() => setAddTunnel(null)}
-            onStarted={(info) => {
-              setAddTunnel(null);
-              showToast(t("tunnel.started", { port: info.local_port }));
-            }}
           />
         )}
         {historyPanelOpen && (

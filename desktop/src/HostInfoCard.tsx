@@ -39,7 +39,15 @@ function authBadge(auth: HostRecord["auth"]) {
   if (auth.kind === "key") {
     return { icon: <KeyRound size={12} />, label: `key (${auth.path})` };
   }
-  return { icon: <Database size={12} />, label: `vault: ${auth.key}` };
+  // The host's own password lives under an auto-generated `host.<id>.password`
+  // key — showing that raw uuid just overflows the card. Use a friendly label;
+  // only custom vault keys are worth showing verbatim.
+  return {
+    icon: <Database size={12} />,
+    label: /^host\.h-[\w-]+\.password$/.test(auth.key)
+      ? "vault (пароль хоста)"
+      : `vault: ${auth.key}`,
+  };
 }
 
 export function HostInfoCard({ host, onConnect, onEdit, onClose }: Props) {

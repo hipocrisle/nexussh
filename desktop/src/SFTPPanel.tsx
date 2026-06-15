@@ -37,6 +37,7 @@ import {
   ArrowRight,
   ArrowLeft,
   CornerLeftUp,
+  HelpCircle,
 } from "lucide-react";
 import type { ConnectArgs } from "./ssh";
 import {
@@ -165,6 +166,60 @@ const GRID = "28px 22px 1fr 110px 160px 130px 110px";
 // columns are narrower so two lists fit side by side (checkbox · icon · name ·
 // size).
 const PANE_GRID = "26px 20px 1fr 78px";
+
+// ── Persistence (localStorage) ──────────────────────────────────────────────
+// The view mode (dual vs single) and the last-visited directories survive across
+// panel closes / app restarts. Remote dirs are kept per-host (keyed by the
+// host address); the local dir is a single shared value. All reads are guarded
+// so a corrupt / unavailable localStorage degrades to the defaults.
+const LS_DUAL = "nexussh.sftp.dualPane";
+const LS_LOCAL_DIR = "nexussh.sftp.localDir";
+const LS_REMOTE_DIR_PREFIX = "nexussh.sftp.remoteDir."; // + host
+
+function readDualPane(): boolean {
+  try {
+    const v = localStorage.getItem(LS_DUAL);
+    // Default = dual-pane (mono is opt-in): only an explicit "0" means single.
+    return v !== "0";
+  } catch {
+    return true;
+  }
+}
+function writeDualPane(v: boolean) {
+  try {
+    localStorage.setItem(LS_DUAL, v ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+function readLocalDir(): string | null {
+  try {
+    return localStorage.getItem(LS_LOCAL_DIR);
+  } catch {
+    return null;
+  }
+}
+function writeLocalDir(p: string) {
+  try {
+    if (p) localStorage.setItem(LS_LOCAL_DIR, p);
+  } catch {
+    /* ignore */
+  }
+}
+function readRemoteDir(host: string): string | null {
+  try {
+    return localStorage.getItem(LS_REMOTE_DIR_PREFIX + host);
+  } catch {
+    return null;
+  }
+}
+function writeRemoteDir(host: string, p: string) {
+  try {
+    if (p) localStorage.setItem(LS_REMOTE_DIR_PREFIX + host, p);
+  } catch {
+    /* ignore */
+  }
+}
 
 // ── Selection / cursor model ────────────────────────────────────────────────
 // A pane owns:
@@ -303,7 +358,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [dragOver, setDragOver] = useState(false);
 
   // --- Dual-pane (local ↔ remote) file manager ---
-  const [dualPane, setDualPane] = useState(false);
+  // Default = dual-pane, persisted across opens (see readDualPane).
+  const [dualPane, setDualPane] = useState<boolean>(readDualPane);
+  // Which pane the keyboard / MC-TC hotkeys target. In single-pane mode it's
+  // always "remote"; in dual-pane Tab flips it.
+  const [activePane, setActivePane] = useState<"local" | "remote">("remote");
+  // F1 cheat-sheet overlay.
+  const [helpOpen, setHelpOpen] = useState(false);
   const [localCwd, setLocalCwd] = useState("");
   const [localEntries, setLocalEntries] = useState<LocalEntry[]>([]);
   const [localLoading, setLocalLoading] = useState(false);
@@ -327,6 +388,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   }, []);
 
   // Lazily initialise the local pane the first time dual-pane mode is enabled.
+  // Restore the last-visited local dir if it still lists; else fall back to home.
   useEffect(() => {
     if (!dualPane || localCwd) return;
     (async () => {
@@ -336,9 +398,38 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       } catch {
         home = "/";
       }
+      const remembered = readLocalDir();
+      if (remembered) {
+        try {
+          const list = await localList(remembered);
+          setLocalEntries(list);
+          setLocalCwd(remembered);
+          setLocalSel(emptySel());
+          return;
+        } catch {
+          /* stored dir gone — fall through to home */
+        }
+      }
       await loadLocal(home || "/");
     })();
   }, [dualPane, localCwd, loadLocal]);
+
+  // Persist the view-mode choice. Single-pane has only the remote side, so
+  // pin the active pane to remote whenever dual-pane is off.
+  useEffect(() => {
+    writeDualPane(dualPane);
+    if (!dualPane) setActivePane("remote");
+  }, [dualPane]);
+
+  // Persist the last-visited dirs so the next open lands where we left off.
+  useEffect(() => {
+    if (localCwd) writeLocalDir(localCwd);
+  }, [localCwd]);
+  useEffect(() => {
+    // cwd starts at "/" before connect resolves the real home — only persist a
+    // real navigation (sftpId present) so we don't overwrite with the placeholder.
+    if (sftpId && cwd) writeRemoteDir(connectArgs.host, cwd);
+  }, [cwd, sftpId, connectArgs.host]);
 
   function navigateLocal(path: string) {
     loadLocal(path);
@@ -467,7 +558,19 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         } catch {
           home = "/";
         }
-        await load(id, home || "/");
+        // Restore the last remote dir for this host if it still lists; otherwise
+        // fall back to the resolved home.
+        const remembered = readRemoteDir(connectArgs.host);
+        let start = home || "/";
+        if (remembered && remembered !== start) {
+          try {
+            await sftpList(id, remembered);
+            start = remembered;
+          } catch {
+            /* stored dir gone — keep home */
+          }
+        }
+        await load(id, start);
       } catch (e) {
         if (alive) {
           setError(String(e));
@@ -792,6 +895,85 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     }
   }
 
+  // ── MC / Total-Commander function keys ────────────────────────────────────
+  // Bound on a CAPTURE-phase window listener while the panel is mounted, so the
+  // panel OWNS Tab/F1/F5–F8/Delete: preventDefault + stopPropagation stop them
+  // reaching the WebView (F5 = page reload → would restart every terminal) and
+  // the global app keydown handler. Arrows / Space / Insert / Enter / Backspace
+  // are left to the focused FileList's own handler (Batch-1 behaviour).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Don't hijack Tab/Delete while the user is typing in a field (a prompt /
+      // chmod octal box). Function keys are still ours everywhere.
+      const tgt = e.target as HTMLElement | null;
+      const typing =
+        tgt?.tagName === "INPUT" ||
+        tgt?.tagName === "TEXTAREA" ||
+        !!tgt?.isContentEditable;
+
+      const consume = () => {
+        e.preventDefault();
+        e.stopPropagation();
+      };
+
+      if (e.key === "F1") {
+        consume();
+        setHelpOpen((v) => !v);
+        return;
+      }
+
+      // While the help overlay is up, only Esc / F1 matter (Esc handled in the
+      // overlay). Swallow other function keys so they don't act behind it.
+      if (helpOpen) {
+        if (/^F[1-9]$|^F1[0-2]$/.test(e.key)) consume();
+        return;
+      }
+
+      if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey && !typing) {
+        // Switch the active pane (dual-pane only).
+        if (dualPane) {
+          consume();
+          setActivePane((p) => (p === "local" ? "remote" : "local"));
+        }
+        return;
+      }
+
+      if (e.key === "F5") {
+        consume();
+        if (dualPane) {
+          if (activePane === "local") onCopyToRemote();
+          else onCopyToLocal();
+        } else {
+          onDownloadSelected();
+        }
+        return;
+      }
+
+      if (e.key === "F6") {
+        // Rename the cursor entry (remote — the only side with write ops).
+        consume();
+        const c = entries[remoteSel.cursor];
+        if (c) onRename(c);
+        return;
+      }
+
+      if (e.key === "F7") {
+        consume();
+        onMkdir();
+        return;
+      }
+
+      if (e.key === "F8" || (e.key === "Delete" && !typing)) {
+        consume();
+        const targets = remoteOpTargets();
+        if (targets.length > 0) onDeleteTargets(targets);
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [dualPane, activePane, helpOpen, entries, remoteSel]);
+
   // Build the right-click menu. If the clicked row is part of the active
   // multi-selection, operations apply to the WHOLE selection; otherwise they
   // apply only to the clicked row.
@@ -864,7 +1046,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           <h2 className="text-lg font-mono text-nx-accent">&gt; sftp</h2>
           <span className="text-meta text-nx-muted font-mono truncate">{title}</span>
           <IconButton
-            className={"ml-auto " + (dualPane ? "!text-nx-accent !bg-nx-elevated" : "")}
+            className="ml-auto"
+            icon={<HelpCircle size={15} />}
+            onClick={() => setHelpOpen(true)}
+            title={t("sftp.help") + " (F1)"}
+          />
+          <IconButton
+            className={dualPane ? "!text-nx-accent !bg-nx-elevated" : ""}
             icon={<Columns2 size={15} />}
             onClick={() => setDualPane((v) => !v)}
             title={t("sftp.dual_pane")}
@@ -1005,6 +1193,8 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
               titleIcon={<HardDrive size={13} className="text-nx-accent2" />}
               path={localCwd}
               loading={localLoading}
+              active={activePane === "local"}
+              onActivate={() => setActivePane("local")}
               upDisabled={!localCwd || localParent(localCwd) === localCwd}
               onUp={() => navigateLocal(localParent(localCwd))}
               onNavigate={navigateLocal}
@@ -1023,6 +1213,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                 setSel={setLocalSel}
                 loading={localLoading}
                 variant="compact"
+                active={activePane === "local"}
                 atRoot={!localCwd || localParent(localCwd) === localCwd}
                 onOpenDir={(name) => navigateLocal(localJoin(localCwd, name))}
                 onUp={() => navigateLocal(localParent(localCwd))}
@@ -1056,6 +1247,8 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
               titleIcon={<Server size={13} className="text-nx-accent2" />}
               path={cwd}
               loading={loading}
+              active={activePane === "remote"}
+              onActivate={() => setActivePane("remote")}
               upDisabled={!sftpId || cwd === "/"}
               onUp={() => navigate(parentPath(cwd))}
               onNavigate={navigate}
@@ -1077,6 +1270,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                 setSel={setRemoteSel}
                 loading={loading}
                 variant="compact"
+                active={activePane === "remote"}
                 atRoot={cwd === "/"}
                 onOpenDir={(name) => navigate(joinPath(cwd, name))}
                 onUp={() => navigate(parentPath(cwd))}
@@ -1109,6 +1303,8 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           )}
         </div>
       </div>
+
+      {helpOpen && <SftpHelpOverlay onClose={() => setHelpOpen(false)} />}
 
       {ctx && (
         <ContextMenu
@@ -1193,6 +1389,7 @@ function FileList({
   onUp,
   onContextMenu,
   renderRow,
+  active,
 }: {
   rows: Row[];
   sel: PaneSel;
@@ -1204,11 +1401,21 @@ function FileList({
   onUp: () => void;
   onContextMenu?: (ev: React.MouseEvent, entry: Row) => void;
   renderRow: (entry: Row) => React.ReactNode;
+  /** When this pane becomes the active one (Tab / click), grab DOM focus so its
+   *  own Arrow/Space/Enter/Backspace handler receives the keys. Undefined in
+   *  single-pane mode (always-focusable; no Tab switching). */
+  active?: boolean;
 }) {
   const { t } = useTranslation();
   const grid = variant === "full" ? GRID : PANE_GRID;
   const gap = variant === "full" ? 16 : 12;
   const pad = variant === "full" ? "px-3.5" : "px-3";
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (active && scrollRef.current && !scrollRef.current.contains(document.activeElement)) {
+      scrollRef.current.focus({ preventScroll: true });
+    }
+  }, [active]);
 
   // --- Mouse selection on a row ---
   function clickRow(idx: number, ev: React.MouseEvent) {
@@ -1318,6 +1525,7 @@ function FileList({
 
   return (
     <div
+      ref={scrollRef}
       className="flex-1 min-h-0 overflow-y-auto outline-none"
       tabIndex={0}
       onKeyDown={onKeyDown}
@@ -1444,6 +1652,8 @@ function Pane({
   loading,
   count,
   selectedCount,
+  active,
+  onActivate,
   extraActions,
   children,
 }: {
@@ -1457,16 +1667,34 @@ function Pane({
   loading: boolean;
   count: number;
   selectedCount: number;
+  active?: boolean;
+  onActivate?: () => void;
   extraActions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="flex-1 min-w-0 flex flex-col">
+    <div
+      className={
+        "flex-1 min-w-0 flex flex-col transition-colors " +
+        (active ? "bg-nx-elevated/15" : "")
+      }
+      onMouseDown={onActivate}
+    >
       {/* Pane header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-nx-divider shrink-0">
+      <div
+        className={
+          "flex items-center gap-2 px-3 py-2 border-b shrink-0 " +
+          (active ? "border-nx-accent/60 bg-nx-elevated/30" : "border-nx-divider")
+        }
+      >
         {titleIcon}
-        <span className="text-meta font-mono uppercase tracking-wider text-nx-soft">
+        <span
+          className={
+            "text-meta font-mono uppercase tracking-wider " +
+            (active ? "text-nx-accent" : "text-nx-soft")
+          }
+        >
           {title}
         </span>
         <span className="ml-auto flex items-center gap-1">
@@ -1521,6 +1749,80 @@ function Pane({
             <span className="text-nx-text">{selectedCount}</span> {t("sftp.selected")}
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** SFTP hotkey cheat-sheet (F1). Dismiss on Esc / backdrop click. */
+function SftpHelpOverlay({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation();
+  const { backdropProps, contentProps } = useBackdropClose(onClose);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "F1") {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
+  const rows: { keys: string; desc: string }[] = [
+    { keys: "F1", desc: t("sftp.hk_help") },
+    { keys: "Tab", desc: t("sftp.hk_switch_pane") },
+    { keys: "F5", desc: t("sftp.hk_copy") },
+    { keys: "F6", desc: t("sftp.hk_rename") },
+    { keys: "F7", desc: t("sftp.hk_mkdir") },
+    { keys: "F8 / Del", desc: t("sftp.hk_delete") },
+    { keys: "↑ ↓ Home End", desc: t("sftp.hk_arrows") },
+    { keys: "Space / Ins", desc: t("sftp.hk_select") },
+    { keys: "Enter", desc: t("sftp.hk_open") },
+    { keys: "Backspace", desc: t("sftp.hk_up") },
+    { keys: "2×Click", desc: t("sftp.hk_dblclick") },
+  ];
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      {...backdropProps}
+    >
+      <div
+        {...contentProps}
+        className="nx-modal-enter w-full max-w-sm flex flex-col bg-nx-bg border border-nx-border rounded-nx shadow-glow-md overflow-hidden"
+      >
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-divider">
+          <span className="text-nx-accent font-mono">&gt;</span>
+          <h2 className="text-base font-mono text-nx-text">{t("sftp.help_title")}</h2>
+          <IconButton
+            className="ml-auto"
+            icon={<X size={14} />}
+            onClick={onClose}
+            title={t("sftp.help_close")}
+          />
+        </div>
+        <ul className="px-4 py-3 space-y-1.5 font-mono">
+          {rows.map((r, i) => (
+            <li
+              key={i}
+              className="grid grid-cols-[120px_1fr] gap-3 items-center text-meta"
+            >
+              <span className="flex flex-wrap items-center gap-1">
+                {r.keys.split(" ").map((k, j) => (
+                  <kbd
+                    key={j}
+                    className="px-1.5 py-0.5 border border-nx-border rounded-nx-sm bg-nx-panel text-nx-accent text-micro"
+                  >
+                    {k}
+                  </kbd>
+                ))}
+              </span>
+              <span className="text-nx-text">{r.desc}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );

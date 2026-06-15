@@ -635,6 +635,11 @@ function App() {
     args: ConnectArgs;
     title: string;
   } | null>(null);
+  // Mirror of "is the SFTP panel open?" for the global keydown handler, so it
+  // can early-return for the function keys the panel owns (F1/F5–F8) without
+  // re-subscribing the listener on every sftpTarget change.
+  const sftpOpenRef = useRef(false);
+  sftpOpenRef.current = !!sftpTarget;
   // Tunnels panel. `open` toggles visibility; `newTunnel` (when set) wires the
   // panel's "+ New tunnel" button to an ad-hoc forward against that host.
   const [tunnelsPanel, setTunnelsPanel] = useState<{
@@ -1254,6 +1259,13 @@ function App() {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
+      // When the SFTP browser is open it OWNS the function keys (F1/F5–F8) —
+      // the panel binds them on its own capture-phase listener. Bail out here so
+      // they never reach the app (notably F5, the WebView's page-reload, which
+      // would tear down and restart every terminal session behind the panel).
+      if (sftpOpenRef.current && /^F[1-9]$|^F1[0-2]$/.test(e.key)) {
+        return;
+      }
       // Helpers — both are workspace-scoped no-ops when no active workspace.
       const inActiveWs = (fn: (wsId: string) => void) => {
         if (activeWorkspaceId) {
@@ -1262,7 +1274,12 @@ function App() {
           fn(activeWorkspaceId);
         }
       };
-      if (meta && !e.shiftKey && k === "t") {
+      if (meta && !e.shiftKey && !e.altKey && k === "s") {
+        // Ctrl/Cmd+S — open the SFTP browser for the active host.
+        e.preventDefault();
+        e.stopPropagation();
+        if (activeSession) openSftp(activeSession);
+      } else if (meta && !e.shiftKey && k === "t") {
         // Ctrl/Cmd+T — open host picker (new tab).
         e.preventDefault();
         e.stopPropagation();
@@ -1392,7 +1409,7 @@ function App() {
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [activeId, activeWorkspaceId, workspaces]);
+  }, [activeId, activeWorkspaceId, workspaces, activeSession]);
 
   // Suppress the WebView's native context menu and replace it with our own.
   useEffect(() => {

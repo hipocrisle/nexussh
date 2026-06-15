@@ -63,6 +63,11 @@ struct TunnelHandle {
     info: TunnelInfo,
     /// Accept loop — aborted on close, which drops the listener (frees the port).
     accept_task: tokio::task::JoinHandle<()>,
+    /// Per-connection forwarding tasks. Aborting the accept loop only stops NEW
+    /// connections; already-established ones (e.g. a browser keep-alive socket)
+    /// keep forwarding until torn down. On close we abort these too so "Stop"
+    /// actually kills live sessions, not just blocks new ones.
+    conn_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Keep the SSH transport alive for the tunnel's lifetime.
     _conn: Arc<client::Handle<TofuHandler>>,
     /// xray child for VPN-routed tunnels (kill_on_drop tears it down with us).
@@ -179,6 +184,9 @@ pub async fn ssh_tunnel_open(
 
     let conn_accept = conn.clone();
     let rhost = remote_host.clone();
+    let conn_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let conn_tasks_accept = conn_tasks.clone();
     let accept_task = tokio::spawn(async move {
         loop {
             let (mut inbound, _peer) = match listener.accept().await {
@@ -187,7 +195,7 @@ pub async fn ssh_tunnel_open(
             };
             let conn_one = conn_accept.clone();
             let rhost_one = rhost.clone();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let channel = match conn_one
                     .channel_open_direct_tcpip(
                         rhost_one,
@@ -203,6 +211,12 @@ pub async fn ssh_tunnel_open(
                 let mut stream = channel.into_stream();
                 let _ = tokio::io::copy_bidirectional(&mut inbound, &mut stream).await;
             });
+            // Track the live connection so Stop can abort it (not just block new
+            // ones); prune finished tasks so the list doesn't grow unbounded.
+            if let Ok(mut tasks) = conn_tasks_accept.lock() {
+                tasks.retain(|j| !j.is_finished());
+                tasks.push(task);
+            }
         }
     });
 
@@ -219,6 +233,7 @@ pub async fn ssh_tunnel_open(
         TunnelHandle {
             info: info.clone(),
             accept_task,
+            conn_tasks,
             _conn: conn,
             _xray: xray_child,
         },
@@ -233,7 +248,15 @@ pub async fn ssh_tunnel_close(
 ) -> Result<(), TunnelError> {
     if let Some(h) = state.sessions.lock().await.remove(&id) {
         h.accept_task.abort(); // stop accepting + free the local port
-        // dropping h._conn / h._xray tears down the SSH transport + xray
+        // Abort in-flight forwarded connections too — otherwise an already-open
+        // browser keep-alive socket keeps working after Stop. Aborting each task
+        // drops its TCP socket + SSH channel, so live sessions die immediately.
+        if let Ok(mut tasks) = h.conn_tasks.lock() {
+            for j in tasks.drain(..) {
+                j.abort();
+            }
+        }
+        // dropping h._conn / h._xray then tears down the SSH transport + xray
     } else {
         return Err(TunnelError::NotFound(id));
     }

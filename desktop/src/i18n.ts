@@ -334,7 +334,7 @@ const ru = {
   tunnel: {
     title: "проброс портов",
     header: "туннели",
-    new: "+ Новый туннель",
+    new: "Новый туннель",
     open_in_browser: "Открыть в браузере",
     stop: "Стоп",
     loading: "загрузка...",
@@ -1114,7 +1114,7 @@ const en = {
   tunnel: {
     title: "port forwards",
     header: "tunnels",
-    new: "+ New tunnel",
+    new: "New tunnel",
     open_in_browser: "Open in browser",
     stop: "Stop",
     loading: "loading...",

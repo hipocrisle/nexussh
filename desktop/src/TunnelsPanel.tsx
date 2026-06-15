@@ -151,9 +151,18 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
   // 1. Each saved forward becomes one row; attach the live tunnel if running,
   //    and remember its id so we don't list it again as ad-hoc.
   // 2. Any remaining (unmatched) live tunnel is an ad-hoc row.
+  // When opened from a host's right-click (newTunnel.host set), scope the list
+  // to THAT host — otherwise right-clicking host A would show host B's forwards.
+  // Opened from the header button (no host) → show everything.
+  const scopeHostId = newTunnel?.host?.id ?? null;
+  const scopeLabel = newTunnel?.host
+    ? newTunnel.host.name || `${newTunnel.host.user}@${newTunnel.host.host}`
+    : null;
+
   const matchedLiveIds = new Set<string>();
   const rows: MergedRow[] = [];
   for (const row of saved) {
+    if (scopeHostId && row.hostId !== scopeHostId) continue;
     const live = tunnels.find((tn) => tunnelMatchesForward(tn, row));
     if (live) matchedLiveIds.add(live.id);
     rows.push({
@@ -168,6 +177,7 @@ export function TunnelsPanel({ onClose, newTunnel, onStartSaved }: Props) {
   }
   for (const tn of tunnels) {
     if (matchedLiveIds.has(tn.id)) continue;
+    if (scopeLabel && tn.label !== scopeLabel) continue;
     rows.push({
       key: `live:${tn.id}`,
       live: tn,

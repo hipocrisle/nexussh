@@ -55,8 +55,10 @@
 - [ ] Right-click rename/delete/chmod
 
 ### Phase 8 — Port forwarding (1-2 days)
-- [ ] Local forward / Remote forward / Dynamic (SOCKS)
-- [ ] UI to add and monitor active forwards
+- [x] Local forward (ssh -L) — v2.3.0-beta.2+ (tunnel.rs direct-tcpip, saved per-host forwards, autostart, path, per-host VPN-aware)
+- [x] UI to add and monitor active forwards (TunnelsPanel + AddTunnelDialog + saved-forwards quick-start)
+- [ ] Remote forward (ssh -R) — not built (niche)
+- [ ] Dynamic (SOCKS, ssh -D) — not built (built-in xray VPN covers most routing needs)
 
 ### Phase 9 — Build pipeline (1-2 days)
 - [ ] Tauri 2 cross-builds

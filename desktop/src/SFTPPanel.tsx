@@ -162,6 +162,11 @@ function isKeyfile(name: string): boolean {
 
 const CODE_EXT = ["YML", "YAML", "JSON", "TS", "JS", "SH", "PY", "MD", "CONF", "TOML"];
 
+// Custom drag MIME carrying the SOURCE pane id for in-app pane-to-pane drags.
+// Using a typed payload (rather than text/plain) lets the destination pane tell
+// an internal drag from anything else and read which side it came from.
+const DND_PANE_MIME = "application/x-nexussh-pane";
+
 const GRID = "28px 22px 1fr 110px 160px 130px 110px";
 
 // Compact grid used by both panes when the dual-pane manager is active — the
@@ -617,11 +622,18 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const cwdRef = useRef(cwd);
   cwdRef.current = cwd;
   const dropBusyRef = useRef(false);
+  // True while an IN-APP (HTML5) drag between panes is in progress. The Tauri
+  // OS drag-drop listener fires only for files coming from the OS file manager,
+  // never for in-webview drags — but we still gate uploadPaths on this flag as a
+  // belt-and-braces guard so an internal pane-to-pane drag can never be mistaken
+  // for an OS upload.
+  const internalDragRef = useRef(false);
 
   const uploadPaths = useCallback(
     async (paths: string[]) => {
       const id = idRef.current;
-      if (!id || paths.length === 0 || dropBusyRef.current) return;
+      if (!id || paths.length === 0 || dropBusyRef.current || internalDragRef.current)
+        return;
       dropBusyRef.current = true;
       const dir = cwdRef.current;
       setError(null);
@@ -893,6 +905,47 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       setLocalError(t("sftp.copy_skipped_dir", { name: skippedDirs.map((d) => d.name).join(", ") }));
     }
     refreshLocal(); // refresh destination (local) pane
+  }
+
+  // ── In-app drag-drop between the two panes ────────────────────────────────
+  // Dragging a selection from one pane and dropping it on the OTHER pane copies
+  // it across, reusing the exact same transfer path as the F5 / arrow-button
+  // copies (onCopyToRemote / onCopyToLocal — which already read each pane's
+  // op-targets, skip directories, prompt for resume, drive the progress bars).
+  //
+  // Dragged-set rule (mirrors the right-click menu): if the grabbed row is part
+  // of the active selection, the whole selection moves; otherwise the selection
+  // is collapsed to just that row before the copy. We do that collapse in the
+  // drag-START handler so the copy handlers see the right targets.
+  function onPaneDragStart(pane: "local" | "remote", row: Row) {
+    internalDragRef.current = true;
+    if (pane === "local") {
+      if (!(localSel.selected.size > 0 && localSel.selected.has(row.name))) {
+        const idx = localEntries.findIndex((e) => e.name === row.name);
+        setLocalSel({ cursor: idx, selected: new Set([row.name]), anchor: idx });
+      }
+    } else {
+      if (!(remoteSel.selected.size > 0 && remoteSel.selected.has(row.name))) {
+        const idx = entries.findIndex((e) => e.name === row.name);
+        setRemoteSel({ cursor: idx, selected: new Set([row.name]), anchor: idx });
+      }
+    }
+  }
+
+  function onPaneDragEnd() {
+    internalDragRef.current = false;
+  }
+
+  // Drop fired on `destPane`. A same-pane drop is a no-op. Cross-pane drops run
+  // the matching copy. setTimeout(0) lets React flush the selection collapse
+  // queued in onPaneDragStart before the copy reads op-targets.
+  function onPaneDrop(destPane: "local" | "remote", sourcePane: "local" | "remote") {
+    internalDragRef.current = false;
+    if (destPane === sourcePane) return;
+    setTimeout(() => {
+      if (sourcePane === "local") onCopyToRemote();
+      else onCopyToLocal();
+    }, 0);
   }
 
   async function onRename(entry: SftpEntry) {
@@ -1261,6 +1314,12 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                 onOpenDir={(name) => navigateLocal(localJoin(localCwd, name))}
                 onUp={() => navigateLocal(localParent(localCwd))}
                 renderRow={(e) => <CompactCells row={e} />}
+                dnd={{
+                  pane: "local",
+                  onRowDragStart: (row) => onPaneDragStart("local", row),
+                  onRowDragEnd: onPaneDragEnd,
+                  onDrop: (src) => onPaneDrop("local", src),
+                }}
               />
             </Pane>
 
@@ -1321,6 +1380,12 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                   setCtx({ x: ev.clientX, y: ev.clientY, entry: entry as SftpEntry })
                 }
                 renderRow={(e) => <CompactCells row={e} />}
+                dnd={{
+                  pane: "remote",
+                  onRowDragStart: (row) => onPaneDragStart("remote", row),
+                  onRowDragEnd: onPaneDragEnd,
+                  onDrop: (src) => onPaneDrop("remote", src),
+                }}
               />
             </Pane>
           </div>
@@ -1482,6 +1547,7 @@ function FileList({
   onContextMenu,
   renderRow,
   active,
+  dnd,
 }: {
   rows: Row[];
   sel: PaneSel;
@@ -1497,6 +1563,14 @@ function FileList({
    *  own Arrow/Space/Enter/Backspace handler receives the keys. Undefined in
    *  single-pane mode (always-focusable; no Tab switching). */
   active?: boolean;
+  /** In-app pane-to-pane drag-drop wiring (dual-pane only). Rows become
+   *  draggable; the list body is a drop target for the OTHER pane. */
+  dnd?: {
+    pane: "local" | "remote";
+    onRowDragStart: (row: Row) => void;
+    onRowDragEnd: () => void;
+    onDrop: (sourcePane: "local" | "remote") => void;
+  };
 }) {
   const { t } = useTranslation();
   const grid = variant === "full" ? GRID : PANE_GRID;
@@ -1508,6 +1582,48 @@ function FileList({
       scrollRef.current.focus({ preventScroll: true });
     }
   }, [active]);
+
+  // Drop-target highlight: true while a cross-pane internal drag hovers THIS
+  // list. dragenter/leave fire per child element, so we count depth to avoid
+  // flicker and only clear when the pointer truly leaves the list.
+  const [dropActive, setDropActive] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  // Read the source pane from an internal drag, or null if it isn't one (e.g. an
+  // OS-file drag — those are handled by Tauri, never reach here as a valid type).
+  function readDragSource(e: React.DragEvent): "local" | "remote" | null {
+    if (!dnd) return null;
+    const v = e.dataTransfer.types.includes(DND_PANE_MIME)
+      ? e.dataTransfer.getData(DND_PANE_MIME)
+      : "";
+    return v === "local" || v === "remote" ? v : null;
+  }
+
+  function paneDragOver(e: React.DragEvent) {
+    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
+    // Only a cross-pane drag is a valid drop here; same-pane shows no target.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }
+  function paneDragEnter(e: React.DragEvent) {
+    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
+    dragDepthRef.current += 1;
+    setDropActive(true);
+  }
+  function paneDragLeave(e: React.DragEvent) {
+    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDropActive(false);
+  }
+  function paneDrop(e: React.DragEvent) {
+    if (!dnd) return;
+    const src = readDragSource(e);
+    dragDepthRef.current = 0;
+    setDropActive(false);
+    if (!src) return;
+    e.preventDefault();
+    dnd.onDrop(src);
+  }
 
   // --- Mouse selection on a row ---
   function clickRow(idx: number, ev: React.MouseEvent) {
@@ -1618,10 +1734,24 @@ function FileList({
   return (
     <div
       ref={scrollRef}
-      className="flex-1 min-h-0 overflow-y-auto outline-none"
+      className={
+        "flex-1 min-h-0 overflow-y-auto outline-none relative " +
+        (dropActive
+          ? "ring-2 ring-inset ring-nx-accent bg-nx-accent/5"
+          : "")
+      }
       tabIndex={0}
       onKeyDown={onKeyDown}
+      onDragOver={dnd ? paneDragOver : undefined}
+      onDragEnter={dnd ? paneDragEnter : undefined}
+      onDragLeave={dnd ? paneDragLeave : undefined}
+      onDrop={dnd ? paneDrop : undefined}
     >
+      {dnd && dropActive && (
+        <div className="sticky top-0 z-10 flex items-center justify-center py-1.5 bg-nx-accent/10 border-b border-nx-accent/40 text-meta font-mono text-nx-accent pointer-events-none">
+          {t("sftp.drag_drop_here")}
+        </div>
+      )}
       {/* ".." parent row — always first; navigates up, never selectable. */}
       {!atRoot && (
         <div
@@ -1654,6 +1784,17 @@ function FileList({
               key={e.name}
               data-active={isSelected || undefined}
               data-cursor={isCursor || undefined}
+              draggable={dnd ? true : undefined}
+              onDragStart={
+                dnd
+                  ? (ev) => {
+                      ev.dataTransfer.setData(DND_PANE_MIME, dnd.pane);
+                      ev.dataTransfer.effectAllowed = "copy";
+                      dnd.onRowDragStart(e);
+                    }
+                  : undefined
+              }
+              onDragEnd={dnd ? () => dnd.onRowDragEnd() : undefined}
               onClick={(ev) => clickRow(idx, ev)}
               onDoubleClick={() => openRow(idx)}
               onContextMenu={

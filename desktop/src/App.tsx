@@ -8,6 +8,7 @@ import {
   Settings as SettingsIcon,
   HelpCircle,
   History as HistoryIcon,
+  Network as NetworkIcon,
   Search,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
@@ -27,6 +28,12 @@ const SyncPanel = lazy(() =>
 );
 const SFTPPanel = lazy(() =>
   import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
+);
+const TunnelsPanel = lazy(() =>
+  import("./TunnelsPanel").then((m) => ({ default: m.TunnelsPanel })),
+);
+const AddTunnelDialog = lazy(() =>
+  import("./AddTunnelDialog").then((m) => ({ default: m.AddTunnelDialog })),
 );
 import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
@@ -49,6 +56,7 @@ const HistoryPanel = lazy(() =>
   import("./HistoryPanel").then((m) => ({ default: m.HistoryPanel })),
 );
 import { PaneHeader } from "./PaneHeader";
+import { Button } from "./components/primitives";
 import { useSettings } from "./settings/settings-store";
 import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
@@ -62,6 +70,7 @@ import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
+import { tunnelOpen } from "./tunnel";
 import {
   VaultStatus,
   vaultStatus,
@@ -155,6 +164,11 @@ interface Session {
   /** Set when a connect/reconnect attempt fails — shown in the pane with a
    *  Retry button instead of the tab silently vanishing. */
   error?: string;
+  /** Lazy-connect on restore: a restored host that would trigger an interactive
+   *  password prompt is left dormant (tab present, NO SSH connection, no prompt)
+   *  unless it's the active tab. Activating the tab connects it then. Avoids a
+   *  pile of simultaneous password prompts when many such tabs are restored. */
+  dormant?: boolean;
 }
 interface Pane {
   id: string;
@@ -624,6 +638,25 @@ function App() {
     args: ConnectArgs;
     title: string;
   } | null>(null);
+  // Tunnels panel. `open` toggles visibility; `newTunnel` (when set) wires the
+  // panel's "+ New tunnel" button to an ad-hoc forward against that host.
+  const [tunnelsPanel, setTunnelsPanel] = useState<{
+    open: boolean;
+    newTunnel: { connectArgs: ConnectArgs; label: string } | null;
+  } | null>(null);
+  // Ad-hoc "start a tunnel" dialog opened straight from a host's context menu.
+  const [addTunnel, setAddTunnel] = useState<{
+    connectArgs: ConnectArgs;
+    label: string;
+  } | null>(null);
+  // Transient toast (e.g. "tunnel started"). Auto-dismisses after a few sec.
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  function showToast(msg: string) {
+    setToast(msg);
+    if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 4000);
+  }
 
   // "Always ask password" prompt — promise-based so openHost/openSftp can await
   // a masked, themed dialog instead of the plaintext native window.prompt().
@@ -653,6 +686,12 @@ function App() {
         { id: crypto.randomUUID(), user: h.user, host: h.host, resolve },
       ]),
     );
+  }
+  // Same predicate openHost/openSftp/kickoffConnect use to decide a host needs
+  // an INTERACTIVE password prompt on connect. Restore makes such hosts dormant
+  // (lazy-connect on activation) instead of prompting all at once on startup.
+  function needsInteractivePrompt(h: HostRecord): boolean {
+    return h.auth.kind === "password" && !!h.alwaysAskPassword;
   }
 
   const mainAreaRef = useRef<HTMLDivElement>(null);
@@ -1038,15 +1077,29 @@ function App() {
       });
     }
     if (restored.length === 0) return;
-    setWorkspaces(restored);
     const activeId = data.activeWorkspaceId &&
       restored.some((w) => w.id === data.activeWorkspaceId)
       ? data.activeWorkspaceId
       : restored[0].id;
+    // Lazy password prompt: a restored host that would trigger an interactive
+    // prompt is left DORMANT (no connection, click-to-connect placeholder)
+    // unless it lives in the active workspace — so at most one prompt fires on
+    // startup. Key-auth / vault-password / stored-password hosts always connect.
+    for (const w of restored) {
+      const isActiveWs = w.id === activeId;
+      for (const p of w.panes) {
+        if (!isActiveWs && needsInteractivePrompt(p.session.host)) {
+          p.session = { ...p.session, status: "closed", dormant: true };
+        }
+      }
+    }
+    setWorkspaces(restored);
     setActiveWorkspaceId(activeId);
-    // Kick off connections in parallel.
+    // Kick off connections in parallel — but skip dormant panes; they connect
+    // when their tab is activated (see wakeWorkspace).
     for (const w of restored) {
       for (const p of w.panes) {
+        if (p.session.dormant) continue;
         kickoffConnect(p.session.id, p.session.host);
       }
     }
@@ -1095,6 +1148,43 @@ function App() {
         status: "closed",
         error: String(e),
       }));
+    }
+  }
+
+  // Wake any dormant panes in a workspace: connect them now (running the normal
+  // connect path, prompting for the password at this moment). Called when a tab
+  // is activated. Guards against double-connect — only "closed && dormant" panes
+  // are woken, and they're flipped to "connecting" (clearing dormant) before the
+  // async connect runs, so a repeated activation is a no-op.
+  function wakeWorkspace(wsId: string) {
+    const ws = workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
+    const toWake = ws.panes.filter((p) => p.session.dormant);
+    if (toWake.length === 0) return;
+    setWorkspaces((ws_) =>
+      ws_.map((w) =>
+        w.id !== wsId
+          ? w
+          : {
+              ...w,
+              panes: w.panes.map((p) =>
+                p.session.dormant
+                  ? {
+                      ...p,
+                      session: {
+                        ...p.session,
+                        status: "connecting",
+                        dormant: false,
+                        error: undefined,
+                      },
+                    }
+                  : p,
+              ),
+            },
+      ),
+    );
+    for (const p of toWake) {
+      kickoffConnect(p.session.id, p.session.host);
     }
   }
 
@@ -1198,6 +1288,7 @@ function App() {
             : (idx + 1) % workspaces.length;
           const nextId = workspaces[next].id;
           setActiveWorkspaceId(nextId);
+          wakeWorkspace(nextId);
           // Flash the newly-activated tab so the user can see WHICH tab the
           // shortcut took them to (regular active styling doesn't move).
           setSwitchPulseId(nextId);
@@ -1237,6 +1328,7 @@ function App() {
           e.preventDefault();
           e.stopPropagation();
           setActiveWorkspaceId(workspaces[n].id);
+          wakeWorkspace(workspaces[n].id);
         }
       } else if (meta && e.shiftKey && k === "t") {
         // Ctrl/Cmd+Shift+T — restore last closed tab (browser-style).
@@ -1502,6 +1594,31 @@ function App() {
       promoteSession(pendingId, sid, "connected");
       triggerBurst();
       if (recording) setRecSids((r) => ({ ...r, [sid]: false }));
+      // Auto-start saved port forwards (ssh -L). Fire-and-forget: opening the
+      // shell must not wait on (or fail because of) a tunnel. Each forward opens
+      // its OWN SSH connection in the backend, so it needs the resolved auth.
+      const autoForwards = (h.forwards ?? []).filter((f) => f.autoStart);
+      if (autoForwards.length > 0) {
+        const fwdArgs = buildConnectArgs(h, auth);
+        const fwdLabel = h.name || `${h.user}@${h.host}`;
+        for (const f of autoForwards) {
+          tunnelOpen(fwdArgs, {
+            localPort: f.localPort || 0,
+            remoteHost: f.remoteHost || "127.0.0.1",
+            remotePort: f.remotePort,
+            label: fwdLabel,
+          })
+            .then((info) =>
+              showToast(t("tunnel.started", { port: info.local_port })),
+            )
+            .catch((e) => {
+              // A "busy" port usually means this forward is already live — keep
+              // quiet. Surface other failures to the console only.
+              const msg = String(e);
+              if (!/busy/i.test(msg)) console.warn("tunnel auto-start:", msg);
+            });
+        }
+      }
     } catch (e) {
       // Keep the pane and show WHY it failed (with Retry), instead of vanishing.
       updateSession(pendingId, (s) => ({
@@ -1510,6 +1627,21 @@ function App() {
         error: String(e),
       }));
     }
+  }
+
+  // Build the base ConnectArgs for a host with a resolved auth (handles the
+  // shared shape used by SFTP and tunnels). The caller resolves "always ask"
+  // first and passes the effective auth/user via the host it hands in.
+  function buildConnectArgs(h: HostRecord, auth: HostRecord["auth"]): ConnectArgs {
+    return {
+      host: h.host,
+      port: h.port,
+      user: h.user,
+      auth,
+      vpn: resolveHostVpn(h),
+      allow_legacy: h.allowLegacy,
+      encrypt_known_hosts: hostsEncrypted(),
+    };
   }
 
   async function openSftp(h: HostRecord) {
@@ -1521,16 +1653,30 @@ function App() {
       auth = { kind: "password", password: creds.password };
     }
     setSftpTarget({
-      args: {
-        host: h.host,
-        port: h.port,
-        user: h.user,
-        auth,
-        vpn: resolveHostVpn(h),
-        allow_legacy: h.allowLegacy,
-        encrypt_known_hosts: hostsEncrypted(),
-      },
+      args: buildConnectArgs(h, auth),
       title: `${h.user}@${h.host}`,
+    });
+  }
+
+  // Open the Tunnels panel listing all active tunnels (header entry point).
+  function openTunnelsPanel() {
+    setTunnelsPanel({ open: true, newTunnel: null });
+  }
+
+  // Start an ad-hoc tunnel for a host: resolve "always ask", then open the
+  // AddTunnelDialog pre-wired to that host's connection (context-menu entry).
+  async function openTunnelFor(h: HostRecord) {
+    let auth = h.auth;
+    let host = h;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const creds = await askPassword(h);
+      if (!creds) return;
+      host = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
+    }
+    setAddTunnel({
+      connectArgs: buildConnectArgs(host, auth),
+      label: `${host.user}@${host.host}`,
     });
   }
 
@@ -1753,6 +1899,13 @@ function App() {
         label: t("sidebar.menu_sftp"),
         onClick: () => {
           if (focusedHost) openSftp(focusedHost);
+        },
+        disabled: !focusedHost,
+      },
+      {
+        label: t("sidebar.menu_tunnel"),
+        onClick: () => {
+          if (focusedHost) openTunnelFor(focusedHost);
         },
         disabled: !focusedHost,
       },
@@ -2273,6 +2426,10 @@ function App() {
           label: t("sidebar.menu_sftp"),
           onClick: () => openSftp(host),
         },
+        {
+          label: t("sidebar.menu_tunnel"),
+          onClick: () => openTunnelFor(host),
+        },
         { separator: true, label: "" },
         {
           label: t("tabmenu.move_to_new_tab"),
@@ -2437,6 +2594,7 @@ function App() {
               fill
               onConnect={openHost}
               onSftp={openSftp}
+              onTunnel={openTunnelFor}
               onSelect={setSelectedHost}
               activeHostId={activeSession?.id ?? null}
               openHostIds={openHostIds}
@@ -2584,6 +2742,31 @@ function App() {
           const cs: React.CSSProperties = paneBodyStyle(r, multiPane);
           return (
             <Fragment key={"ov-" + p.id}>
+              {p.session.dormant && (
+                <div
+                  style={{ ...cs, zIndex: 15 }}
+                  className="flex flex-col items-center justify-center gap-3 p-6 cursor-pointer"
+                  onClick={() => wakeWorkspace(ws.id)}
+                >
+                  <span
+                    className="font-mono text-sm text-center"
+                    style={{ color: theme.textSoft }}
+                  >
+                    {t("terminal.dormant_hint")}
+                  </span>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    leadingIcon={<TerminalIcon size={13} />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      wakeWorkspace(ws.id);
+                    }}
+                  >
+                    {t("terminal.dormant_connect")}
+                  </Button>
+                </div>
+              )}
               {p.session.status === "connecting" && (
                 <div
                   style={{ ...cs, zIndex: 15 }}
@@ -2784,6 +2967,10 @@ function App() {
               active: vault?.unlocked,
             },
             {
+              label: t("tunnel.header"),
+              onClick: () => openTunnelsPanel(),
+            },
+            {
               label: t("settings.open"),
               onClick: () => setSettingsOpen(true),
             },
@@ -2925,6 +3112,13 @@ function App() {
             {vault?.configured ? "vault" : t("vault.header_enable")}
           </HeaderButton>
           <HeaderButton
+            icon={<NetworkIcon size={12} />}
+            onClick={() => openTunnelsPanel()}
+            title={t("tunnel.title")}
+          >
+            {t("tunnel.header")}
+          </HeaderButton>
+          <HeaderButton
             icon={<HistoryIcon size={12} />}
             onClick={async () => {
               // History on → open the panel. History off → ask to enable it via a
@@ -3009,6 +3203,7 @@ function App() {
             <Sidebar
               onConnect={openHost}
               onSftp={openSftp}
+              onTunnel={openTunnelFor}
               onSelect={setSelectedHost}
               activeHostId={activeSession?.id ?? null}
               openHostIds={openHostIds}
@@ -3050,6 +3245,10 @@ function App() {
                   setMobileDrawerOpen(false);
                   openSftp(h);
                 }}
+                onTunnel={(h) => {
+                  setMobileDrawerOpen(false);
+                  openTunnelFor(h);
+                }}
                 onSelect={setSelectedHost}
                 activeHostId={activeSession?.id ?? null}
                 openHostIds={openHostIds}
@@ -3078,7 +3277,10 @@ function App() {
               };
             })}
             activeId={activeWorkspaceId}
-            onSelect={(id) => setActiveWorkspaceId(id)}
+            onSelect={(id) => {
+              setActiveWorkspaceId(id);
+              wakeWorkspace(id);
+            }}
             onClose={(id) => closeWorkspace(id)}
             onNewTab={openSshPicker}
             onNewTabDropdown={openNewTabMenu}
@@ -3159,6 +3361,23 @@ function App() {
             connectArgs={sftpTarget.args}
             title={sftpTarget.title}
             onClose={() => setSftpTarget(null)}
+          />
+        )}
+        {tunnelsPanel?.open && (
+          <TunnelsPanel
+            newTunnel={tunnelsPanel.newTunnel}
+            onClose={() => setTunnelsPanel(null)}
+          />
+        )}
+        {addTunnel && (
+          <AddTunnelDialog
+            connectArgs={addTunnel.connectArgs}
+            label={addTunnel.label}
+            onClose={() => setAddTunnel(null)}
+            onStarted={(info) => {
+              setAddTunnel(null);
+              showToast(t("tunnel.started", { port: info.local_port }));
+            }}
           />
         )}
         {historyPanelOpen && (
@@ -3337,6 +3556,13 @@ function App() {
       )}
 
       <DialogHost />
+
+      {/* Transient toast (tunnel started, …). */}
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-nx bg-nx-panel border border-nx-accent shadow-glow-md font-mono text-meta text-nx-text">
+          {toast}
+        </div>
+      )}
 
       {/* Pane-extract drag chip — follows the cursor while a header drag is
        *  active and the user has crossed out of the main area. Translucent

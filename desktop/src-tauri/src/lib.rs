@@ -10,6 +10,7 @@ mod ssh;
 mod ssh_config;
 mod sshlog;
 mod sync;
+mod tunnel;
 mod updater;
 mod vault;
 mod vpn;
@@ -210,6 +211,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(Arc::new(ssh::SessionManager::new()))
         .manage(Arc::new(sftp::SftpManager::new()))
+        .manage(Arc::new(tunnel::TunnelManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
         .manage(history::HistoryState::new())
@@ -256,6 +258,9 @@ pub fn run() {
             sftp::sftp_rename,
             sftp::sftp_remove,
             sftp::sftp_disconnect,
+            tunnel::ssh_tunnel_open,
+            tunnel::ssh_tunnel_close,
+            tunnel::ssh_tunnel_list,
             vault::vault_status,
             vault::vault_create,
             vault::vault_unlock,

@@ -1,0 +1,254 @@
+//! Local port forwarding — the `ssh -L localPort:remoteHost:remotePort` feature.
+//!
+//! Model mirrors `sftp.rs`: a tunnel is its own authenticated SSH connection
+//! (independent of any interactive shell tab), reusing the shell's auth/vault,
+//! host-key TOFU, legacy-algorithm policy and per-host built-in VPN (xray SOCKS).
+//!
+//! A local `TcpListener` on 127.0.0.1:localPort accepts connections; each one
+//! opens a `direct-tcpip` channel to remoteHost:remotePort on the server and is
+//! spliced bidirectionally. So pointing a browser at `localhost:localPort`
+//! reaches a service bound only on the remote box (e.g. a blocked admin panel).
+
+use russh::client::{self};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tauri::{AppHandle, State};
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+use crate::ssh::{known_hosts_path, AuthMethod, ConnectArgs, TofuHandler};
+
+#[derive(Debug, thiserror::Error)]
+pub enum TunnelError {
+    #[error("ssh protocol: {0}")]
+    Russh(#[from] russh::Error),
+    #[error("ssh keys: {0}")]
+    RusshKeys(#[from] russh::keys::Error),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("auth failed")]
+    AuthFailed,
+    #[error("local port {0} is busy: {1}")]
+    Bind(u16, String),
+    #[error("tunnel {0} not found")]
+    NotFound(String),
+    #[error("other: {0}")]
+    Other(String),
+}
+
+impl serde::Serialize for TunnelError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// Public view of an active tunnel (sent to the frontend Tunnels panel).
+#[derive(Serialize, Clone)]
+pub struct TunnelInfo {
+    pub id: String,
+    pub local_port: u16,
+    pub remote_host: String,
+    pub remote_port: u16,
+    /// Host display label (for the panel).
+    pub label: String,
+}
+
+struct TunnelHandle {
+    info: TunnelInfo,
+    /// Accept loop — aborted on close, which drops the listener (frees the port).
+    accept_task: tokio::task::JoinHandle<()>,
+    /// Keep the SSH transport alive for the tunnel's lifetime.
+    _conn: Arc<client::Handle<TofuHandler>>,
+    /// xray child for VPN-routed tunnels (kill_on_drop tears it down with us).
+    _xray: Option<tokio::process::Child>,
+}
+
+#[derive(Default)]
+pub struct TunnelManager {
+    sessions: Mutex<HashMap<String, TunnelHandle>>,
+}
+
+impl TunnelManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Authenticate a dedicated SSH connection for the tunnel (mirrors sftp.rs).
+async fn connect_and_auth(
+    app: &AppHandle,
+    vault: &State<'_, crate::vault::VaultState>,
+    args: &ConnectArgs,
+) -> Result<(client::Handle<TofuHandler>, Option<tokio::process::Child>), TunnelError> {
+    let config = Arc::new({
+        let mut c = client::Config::default();
+        c.preferred = crate::ssh::preferred_for(args.allow_legacy);
+        // Tunnels sit idle waiting for browser connections — keep the transport
+        // warm so the server doesn't drop it before the panel is opened.
+        c.keepalive_interval = Some(Duration::from_secs(30));
+        c.keepalive_max = 3;
+        c
+    });
+    let handler = || TofuHandler {
+        host: args.host.clone(),
+        port: args.port,
+        store_path: known_hosts_path(app),
+        app: app.clone(),
+        use_vault: args.encrypt_known_hosts,
+    };
+
+    let (mut session, xray_child) = if let Some(node) = &args.vpn {
+        let socks_port = crate::ssh::free_local_port()?;
+        let child = crate::vpn::spawn_xray(node, socks_port)
+            .map_err(|e| TunnelError::Other(format!("xray spawn: {e}")))?;
+        crate::ssh::wait_socks_ready(socks_port)
+            .await
+            .map_err(|e| TunnelError::Other(e.to_string()))?;
+        let proxy = format!("127.0.0.1:{socks_port}");
+        let stream =
+            crate::ssh::socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+                .await
+                .map_err(|e| TunnelError::Other(format!("socks connect: {e}")))?;
+        let session =
+            client::connect_stream(config, stream.into_inner(), handler()).await?;
+        (session, Some(child))
+    } else {
+        let addr = format!("{}:{}", args.host, args.port);
+        (client::connect(config, addr.as_str(), handler()).await?, None)
+    };
+
+    let auth_ok = match &args.auth {
+        AuthMethod::Password { password } => session
+            .authenticate_password(&args.user, password)
+            .await?
+            .success(),
+        AuthMethod::Key { path, passphrase } => {
+            let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
+            session
+                .authenticate_publickey(
+                    &args.user,
+                    russh::keys::PrivateKeyWithHashAlg::new(
+                        Arc::new(key),
+                        session.best_supported_rsa_hash().await?.flatten(),
+                    ),
+                )
+                .await?
+                .success()
+        }
+        AuthMethod::Vault { key } => {
+            let secret = crate::vault::resolve(vault, key)
+                .map_err(|e| TunnelError::Other(e.to_string()))?;
+            session
+                .authenticate_password(&args.user, &secret)
+                .await?
+                .success()
+        }
+    };
+    if !auth_ok {
+        return Err(TunnelError::AuthFailed);
+    }
+    Ok((session, xray_child))
+}
+
+#[tauri::command]
+pub async fn ssh_tunnel_open(
+    app: AppHandle,
+    state: State<'_, Arc<TunnelManager>>,
+    vault: State<'_, crate::vault::VaultState>,
+    args: ConnectArgs,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    label: String,
+) -> Result<TunnelInfo, TunnelError> {
+    let (session, xray_child) = connect_and_auth(&app, &vault, &args).await?;
+    let conn = Arc::new(session);
+
+    // Bind the local listener BEFORE returning, so a busy port surfaces as a
+    // clear error to the user (not a silent dead tunnel). 0 → OS picks a port.
+    let listener = TcpListener::bind(("127.0.0.1", local_port))
+        .await
+        .map_err(|e| TunnelError::Bind(local_port, e.to_string()))?;
+    let actual_port = listener.local_addr()?.port();
+
+    let conn_accept = conn.clone();
+    let rhost = remote_host.clone();
+    let accept_task = tokio::spawn(async move {
+        loop {
+            let (mut inbound, _peer) = match listener.accept().await {
+                Ok(c) => c,
+                Err(_) => break, // listener closed → tunnel torn down
+            };
+            let conn_one = conn_accept.clone();
+            let rhost_one = rhost.clone();
+            tokio::spawn(async move {
+                let channel = match conn_one
+                    .channel_open_direct_tcpip(
+                        rhost_one,
+                        remote_port as u32,
+                        "127.0.0.1".to_string(),
+                        actual_port as u32,
+                    )
+                    .await
+                {
+                    Ok(ch) => ch,
+                    Err(_) => return, // server refused (service down?) — drop conn
+                };
+                let mut stream = channel.into_stream();
+                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut stream).await;
+            });
+        }
+    });
+
+    let id = Uuid::new_v4().to_string();
+    let info = TunnelInfo {
+        id: id.clone(),
+        local_port: actual_port,
+        remote_host,
+        remote_port,
+        label,
+    };
+    state.sessions.lock().await.insert(
+        id,
+        TunnelHandle {
+            info: info.clone(),
+            accept_task,
+            _conn: conn,
+            _xray: xray_child,
+        },
+    );
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn ssh_tunnel_close(
+    state: State<'_, Arc<TunnelManager>>,
+    id: String,
+) -> Result<(), TunnelError> {
+    if let Some(h) = state.sessions.lock().await.remove(&id) {
+        h.accept_task.abort(); // stop accepting + free the local port
+        // dropping h._conn / h._xray tears down the SSH transport + xray
+    } else {
+        return Err(TunnelError::NotFound(id));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ssh_tunnel_list(
+    state: State<'_, Arc<TunnelManager>>,
+) -> Result<Vec<TunnelInfo>, TunnelError> {
+    Ok(state
+        .sessions
+        .lock()
+        .await
+        .values()
+        .map(|h| h.info.clone())
+        .collect())
+}

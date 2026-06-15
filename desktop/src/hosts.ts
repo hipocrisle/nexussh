@@ -9,6 +9,7 @@ import { load, Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { syncStatus, syncPush } from "./sync";
 import { vaultGet, vaultSet, vaultDelete, vaultStatus, vaultKeys } from "./vault";
+import type { PortForward } from "./tunnel";
 
 export interface HostRecord {
   id: string;
@@ -49,6 +50,9 @@ export interface HostRecord {
    *  in that mode regardless of the global mode. (`boolean` kept for back-compat
    *  with v1.8.1 data: `true`→record w/ global mode, `false`→off.) */
   recordHistory?: boolean | "off" | "light" | "full";
+  /** Saved local-port forwards (ssh -L). Persisted with the record; ones marked
+   *  `autoStart` are opened automatically after a successful shell connect. */
+  forwards?: PortForward[];
 }
 
 const STORE_FILE = "hosts.json";

@@ -27,6 +27,7 @@ import {
   GripVertical,
   FoldVertical,
   UnfoldVertical,
+  Network,
 } from "lucide-react";
 import {
   HostRecord,
@@ -92,6 +93,7 @@ const folderPad = (depth: number) => 12 + depth * 14;
 interface Props {
   onConnect: (h: HostRecord) => void;
   onSftp?: (h: HostRecord) => void;
+  onTunnel?: (h: HostRecord) => void;
   onSelect?: (h: HostRecord) => void;
   selectedId?: string | null;
   /** host.id of the currently focused tab — gets the blinking caret. */
@@ -137,6 +139,7 @@ function writeCollapsedGroups(s: Set<string>) {
 export function Sidebar({
   onConnect,
   onSftp,
+  onTunnel,
   onSelect,
   selectedId,
   activeHostId,
@@ -325,6 +328,11 @@ export function Sidebar({
           label: t("sidebar.menu_sftp"),
           icon: <Folder size={13} />,
           onClick: () => onSftp?.(h),
+        },
+        {
+          label: t("sidebar.menu_tunnel"),
+          icon: <Network size={13} />,
+          onClick: () => onTunnel?.(h),
         },
         {
           label: t("sidebar.menu_edit"),

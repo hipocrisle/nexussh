@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, Shield, ChevronDown, Folder } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
+import type { PortForward } from "./tunnel";
 import { FolderPicker } from "./FolderPicker";
 import { useIsMobile } from "./useIsMobile";
 import {
@@ -45,16 +46,24 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // TabPicker's "+ Новое подключение"), pull them ourselves so the folder
   // dropdown is never empty in CREATE mode.
   const [autoGroups, setAutoGroups] = useState<string[]>([]);
+  // All existing hosts — used to warn about duplicate display names and ip:port.
+  const [existingHosts, setExistingHosts] = useState<
+    { id: string; name: string; host: string; port: number }[]
+  >([]);
   useEffect(() => {
-    if (knownGroups && knownGroups.length > 0) return;
     let cancelled = false;
     (async () => {
       try {
         const list = await listHosts();
         if (cancelled) return;
-        const fromHosts = (list.map((h) => h.group).filter(Boolean) as string[]);
-        const folders = loadKnownFolders();
-        setAutoGroups(Array.from(new Set([...fromHosts, ...folders])));
+        setExistingHosts(
+          list.map((h) => ({ id: h.id, name: h.name, host: h.host, port: h.port })),
+        );
+        if (!(knownGroups && knownGroups.length > 0)) {
+          const fromHosts = (list.map((h) => h.group).filter(Boolean) as string[]);
+          const folders = loadKnownFolders();
+          setAutoGroups(Array.from(new Set([...fromHosts, ...folders])));
+        }
       } catch {}
     })();
     return () => { cancelled = true; };
@@ -88,6 +97,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   );
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
+  const [forwards, setForwards] = useState<PortForward[]>([]);
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
@@ -108,6 +118,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
+    setForwards(initial.forwards ? initial.forwards.map((f) => ({ ...f })) : []);
     {
       const rh = initial.recordHistory;
       // undefined → inherit; off/false → off; anything else (true / legacy
@@ -159,6 +170,50 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // Login is optional — an address-only host asks for the login on connect
   // (like quick-connect). Only the address is required.
   const canSave = host.trim().length > 0;
+
+  // Non-blocking warning: another host (different id) already uses this name.
+  const trimmedName = name.trim();
+  const dupName =
+    trimmedName.length > 0 &&
+    existingHosts.some(
+      (h) =>
+        h.id !== initial?.id &&
+        h.name.trim().toLowerCase() === trimmedName.toLowerCase(),
+    );
+
+  // Non-blocking warning: another host already has this IP:port. Allowed on
+  // purpose — e.g. two logins on the same box — so we only hint, never block.
+  const trimmedHost = host.trim();
+  const dupHostPort =
+    trimmedHost.length > 0 &&
+    existingHosts.some(
+      (h) =>
+        h.id !== initial?.id &&
+        h.host.trim().toLowerCase() === trimmedHost.toLowerCase() &&
+        h.port === port,
+    );
+
+  // --- Port-forward (ssh -L) row editing -----------------------------------
+  function addForward() {
+    setForwards((fs) => [
+      ...fs,
+      {
+        id: crypto.randomUUID(),
+        name: "",
+        localPort: 0,
+        remoteHost: "127.0.0.1",
+        remotePort: 0,
+        scheme: "https",
+        autoStart: false,
+      },
+    ]);
+  }
+  function updateForward(id: string, patch: Partial<PortForward>) {
+    setForwards((fs) => fs.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  }
+  function removeForward(id: string) {
+    setForwards((fs) => fs.filter((f) => f.id !== id));
+  }
 
   async function doSave() {
     setError(null);
@@ -217,6 +272,17 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             ? undefined
             : recordHistory === "on",
         order: initial?.order,
+        // Skip incomplete rows (no remote port). Persist the rest.
+        forwards: (() => {
+          const cleaned = forwards
+            .filter((f) => f.remotePort > 0)
+            .map((f) => ({
+              ...f,
+              name: f.name?.trim() || undefined,
+              remoteHost: f.remoteHost.trim() || "127.0.0.1",
+            }));
+          return cleaned.length > 0 ? cleaned : undefined;
+        })(),
       };
       await saveHost(rec);
       onSaved(rec);
@@ -288,6 +354,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               placeholder={t("dialog.display_name_ph")}
               autoFocus
             />
+            {dupName && (
+              <p className="text-nx-warning text-meta font-mono mt-1.5">
+                ⚠ {t("dialog.dup_name_warning", { name: trimmedName })}
+              </p>
+            )}
 
             <div className="grid grid-cols-[1fr_80px] gap-3 mt-4">
               <div>
@@ -308,6 +379,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 />
               </div>
             </div>
+            {dupHostPort && (
+              <p className="text-nx-warning text-meta font-mono mt-1.5">
+                ⚠ {t("dialog.dup_hostport_warning", { host: trimmedHost, port })}
+              </p>
+            )}
 
             <RowLabel className="mt-4">{t("dialog.user_optional")}</RowLabel>
             <Input
@@ -488,6 +564,81 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 { value: "off", label: t("dialog.record_off") },
               ]}
             />
+
+            {/* Local port forwards (ssh -L). Rows with autoStart open on connect. */}
+            <div className={kicker + " mt-6 mb-3 block"}>
+              // {t("dialog.col_forwards")}
+            </div>
+            <div className="space-y-2">
+              {forwards.map((f) => (
+                <div key={f.id} className="flex items-center gap-1.5">
+                  <input
+                    value={f.name ?? ""}
+                    onChange={(e) => updateForward(f.id, { name: e.target.value })}
+                    placeholder={t("dialog.forward_name_ph")}
+                    className="nx-focus w-[88px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
+                  />
+                  <input
+                    value={f.localPort ? String(f.localPort) : ""}
+                    onChange={(e) =>
+                      updateForward(f.id, { localPort: parseInt(e.target.value, 10) || 0 })
+                    }
+                    inputMode="numeric"
+                    placeholder={t("dialog.forward_local_ph")}
+                    className="nx-focus w-[72px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
+                  />
+                  <input
+                    value={f.remoteHost}
+                    onChange={(e) => updateForward(f.id, { remoteHost: e.target.value })}
+                    placeholder={t("dialog.forward_rhost_ph")}
+                    className="nx-focus min-w-0 flex-1 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
+                  />
+                  <input
+                    value={f.remotePort ? String(f.remotePort) : ""}
+                    onChange={(e) =>
+                      updateForward(f.id, { remotePort: parseInt(e.target.value, 10) || 0 })
+                    }
+                    inputMode="numeric"
+                    placeholder={t("dialog.forward_rport_ph")}
+                    className="nx-focus w-[60px] shrink-0 px-2 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text placeholder-nx-muted"
+                  />
+                  <select
+                    value={f.scheme ?? "https"}
+                    onChange={(e) =>
+                      updateForward(f.id, { scheme: e.target.value as "http" | "https" })
+                    }
+                    className="nx-focus shrink-0 px-1 py-1.5 bg-nx-panel border border-nx-border rounded-nx font-mono text-meta text-nx-text"
+                  >
+                    <option value="https">https</option>
+                    <option value="http">http</option>
+                  </select>
+                  <label
+                    className="shrink-0 flex items-center"
+                    title={t("dialog.forward_autostart")}
+                  >
+                    <Checkbox
+                      checked={!!f.autoStart}
+                      onChange={(v) => updateForward(f.id, { autoStart: v })}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeForward(f.id)}
+                    title={t("dialog.forward_remove")}
+                    className="shrink-0 p-1 text-nx-muted hover:text-nx-error"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addForward}
+              className="nx-focus mt-2 text-meta font-mono text-nx-accent hover:underline"
+            >
+              {t("dialog.add_forward")}
+            </button>
           </div>
         </div>
 

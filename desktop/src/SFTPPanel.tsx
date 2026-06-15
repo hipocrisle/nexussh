@@ -3,6 +3,17 @@
 // mode adds a read-only LOCAL filesystem pane on the left, with copy between
 // the two (model A: separate SFTP connection, decoupled from the interactive
 // shell session). Local side also reachable via OS file dialogs.
+//
+// Navigation & selection follow Midnight Commander / Total Commander:
+//   • single click = move the cursor + select only that row
+//   • double click / Enter = open a directory (file: no-op for now)
+//   • Ctrl/Cmd+click = toggle a row in the multi-selection
+//   • Shift+click / Shift+Arrow = range-select
+//   • ArrowUp/Down move the cursor; Insert AND Space toggle + advance
+//   • Home/End jump; Backspace goes up a level
+//   • a real ".." row at the top navigates to the parent dir
+// Operations (delete / chmod / dual-pane copy) act on the whole selection when
+// non-empty, otherwise on the cursor row.
 
 import { useState, useEffect, useCallback, useRef, Fragment } from "react";
 import { useTranslation } from "react-i18next";
@@ -25,6 +36,7 @@ import {
   Server,
   ArrowRight,
   ArrowLeft,
+  CornerLeftUp,
 } from "lucide-react";
 import type { ConnectArgs } from "./ssh";
 import {
@@ -61,6 +73,16 @@ interface Transfer {
   phase: "download" | "upload";
   transferred: number;
   total: number;
+}
+
+// ── Generic row entry (lowest common denominator of SftpEntry / LocalEntry) ──
+// Panes are driven by this shape so the cursor / selection / keyboard logic is
+// shared. The original typed entry is kept in `raw` for op-specific access.
+interface Row {
+  name: string;
+  is_dir: boolean;
+  is_symlink?: boolean;
+  size: number;
 }
 
 function fmtSize(n: number): string {
@@ -144,7 +166,34 @@ const GRID = "28px 22px 1fr 110px 160px 130px 110px";
 // size).
 const PANE_GRID = "26px 20px 1fr 78px";
 
-function FileTypeIcon({ entry }: { entry: SftpEntry }) {
+// ── Selection / cursor model ────────────────────────────────────────────────
+// A pane owns:
+//   • cursor   — the single focused row index (-1 when nothing/empty)
+//   • selected — a Set of selected entry *names* (multi-selection)
+//   • anchor   — the index a Shift-range extends from
+// The ".." row is index -1 and is never selectable / cursorable as a target;
+// it only ever fires "navigate up".
+
+interface PaneSel {
+  cursor: number;
+  selected: Set<string>;
+  anchor: number;
+}
+
+function emptySel(): PaneSel {
+  return { cursor: -1, selected: new Set(), anchor: -1 };
+}
+
+/** Names in [a,b] (inclusive, order-independent) within `rows`. */
+function rangeNames(rows: Row[], a: number, b: number): string[] {
+  const lo = Math.max(0, Math.min(a, b));
+  const hi = Math.min(rows.length - 1, Math.max(a, b));
+  const out: string[] = [];
+  for (let i = lo; i <= hi; i++) out.push(rows[i].name);
+  return out;
+}
+
+function FileTypeIcon({ entry }: { entry: Row }) {
   if (entry.is_dir) {
     return (
       <Folder
@@ -159,7 +208,7 @@ function FileTypeIcon({ entry }: { entry: SftpEntry }) {
   return <FileIcon size={14} className="text-nx-muted" />;
 }
 
-function FileTypeChip({ entry }: { entry: SftpEntry }) {
+function FileTypeChip({ entry }: { entry: Row }) {
   let label: string | null = null;
   let cls = "";
   if (entry.is_dir) {
@@ -194,14 +243,21 @@ function FileTypeChip({ entry }: { entry: SftpEntry }) {
 function Breadcrumb({
   path,
   onNavigate,
+  compact,
 }: {
   path: string;
   onNavigate: (p: string) => void;
+  compact?: boolean;
 }) {
   const segments = path.split("/").filter(Boolean);
   return (
-    <div className="flex items-center gap-1.5 px-3 py-1 rounded-nx border border-nx-border bg-nx-panel text-body min-w-0 overflow-x-auto">
-      <button onClick={() => onNavigate("/")} className="text-nx-muted hover:text-nx-soft">
+    <div
+      className={
+        "flex items-center gap-1.5 rounded-nx border border-nx-border bg-nx-panel text-body min-w-0 overflow-x-auto " +
+        (compact ? "px-2.5 py-1 text-meta font-mono" : "px-3 py-1")
+      }
+    >
+      <button onClick={() => onNavigate("/")} className="text-nx-muted hover:text-nx-soft shrink-0">
         /
       </button>
       {segments.map((seg, i) => {
@@ -230,13 +286,17 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [entries, setEntries] = useState<SftpEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Context menu: the row that was right-clicked plus whether it falls inside
+  // the active multi-selection (decides whether the action is batch or single).
   const [ctx, setCtx] = useState<{ x: number; y: number; entry: SftpEntry } | null>(
     null,
   );
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [remoteSel, setRemoteSel] = useState<PaneSel>(emptySel());
+  const selected = remoteSel.selected;
   // Active transfers keyed by transferId → live progress for the bar.
   const [transfers, setTransfers] = useState<Record<string, Transfer>>({});
-  const [chmodTarget, setChmodTarget] = useState<SftpEntry | null>(null);
+  // chmod can target a single entry OR a batch (selection) — store the list.
+  const [chmodTargets, setChmodTargets] = useState<SftpEntry[] | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
   const idRef = useRef<string | null>(null);
   // True while OS files are being dragged over the panel (drop-zone overlay).
@@ -248,7 +308,8 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   const [localEntries, setLocalEntries] = useState<LocalEntry[]>([]);
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
-  const [localSelected, setLocalSelected] = useState<Set<string>>(new Set());
+  const [localSel, setLocalSel] = useState<PaneSel>(emptySel());
+  const localSelected = localSel.selected;
 
   const loadLocal = useCallback(async (path: string) => {
     setLocalLoading(true);
@@ -257,7 +318,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       const list = await localList(path);
       setLocalEntries(list);
       setLocalCwd(path);
-      setLocalSelected(new Set());
+      setLocalSel(emptySel());
     } catch (e) {
       setLocalError(String(e));
     } finally {
@@ -284,14 +345,6 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   }
   function refreshLocal() {
     if (localCwd) loadLocal(localCwd);
-  }
-  function toggleLocalSelect(name: string) {
-    setLocalSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
   }
 
   // Listen for streaming progress events; drop a transfer shortly after it
@@ -388,7 +441,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
       const list = await sftpList(id, path);
       setEntries(list);
       setCwd(path);
-      setSelected(new Set());
+      setRemoteSel(emptySel());
     } catch (e) {
       setError(String(e));
     } finally {
@@ -575,46 +628,44 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     }
   }
 
-  function toggleSelect(name: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
-      return next;
-    });
+  // The remote entries the toolbar/menu operations should act on: the whole
+  // selection if non-empty, otherwise just the cursor row.
+  function remoteOpTargets(): SftpEntry[] {
+    if (remoteSel.selected.size > 0) {
+      return entries.filter((e) => remoteSel.selected.has(e.name));
+    }
+    const c = entries[remoteSel.cursor];
+    return c ? [c] : [];
   }
 
   // Toolbar download: 1 file → Save-As dialog; many → pick a folder, fan out.
+  // Directories in the selection are skipped (no recursive download backend).
   async function onDownloadSelected() {
-    if (!sftpId || selected.size === 0) return;
-    const names = entries
-      .filter((e) => !e.is_dir && selected.has(e.name))
-      .map((e) => e.name);
-    if (names.length === 0) return;
+    if (!sftpId) return;
+    const files = remoteOpTargets().filter((e) => !e.is_dir);
+    if (files.length === 0) return;
 
-    if (names.length === 1) {
-      const e = entries.find((x) => x.name === names[0])!;
-      await onDownload(e);
+    if (files.length === 1) {
+      await onDownload(files[0]);
       return;
     }
     const dir = await openDialog({ directory: true, title: t("sftp.download") });
     if (typeof dir !== "string") return;
     setError(null);
-    for (const name of names) {
-      const dest = `${dir}/${name}`;
-      const srcSize = entries.find((e) => e.name === name)?.size ?? 0;
+    for (const f of files) {
+      const dest = `${dir}/${f.name}`;
       const have = await localSize(dest);
-      const mode = await resolveResume(name, have, srcSize);
+      const mode = await resolveResume(f.name, have, f.size);
       if (mode === null) continue; // cancelled this file
       if (mode === "skip") {
-        setError(t("sftp.resume_complete", { name }));
+        setError(t("sftp.resume_complete", { name: f.name }));
         continue;
       }
-      const tid = startTransfer(name, "download");
+      const tid = startTransfer(f.name, "download");
       try {
-        await sftpDownload(sftpId, joinPath(cwd, name), dest, tid, mode === "resume");
+        await sftpDownload(sftpId, joinPath(cwd, f.name), dest, tid, mode === "resume");
       } catch (e) {
-        setError(`${name}: ${String(e)}`);
+        setError(`${f.name}: ${String(e)}`);
         endTransfer(tid);
         break;
       }
@@ -624,15 +675,21 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
   // --- Dual-pane copy actions (reuse the streaming upload/download + bars) ---
 
+  // The local entries to copy: selection if non-empty, else the cursor row.
+  function localOpTargets(): LocalEntry[] {
+    if (localSel.selected.size > 0) {
+      return localEntries.filter((e) => localSel.selected.has(e.name));
+    }
+    const c = localEntries[localSel.cursor];
+    return c ? [c] : [];
+  }
+
   // Local → Remote: upload selected local files into the remote cwd.
   async function onCopyToRemote() {
-    if (!sftpId || localSelected.size === 0) return;
-    const files = localEntries.filter(
-      (e) => !e.is_dir && localSelected.has(e.name),
-    );
-    const skippedDirs = localEntries.filter(
-      (e) => e.is_dir && localSelected.has(e.name),
-    );
+    if (!sftpId) return;
+    const targets = localOpTargets();
+    const files = targets.filter((e) => !e.is_dir);
+    const skippedDirs = targets.filter((e) => e.is_dir);
     setError(null);
     for (const f of files) {
       const remoteHave = entries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
@@ -666,9 +723,10 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
   // Remote → Local: download selected remote files into the local cwd.
   async function onCopyToLocal() {
-    if (!sftpId || selected.size === 0 || !localCwd) return;
-    const files = entries.filter((e) => !e.is_dir && selected.has(e.name));
-    const skippedDirs = entries.filter((e) => e.is_dir && selected.has(e.name));
+    if (!sftpId || !localCwd) return;
+    const targets = remoteOpTargets();
+    const files = targets.filter((e) => !e.is_dir);
+    const skippedDirs = targets.filter((e) => e.is_dir);
     setLocalError(null);
     for (const f of files) {
       const localHave = localEntries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
@@ -715,34 +773,59 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     }
   }
 
-  async function onDelete(entry: SftpEntry) {
-    if (!sftpId) return;
-    if (!(await askConfirm(t("sftp.delete_confirm", { name: entry.name }), { destructive: true }))) return;
+  // Delete one or many remote entries (selection-aware via `targets`).
+  async function onDeleteTargets(targets: SftpEntry[]) {
+    if (!sftpId || targets.length === 0) return;
+    const msg =
+      targets.length === 1
+        ? t("sftp.delete_confirm", { name: targets[0].name })
+        : t("sftp.delete_confirm_n", { count: targets.length });
+    if (!(await askConfirm(msg, { destructive: true }))) return;
     setError(null);
     try {
-      await sftpRemove(sftpId, joinPath(cwd, entry.name), entry.is_dir);
+      for (const e of targets) {
+        await sftpRemove(sftpId, joinPath(cwd, e.name), e.is_dir);
+      }
       refresh();
     } catch (e) {
       setError(String(e));
     }
   }
 
+  // Build the right-click menu. If the clicked row is part of the active
+  // multi-selection, operations apply to the WHOLE selection; otherwise they
+  // apply only to the clicked row.
   function rowMenu(entry: SftpEntry): MenuItem[] {
+    const inSelection = remoteSel.selected.size > 0 && remoteSel.selected.has(entry.name);
+    const targets = inSelection
+      ? entries.filter((e) => remoteSel.selected.has(e.name))
+      : [entry];
+    const n = targets.length;
     const items: MenuItem[] = [];
-    if (entry.is_dir) {
-      items.push({
-        label: t("sftp.open"),
-        onClick: () => navigate(joinPath(cwd, entry.name)),
-      });
+    if (n === 1) {
+      if (entry.is_dir) {
+        items.push({
+          label: t("sftp.open"),
+          onClick: () => navigate(joinPath(cwd, entry.name)),
+        });
+      } else {
+        items.push({ label: t("sftp.download"), onClick: () => onDownload(entry) });
+      }
+      items.push({ label: t("sftp.rename"), onClick: () => onRename(entry) });
     } else {
-      items.push({ label: t("sftp.download"), onClick: () => onDownload(entry) });
+      items.push({
+        label: t("sftp.download_n", { count: targets.filter((x) => !x.is_dir).length }),
+        onClick: () => onDownloadSelected(),
+      });
     }
-    items.push({ label: t("sftp.rename"), onClick: () => onRename(entry) });
-    items.push({ label: t("sftp.chmod"), onClick: () => setChmodTarget(entry) });
+    items.push({
+      label: n === 1 ? t("sftp.chmod") : t("sftp.chmod_n", { count: n }),
+      onClick: () => setChmodTargets(targets),
+    });
     items.push({ separator: true, label: "" });
     items.push({
-      label: t("sftp.delete"),
-      onClick: () => onDelete(entry),
+      label: n === 1 ? t("sftp.delete") : t("sftp.delete_n", { count: n }),
+      onClick: () => onDeleteTargets(targets),
       destructive: true,
     });
     return items;
@@ -816,7 +899,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
             size="sm"
             leadingIcon={<Download size={12} />}
             onClick={onDownloadSelected}
-            disabled={!sftpId || selected.size === 0}
+            disabled={!sftpId || remoteOpTargets().filter((e) => !e.is_dir).length === 0}
           >
             {t("sftp.download")}
             {selected.size > 0 && (
@@ -870,71 +953,46 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         </div>
 
         {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body gap-2">
-              <Loader2 size={16} className="animate-spin" /> {t("sftp.loading")}
-            </div>
-          ) : entries.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body">
-              {t("sftp.empty")}
-            </div>
-          ) : (
-            entries.map((e) => {
-              const isSelected = selected.has(e.name);
-              return (
-                <div
-                  key={e.name}
-                  data-active={isSelected || undefined}
-                  onDoubleClick={() =>
-                    e.is_dir ? navigate(joinPath(cwd, e.name)) : onDownload(e)
-                  }
-                  onContextMenu={(ev) => {
-                    ev.preventDefault();
-                    setCtx({ x: ev.clientX, y: ev.clientY, entry: e });
-                  }}
-                  className="nx-row grid items-center px-3.5 py-1.5 cursor-pointer text-body select-none"
-                  style={{ gridTemplateColumns: GRID, columnGap: 16 }}
-                >
-                  <div onClick={(ev) => ev.stopPropagation()}>
-                    {!e.is_dir && (
-                      <Checkbox checked={isSelected} onChange={() => toggleSelect(e.name)} />
-                    )}
-                  </div>
-                  <FileTypeIcon entry={e} />
-                  <div
-                    className="flex items-center gap-1.5 min-w-0"
-                    onClick={() =>
-                      e.is_dir ? navigate(joinPath(cwd, e.name)) : toggleSelect(e.name)
+        <FileList
+          rows={entries}
+          sel={remoteSel}
+          setSel={setRemoteSel}
+          loading={loading}
+          variant="full"
+          atRoot={cwd === "/"}
+          onOpenDir={(name) => navigate(joinPath(cwd, name))}
+          onUp={() => navigate(parentPath(cwd))}
+          onContextMenu={(ev, entry) =>
+            setCtx({ x: ev.clientX, y: ev.clientY, entry: entry as SftpEntry })
+          }
+          renderRow={(e) => {
+            const sf = e as SftpEntry;
+            return (
+              <>
+                <FileTypeIcon entry={sf} />
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span
+                    className={
+                      "truncate " +
+                      (sf.is_dir || sf.is_symlink ? "text-nx-accent2" : "text-nx-text")
                     }
                   >
-                    <span
-                      className={
-                        "truncate " +
-                        (e.is_dir || e.is_symlink
-                          ? "text-nx-accent2"
-                          : isSelected
-                            ? "text-nx-accent"
-                            : "text-nx-text")
-                      }
-                    >
-                      {e.name}
-                    </span>
-                    <FileTypeChip entry={e} />
-                  </div>
-                  <div className="text-right tabular-nums text-nx-dim">
-                    {e.is_dir ? "—" : fmtSize(e.size)}
-                  </div>
-                  <div className="text-nx-dim tabular-nums">{fmtMtime(e.mtime)}</div>
-                  <div className="tabular-nums text-nx-soft">{fmtPerms(e.permissions)}</div>
-                  <div className="text-nx-muted truncate">
-                    {e.owner || (e.uid ? String(e.uid) : "")}
-                  </div>
+                    {sf.name}
+                  </span>
+                  <FileTypeChip entry={sf} />
                 </div>
-              );
-            })
-          )}
-        </div>
+                <div className="text-right tabular-nums text-nx-dim">
+                  {sf.is_dir ? "—" : fmtSize(sf.size)}
+                </div>
+                <div className="text-nx-dim tabular-nums">{fmtMtime(sf.mtime)}</div>
+                <div className="tabular-nums text-nx-soft">{fmtPerms(sf.permissions)}</div>
+                <div className="text-nx-muted truncate">
+                  {sf.owner || (sf.uid ? String(sf.uid) : "")}
+                </div>
+              </>
+            );
+          }}
+        />
         </>
         )}
 
@@ -943,13 +1001,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           <div className="flex-1 min-h-0 flex">
             {/* LOCAL pane (left) */}
             <Pane
-              kind="local"
               title={t("sftp.local")}
               titleIcon={<HardDrive size={13} className="text-nx-accent2" />}
               path={localCwd}
               loading={localLoading}
               upDisabled={!localCwd || localParent(localCwd) === localCwd}
               onUp={() => navigateLocal(localParent(localCwd))}
+              onNavigate={navigateLocal}
               onRefresh={refreshLocal}
               count={localEntries.length}
               selectedCount={localSelected.size}
@@ -959,24 +1017,17 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                   ✗ {localError}
                 </div>
               )}
-              <PaneBody loading={localLoading} empty={localEntries.length === 0}>
-                {localEntries.map((e) => {
-                  const isSelected = localSelected.has(e.name);
-                  return (
-                    <PaneRow
-                      key={e.name}
-                      name={e.name}
-                      isDir={e.is_dir}
-                      size={e.size}
-                      isSelected={isSelected}
-                      onEnter={() =>
-                        e.is_dir && navigateLocal(localJoin(localCwd, e.name))
-                      }
-                      onToggle={() => !e.is_dir && toggleLocalSelect(e.name)}
-                    />
-                  );
-                })}
-              </PaneBody>
+              <FileList
+                rows={localEntries}
+                sel={localSel}
+                setSel={setLocalSel}
+                loading={localLoading}
+                variant="compact"
+                atRoot={!localCwd || localParent(localCwd) === localCwd}
+                onOpenDir={(name) => navigateLocal(localJoin(localCwd, name))}
+                onUp={() => navigateLocal(localParent(localCwd))}
+                renderRow={(e) => <CompactCells row={e} />}
+              />
             </Pane>
 
             {/* Center copy controls */}
@@ -984,14 +1035,16 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
               <IconButton
                 icon={<ArrowRight size={16} />}
                 onClick={onCopyToRemote}
-                disabled={!sftpId || localSelected.size === 0}
+                disabled={!sftpId || localOpTargets().filter((e) => !e.is_dir).length === 0}
                 className="!p-2"
                 title={t("sftp.copy_to_remote")}
               />
               <IconButton
                 icon={<ArrowLeft size={16} />}
                 onClick={onCopyToLocal}
-                disabled={!sftpId || selected.size === 0 || !localCwd}
+                disabled={
+                  !sftpId || !localCwd || remoteOpTargets().filter((e) => !e.is_dir).length === 0
+                }
                 className="!p-2"
                 title={t("sftp.copy_to_local")}
               />
@@ -999,13 +1052,13 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
 
             {/* REMOTE pane (right) */}
             <Pane
-              kind="remote"
               title={t("sftp.remote")}
               titleIcon={<Server size={13} className="text-nx-accent2" />}
               path={cwd}
               loading={loading}
               upDisabled={!sftpId || cwd === "/"}
               onUp={() => navigate(parentPath(cwd))}
+              onNavigate={navigate}
               onRefresh={refresh}
               count={entries.length}
               selectedCount={selected.size}
@@ -1018,29 +1071,20 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
                 />
               }
             >
-              <PaneBody loading={loading} empty={entries.length === 0}>
-                {entries.map((e) => {
-                  const isSelected = selected.has(e.name);
-                  return (
-                    <PaneRow
-                      key={e.name}
-                      name={e.name}
-                      isDir={e.is_dir}
-                      isSymlink={e.is_symlink}
-                      size={e.size}
-                      isSelected={isSelected}
-                      onEnter={() =>
-                        e.is_dir && navigate(joinPath(cwd, e.name))
-                      }
-                      onToggle={() => !e.is_dir && toggleSelect(e.name)}
-                      onContextMenu={(ev) => {
-                        ev.preventDefault();
-                        setCtx({ x: ev.clientX, y: ev.clientY, entry: e });
-                      }}
-                    />
-                  );
-                })}
-              </PaneBody>
+              <FileList
+                rows={entries}
+                sel={remoteSel}
+                setSel={setRemoteSel}
+                loading={loading}
+                variant="compact"
+                atRoot={cwd === "/"}
+                onOpenDir={(name) => navigate(joinPath(cwd, name))}
+                onUp={() => navigate(parentPath(cwd))}
+                onContextMenu={(ev, entry) =>
+                  setCtx({ x: ev.clientX, y: ev.clientY, entry: entry as SftpEntry })
+                }
+                renderRow={(e) => <CompactCells row={e} />}
+              />
             </Pane>
           </div>
         )}
@@ -1075,15 +1119,17 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         />
       )}
 
-      {chmodTarget && sftpId && (
+      {chmodTargets && chmodTargets.length > 0 && sftpId && (
         <ChmodDialog
-          entry={chmodTarget}
-          onClose={() => setChmodTarget(null)}
+          entries={chmodTargets}
+          onClose={() => setChmodTargets(null)}
           onApply={async (mode) => {
             setError(null);
             try {
-              await sftpChmod(sftpId, joinPath(cwd, chmodTarget.name), mode);
-              setChmodTarget(null);
+              for (const e of chmodTargets) {
+                await sftpChmod(sftpId, joinPath(cwd, e.name), mode);
+              }
+              setChmodTargets(null);
               refresh();
             } catch (e) {
               setError(String(e));
@@ -1129,11 +1175,263 @@ function TransferBar({ tr }: { tr: Transfer }) {
   );
 }
 
+// ── File list with MC/TC cursor + multi-selection + keyboard ────────────────
+// Shared by the single remote pane (variant="full") and both dual-pane columns
+// (variant="compact"). Owns no state of its own — the cursor/selection live in
+// the parent (so operations can read them). The list is keyboard-focusable; its
+// handlers preventDefault + stopPropagation so Arrow/Space/Insert/Enter never
+// leak to the global app hotkeys, leaving room for a later F5/F6 batch.
+
+function FileList({
+  rows,
+  sel,
+  setSel,
+  loading,
+  variant,
+  atRoot,
+  onOpenDir,
+  onUp,
+  onContextMenu,
+  renderRow,
+}: {
+  rows: Row[];
+  sel: PaneSel;
+  setSel: (updater: (prev: PaneSel) => PaneSel) => void;
+  loading: boolean;
+  variant: "full" | "compact";
+  atRoot: boolean;
+  onOpenDir: (name: string) => void;
+  onUp: () => void;
+  onContextMenu?: (ev: React.MouseEvent, entry: Row) => void;
+  renderRow: (entry: Row) => React.ReactNode;
+}) {
+  const { t } = useTranslation();
+  const grid = variant === "full" ? GRID : PANE_GRID;
+  const gap = variant === "full" ? 16 : 12;
+  const pad = variant === "full" ? "px-3.5" : "px-3";
+
+  // --- Mouse selection on a row ---
+  function clickRow(idx: number, ev: React.MouseEvent) {
+    if (ev.ctrlKey || ev.metaKey) {
+      // Toggle this row; cursor follows it.
+      setSel((prev) => {
+        const next = new Set(prev.selected);
+        const name = rows[idx].name;
+        if (next.has(name)) next.delete(name);
+        else next.add(name);
+        return { cursor: idx, selected: next, anchor: idx };
+      });
+    } else if (ev.shiftKey) {
+      // Range from anchor (or cursor) to here.
+      setSel((prev) => {
+        const from = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : idx;
+        return { cursor: idx, selected: new Set(rangeNames(rows, from, idx)), anchor: from };
+      });
+    } else {
+      // Plain click — cursor + sole selection.
+      setSel(() => ({ cursor: idx, selected: new Set([rows[idx].name]), anchor: idx }));
+    }
+  }
+
+  function toggleRow(idx: number) {
+    setSel((prev) => {
+      const next = new Set(prev.selected);
+      const name = rows[idx].name;
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return { ...prev, cursor: idx, selected: next, anchor: idx };
+    });
+  }
+
+  function openRow(idx: number) {
+    const e = rows[idx];
+    if (!e) return;
+    if (e.is_dir) onOpenDir(e.name);
+    // Files: no-op for now (preview later).
+  }
+
+  // --- Keyboard (pane focused) ---
+  function onKeyDown(ev: React.KeyboardEvent) {
+    const k = ev.key;
+    const len = rows.length;
+    const cur = sel.cursor;
+
+    const consume = () => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+
+    if (k === "ArrowDown" || k === "ArrowUp") {
+      consume();
+      const dir = k === "ArrowDown" ? 1 : -1;
+      const nextIdx = Math.max(0, Math.min(len - 1, (cur < 0 ? -1 : cur) + dir));
+      if (len === 0) return;
+      if (ev.shiftKey) {
+        setSel((prev) => {
+          const anchor = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : nextIdx;
+          return {
+            cursor: nextIdx,
+            selected: new Set(rangeNames(rows, anchor, nextIdx)),
+            anchor,
+          };
+        });
+      } else {
+        setSel((prev) => ({ ...prev, cursor: nextIdx, anchor: nextIdx }));
+      }
+    } else if (k === "Home") {
+      consume();
+      if (len > 0) setSel((prev) => ({ ...prev, cursor: 0, anchor: 0 }));
+    } else if (k === "End") {
+      consume();
+      if (len > 0) setSel((prev) => ({ ...prev, cursor: len - 1, anchor: len - 1 }));
+    } else if (k === " " || k === "Insert") {
+      // MC/TC: toggle the cursor row + advance the cursor down.
+      consume();
+      if (cur >= 0 && cur < len) {
+        const advance = Math.min(len - 1, cur + 1);
+        setSel((prev) => {
+          const next = new Set(prev.selected);
+          const name = rows[cur].name;
+          if (next.has(name)) next.delete(name);
+          else next.add(name);
+          return { cursor: advance, selected: next, anchor: advance };
+        });
+      }
+    } else if (k === "Enter") {
+      consume();
+      if (cur >= 0 && cur < len) openRow(cur);
+    } else if (k === "Backspace") {
+      consume();
+      if (!atRoot) onUp();
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body gap-2">
+          <Loader2 size={16} className="animate-spin" /> {t("sftp.loading")}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="flex-1 min-h-0 overflow-y-auto outline-none"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+    >
+      {/* ".." parent row — always first; navigates up, never selectable. */}
+      {!atRoot && (
+        <div
+          onDoubleClick={onUp}
+          onClick={onUp}
+          className={
+            "nx-row grid items-center py-1.5 cursor-pointer text-body select-none text-nx-muted " +
+            pad
+          }
+          style={{ gridTemplateColumns: grid, columnGap: gap }}
+        >
+          <div />
+          <CornerLeftUp size={14} className="text-nx-muted" />
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="truncate text-nx-soft">..</span>
+          </div>
+        </div>
+      )}
+
+      {rows.length === 0 ? (
+        <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body">
+          {t("sftp.empty")}
+        </div>
+      ) : (
+        rows.map((e, idx) => {
+          const isSelected = sel.selected.has(e.name);
+          const isCursor = sel.cursor === idx;
+          return (
+            <div
+              key={e.name}
+              data-active={isSelected || undefined}
+              data-cursor={isCursor || undefined}
+              onClick={(ev) => clickRow(idx, ev)}
+              onDoubleClick={() => openRow(idx)}
+              onContextMenu={
+                onContextMenu
+                  ? (ev) => {
+                      ev.preventDefault();
+                      // Right-click outside the selection re-selects the row so
+                      // the menu acts on it (selection-aware menus check this).
+                      if (!sel.selected.has(e.name)) {
+                        setSel(() => ({
+                          cursor: idx,
+                          selected: new Set([e.name]),
+                          anchor: idx,
+                        }));
+                      } else {
+                        setSel((prev) => ({ ...prev, cursor: idx }));
+                      }
+                      onContextMenu(ev, e);
+                    }
+                  : undefined
+              }
+              className={
+                "nx-row grid items-center py-1.5 cursor-pointer text-body select-none " +
+                pad +
+                (isCursor ? " ring-1 ring-inset ring-nx-accent/70 bg-nx-elevated/40" : "")
+              }
+              style={{ gridTemplateColumns: grid, columnGap: gap }}
+            >
+              <div onClick={(ev) => ev.stopPropagation()}>
+                <Checkbox checked={isSelected} onChange={() => toggleRow(idx)} />
+              </div>
+              {renderRow(e)}
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+/** Compact pane cells (icon · name · size) — used by both dual-pane columns. */
+function CompactCells({ row }: { row: Row }) {
+  return (
+    <>
+      {row.is_dir ? (
+        <Folder
+          size={14}
+          className="text-nx-accent2"
+          style={{ fill: "var(--nx-accent2)", fillOpacity: 0.25, strokeWidth: 1.5 }}
+        />
+      ) : row.is_symlink ? (
+        <Link2 size={14} className="text-nx-soft" />
+      ) : isKeyfile(row.name) ? (
+        <KeyRound size={14} className="text-nx-warning" />
+      ) : (
+        <FileIcon size={14} className="text-nx-muted" />
+      )}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span
+          className={
+            "truncate " + (row.is_dir || row.is_symlink ? "text-nx-accent2" : "text-nx-text")
+          }
+        >
+          {row.name}
+        </span>
+      </div>
+      <div className="text-right tabular-nums text-nx-dim">
+        {row.is_dir ? "—" : fmtSize(row.size)}
+      </div>
+    </>
+  );
+}
+
 // ── Dual-pane primitives ─────────────────────────────────────────────────
 // A pane is a self-contained column: header (icon + label + up/refresh +
-// counts), a breadcrumb-ish path bar, a fixed column header, then the body
-// (rows supplied by the caller). Local and remote panes share this chrome so
-// the two sides look identical apart from their content.
+// counts), a clickable breadcrumb path bar, a fixed column header, then the
+// body (the FileList supplied by the caller). Local and remote panes share this
+// chrome so the two sides look identical apart from their content.
 
 function Pane({
   title,
@@ -1141,6 +1439,7 @@ function Pane({
   path,
   upDisabled,
   onUp,
+  onNavigate,
   onRefresh,
   loading,
   count,
@@ -1148,12 +1447,12 @@ function Pane({
   extraActions,
   children,
 }: {
-  kind: "local" | "remote";
   title: string;
   titleIcon: React.ReactNode;
   path: string;
   upDisabled: boolean;
   onUp: () => void;
+  onNavigate: (p: string) => void;
   onRefresh: () => void;
   loading: boolean;
   count: number;
@@ -1187,11 +1486,15 @@ function Pane({
         </span>
       </div>
 
-      {/* Path bar */}
+      {/* Path bar — clickable breadcrumb */}
       <div className="px-3 py-1.5 border-b border-nx-divider shrink-0 min-w-0">
-        <div className="px-2.5 py-1 rounded-nx border border-nx-border bg-nx-panel text-meta font-mono text-nx-soft truncate">
-          {path || "—"}
-        </div>
+        {path ? (
+          <Breadcrumb path={path} onNavigate={onNavigate} compact />
+        ) : (
+          <div className="px-2.5 py-1 rounded-nx border border-nx-border bg-nx-panel text-meta font-mono text-nx-soft truncate">
+            —
+          </div>
+        )}
       </div>
 
       {/* Column header */}
@@ -1205,8 +1508,8 @@ function Pane({
         <div className="text-right">{t("sftp.col_size")}</div>
       </div>
 
-      {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto">{children}</div>
+      {/* Body (FileList) */}
+      {children}
 
       {/* Pane footer */}
       <div className="px-3 py-1.5 border-t border-nx-divider shrink-0 flex items-center gap-3 text-meta font-mono text-nx-muted">
@@ -1223,115 +1526,20 @@ function Pane({
   );
 }
 
-/** Loading / empty / rows wrapper shared by both panes. */
-function PaneBody({
-  loading,
-  empty,
-  children,
-}: {
-  loading: boolean;
-  empty: boolean;
-  children: React.ReactNode;
-}) {
-  const { t } = useTranslation();
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body gap-2">
-        <Loader2 size={16} className="animate-spin" /> {t("sftp.loading")}
-      </div>
-    );
-  }
-  if (empty) {
-    return (
-      <div className="flex items-center justify-center h-full text-nx-muted font-mono text-body">
-        {t("sftp.empty")}
-      </div>
-    );
-  }
-  return <>{children}</>;
-}
-
-/** One row in a dual-pane list (compact: checkbox · icon · name · size). */
-function PaneRow({
-  name,
-  isDir,
-  isSymlink,
-  size,
-  isSelected,
-  onEnter,
-  onToggle,
-  onContextMenu,
-}: {
-  name: string;
-  isDir: boolean;
-  isSymlink?: boolean;
-  size: number;
-  isSelected: boolean;
-  onEnter: () => void;
-  onToggle: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
-}) {
-  return (
-    <div
-      data-active={isSelected || undefined}
-      onDoubleClick={() => (isDir ? onEnter() : onToggle())}
-      onContextMenu={onContextMenu}
-      className="nx-row grid items-center px-3 py-1.5 cursor-pointer text-body select-none"
-      style={{ gridTemplateColumns: PANE_GRID, columnGap: 12 }}
-    >
-      <div onClick={(ev) => ev.stopPropagation()}>
-        {!isDir && <Checkbox checked={isSelected} onChange={onToggle} />}
-      </div>
-      {isDir ? (
-        <Folder
-          size={14}
-          className="text-nx-accent2"
-          style={{ fill: "var(--nx-accent2)", fillOpacity: 0.25, strokeWidth: 1.5 }}
-        />
-      ) : isSymlink ? (
-        <Link2 size={14} className="text-nx-soft" />
-      ) : isKeyfile(name) ? (
-        <KeyRound size={14} className="text-nx-warning" />
-      ) : (
-        <FileIcon size={14} className="text-nx-muted" />
-      )}
-      <div
-        className="flex items-center gap-1.5 min-w-0"
-        onClick={() => (isDir ? onEnter() : onToggle())}
-      >
-        <span
-          className={
-            "truncate " +
-            (isDir || isSymlink
-              ? "text-nx-accent2"
-              : isSelected
-                ? "text-nx-accent"
-                : "text-nx-text")
-          }
-        >
-          {name}
-        </span>
-      </div>
-      <div className="text-right tabular-nums text-nx-dim">
-        {isDir ? "—" : fmtSize(size)}
-      </div>
-    </div>
-  );
-}
-
 /** Octal-permission editor: 3×3 rwx grid kept in sync with an octal field. */
 function ChmodDialog({
-  entry,
+  entries,
   onClose,
   onApply,
 }: {
-  entry: SftpEntry;
+  entries: SftpEntry[];
   onClose: () => void;
   onApply: (mode: number) => void;
 }) {
   const { t } = useTranslation();
   const { backdropProps, contentProps } = useBackdropClose(onClose);
-  const [mode, setMode] = useState<number>(entry.permissions & 0o777);
+  const single = entries.length === 1 ? entries[0] : null;
+  const [mode, setMode] = useState<number>((single ? single.permissions : 0) & 0o777);
 
   const octal = mode.toString(8).padStart(3, "0");
   const bit = (group: number, perm: number) => (mode >> (group * 3)) & perm;
@@ -1359,6 +1567,8 @@ function ChmodDialog({
     { bit: 1, label: t("sftp.chmod_exec") },
   ];
 
+  const subtitle = single ? single.name : t("sftp.chmod_n", { count: entries.length });
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm"
@@ -1370,7 +1580,7 @@ function ChmodDialog({
       >
         <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-divider">
           <h2 className="text-base font-mono text-nx-accent">{t("sftp.chmod_title")}</h2>
-          <span className="text-meta text-nx-muted font-mono truncate">{entry.name}</span>
+          <span className="text-meta text-nx-muted font-mono truncate">{subtitle}</span>
           <IconButton
             className="ml-auto"
             icon={<X size={14} />}

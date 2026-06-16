@@ -68,7 +68,17 @@ import {
   markCancelling,
   removeTransfer,
 } from "./transfers";
-import { LocalEntry, localHome, localList, localSize, localDrives } from "./localfs";
+import {
+  LocalEntry,
+  localHome,
+  localList,
+  localSize,
+  localDrives,
+  localMkdir,
+  localRename,
+  localDelete,
+} from "./localfs";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { FileViewer } from "./FileViewer";
 import { ContextMenu, MenuItem } from "./ContextMenu";
 import { useBackdropClose } from "./useBackdropClose";
@@ -434,9 +444,14 @@ export function SFTPPanel({
   const [error, setError] = useState<string | null>(null);
   // Context menu: the row that was right-clicked plus whether it falls inside
   // the active multi-selection (decides whether the action is batch or single).
-  const [ctx, setCtx] = useState<{ x: number; y: number; entry: SftpEntry } | null>(
-    null,
-  );
+  const [ctx, setCtx] = useState<{
+    x: number;
+    y: number;
+    // The right-clicked row plus which pane it belongs to, so the menu renderer
+    // picks the matching (local vs remote) action set.
+    pane: "local" | "remote";
+    entry: SftpEntry | LocalEntry;
+  } | null>(null);
   const [remoteSel, setRemoteSel] = useState<PaneSel>(emptySel());
   const selected = remoteSel.selected;
   // Active transfers keyed by transferId → live progress for the bar. Kept in a
@@ -993,9 +1008,9 @@ export function SFTPPanel({
   }
 
   // Local → Remote: upload selected local files into the remote cwd.
-  async function onCopyToRemote() {
+  async function onCopyToRemote(explicit?: LocalEntry[]) {
     if (!sftpId) return;
-    const targets = localOpTargets();
+    const targets = explicit ?? localOpTargets();
     const files = targets.filter((e) => !e.is_dir);
     const skippedDirs = targets.filter((e) => e.is_dir).map((d) => d.name);
     const failed: { name: string; msg: string }[] = [];
@@ -1072,6 +1087,71 @@ export function SFTPPanel({
     const msg = buildTransferError(t, failed, skippedDirs);
     if (msg) setLocalError(msg);
     refreshLocal(); // refresh destination (local) pane
+  }
+
+  // --- LOCAL pane write ops (mirror the remote ones; act on the local fs,
+  // surface failures via localError, and reload the LOCAL pane afterwards). ---
+
+  async function onLocalMkdir() {
+    if (!localCwd) return;
+    const name = await askPrompt(t("sftp.new_folder_prompt"));
+    if (!name || !name.trim()) return;
+    setLocalError(null);
+    try {
+      await localMkdir(localJoin(localCwd, name.trim()));
+      refreshLocal();
+    } catch (e) {
+      setLocalError(String(e));
+    }
+  }
+
+  async function onLocalRename(entry: LocalEntry) {
+    if (!localCwd) return;
+    const next = await askPrompt(t("sftp.rename_prompt"), {
+      defaultValue: entry.name,
+    });
+    if (!next || !next.trim() || next === entry.name) return;
+    setLocalError(null);
+    try {
+      await localRename(
+        localJoin(localCwd, entry.name),
+        localJoin(localCwd, next.trim()),
+      );
+      refreshLocal();
+    } catch (e) {
+      setLocalError(String(e));
+    }
+  }
+
+  async function onLocalDeleteTargets(targets: LocalEntry[]) {
+    if (!localCwd || targets.length === 0) return;
+    const msg =
+      targets.length === 1
+        ? t("sftp.delete_confirm", { name: targets[0].name })
+        : t("sftp.delete_confirm_n", { count: targets.length });
+    if (!(await askConfirm(msg, { destructive: true }))) return;
+    setLocalError(null);
+    try {
+      for (const e of targets) {
+        await localDelete(localJoin(localCwd, e.name));
+      }
+      refreshLocal();
+    } catch (e) {
+      setLocalError(String(e));
+    }
+  }
+
+  // Open the LOCAL cursor file in the OS default app (F3/F4 when the local pane
+  // is active, or the local context menu). No-op for a directory / empty cursor.
+  async function onLocalOpenExternal(entry?: LocalEntry) {
+    const target = entry ?? localEntries[localSel.cursor];
+    if (!target || target.is_dir) return;
+    setLocalError(null);
+    try {
+      await openPath(localJoin(localCwd, target.name));
+    } catch (e) {
+      setLocalError(String(e));
+    }
   }
 
   async function onRename(entry: SftpEntry) {
@@ -1151,15 +1231,21 @@ export function SFTPPanel({
         return;
       }
 
-      // F3 = view, F4 = edit the remote cursor file (text files only).
+      // Whether the LOCAL pane currently owns the keyboard (dual-pane only).
+      const localActive = dualPane && activePane === "local";
+
+      // F3 = view, F4 = edit. Remote pane → built-in viewer/editor. LOCAL pane →
+      // open the cursor file in the OS default app (NEVER touch the remote side).
       if (e.key === "F3") {
         consume();
-        openViewer("view");
+        if (localActive) onLocalOpenExternal();
+        else openViewer("view");
         return;
       }
       if (e.key === "F4") {
         consume();
-        openViewer("edit");
+        if (localActive) onLocalOpenExternal();
+        else openViewer("edit");
         return;
       }
       // F2 only acts inside the editor (handled by the viewer's own handler);
@@ -1190,29 +1276,53 @@ export function SFTPPanel({
       }
 
       if (e.key === "F6") {
-        // Rename the cursor entry (remote — the only side with write ops).
+        // Rename the cursor entry on whichever pane is active.
         consume();
-        const c = entries[remoteSel.cursor];
-        if (c) onRename(c);
+        if (localActive) {
+          const lc = localEntries[localSel.cursor];
+          if (lc) onLocalRename(lc);
+        } else {
+          const c = entries[remoteSel.cursor];
+          if (c) onRename(c);
+        }
         return;
       }
 
       if (e.key === "F7") {
+        // New folder in the active pane's cwd.
         consume();
-        onMkdir();
+        if (localActive) onLocalMkdir();
+        else onMkdir();
         return;
       }
 
       if (e.key === "F8" || (e.key === "Delete" && !typing)) {
         consume();
-        const targets = remoteOpTargets();
-        if (targets.length > 0) onDeleteTargets(targets);
+        if (localActive) {
+          const targets = localOpTargets();
+          if (targets.length > 0) onLocalDeleteTargets(targets);
+        } else {
+          const targets = remoteOpTargets();
+          if (targets.length > 0) onDeleteTargets(targets);
+        }
         return;
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dualPane, activePane, helpOpen, entries, remoteSel, viewer, cwd, collapsed]);
+  }, [
+    dualPane,
+    activePane,
+    helpOpen,
+    entries,
+    remoteSel,
+    localEntries,
+    localSel,
+    localCwd,
+    viewer,
+    cwd,
+    collapsed,
+  ]);
 
   // Build the right-click menu. If the clicked row is part of the active
   // multi-selection, operations apply to the WHOLE selection; otherwise they
@@ -1248,6 +1358,50 @@ export function SFTPPanel({
     items.push({
       label: n === 1 ? t("sftp.delete") : t("sftp.delete_n", { count: n }),
       onClick: () => onDeleteTargets(targets),
+      destructive: true,
+    });
+    return items;
+  }
+
+  // Right-click menu for the LOCAL pane — local-only actions, selection-aware
+  // exactly like rowMenu (a click inside a multi-selection acts on the whole
+  // selection; otherwise on that row). Never touches the remote side.
+  function localRowMenu(entry: LocalEntry): MenuItem[] {
+    const inSelection =
+      localSel.selected.size > 0 && localSel.selected.has(entry.name);
+    const targets = inSelection
+      ? localEntries.filter((e) => localSel.selected.has(e.name))
+      : [entry];
+    const n = targets.length;
+    const items: MenuItem[] = [];
+    if (n === 1) {
+      if (entry.is_dir) {
+        items.push({
+          label: t("sftp.open"),
+          onClick: () => navigateLocal(localJoin(localCwd, entry.name)),
+        });
+      } else {
+        items.push({
+          label: t("sftp.open_external"),
+          onClick: () => onLocalOpenExternal(entry),
+        });
+      }
+    }
+    items.push({
+      label:
+        n === 1
+          ? t("sftp.copy_to_remote")
+          : t("sftp.copy_to_remote") + ` (${targets.filter((x) => !x.is_dir).length})`,
+      onClick: () => onCopyToRemote(targets),
+    });
+    items.push({ label: t("sftp.new_folder"), onClick: () => onLocalMkdir() });
+    if (n === 1) {
+      items.push({ label: t("sftp.rename"), onClick: () => onLocalRename(entry) });
+    }
+    items.push({ separator: true, label: "" });
+    items.push({
+      label: n === 1 ? t("sftp.delete") : t("sftp.delete_n", { count: n }),
+      onClick: () => onLocalDeleteTargets(targets),
       destructive: true,
     });
     return items;
@@ -1432,7 +1586,12 @@ export function SFTPPanel({
           onOpenDir={(name) => navigate(joinPath(cwd, name))}
           onUp={() => navigate(parentPath(cwd))}
           onContextMenu={(ev, entry) =>
-            setCtx({ x: ev.clientX, y: ev.clientY, entry: entry as SftpEntry })
+            setCtx({
+              x: ev.clientX,
+              y: ev.clientY,
+              pane: "remote",
+              entry: entry as SftpEntry,
+            })
           }
           renderRow={(e) => {
             const sf = e as SftpEntry;
@@ -1484,13 +1643,21 @@ export function SFTPPanel({
               count={localEntries.length}
               selectedCount={localSelected.size}
               extraActions={
-                localDriveList.length > 1 ? (
-                  <DrivePicker
-                    drives={localDriveList}
-                    current={currentDrive}
-                    onSelect={(d) => navigateLocal(d)}
+                <>
+                  {localDriveList.length > 1 && (
+                    <DrivePicker
+                      drives={localDriveList}
+                      current={currentDrive}
+                      onSelect={(d) => navigateLocal(d)}
+                    />
+                  )}
+                  <IconButton
+                    icon={<FolderPlus size={13} />}
+                    onClick={onLocalMkdir}
+                    disabled={!localCwd}
+                    title={t("sftp.new_folder")}
                   />
-                ) : undefined
+                </>
               }
             >
               {localError && (
@@ -1514,6 +1681,14 @@ export function SFTPPanel({
                 atRoot={!localCwd || localParent(localCwd) === localCwd}
                 onOpenDir={(name) => navigateLocal(localJoin(localCwd, name))}
                 onUp={() => navigateLocal(localParent(localCwd))}
+                onContextMenu={(ev, entry) =>
+                  setCtx({
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    pane: "local",
+                    entry: entry as LocalEntry,
+                  })
+                }
                 renderRow={(e) => <CompactCells row={e} />}
               />
             </Pane>
@@ -1522,7 +1697,7 @@ export function SFTPPanel({
             <div className="shrink-0 w-12 flex flex-col items-center justify-center gap-3 border-x border-nx-divider bg-nx-panel/40">
               <IconButton
                 icon={<ArrowRight size={16} />}
-                onClick={onCopyToRemote}
+                onClick={() => onCopyToRemote()}
                 disabled={!sftpId || localOpTargets().filter((e) => !e.is_dir).length === 0}
                 className="!p-2"
                 title={t("sftp.copy_to_remote")}
@@ -1572,7 +1747,12 @@ export function SFTPPanel({
                 onOpenDir={(name) => navigate(joinPath(cwd, name))}
                 onUp={() => navigate(parentPath(cwd))}
                 onContextMenu={(ev, entry) =>
-                  setCtx({ x: ev.clientX, y: ev.clientY, entry: entry as SftpEntry })
+                  setCtx({
+                    x: ev.clientX,
+                    y: ev.clientY,
+                    pane: "remote",
+                    entry: entry as SftpEntry,
+                  })
                 }
                 renderRow={(e) => <CompactCells row={e} />}
               />
@@ -1630,7 +1810,11 @@ export function SFTPPanel({
         <ContextMenu
           x={ctx.x}
           y={ctx.y}
-          items={rowMenu(ctx.entry)}
+          items={
+            ctx.pane === "local"
+              ? localRowMenu(ctx.entry as LocalEntry)
+              : rowMenu(ctx.entry as SftpEntry)
+          }
           onClose={() => setCtx(null)}
         />
       )}

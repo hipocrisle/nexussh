@@ -35,3 +35,18 @@ export async function localSize(path: string): Promise<number> {
 export async function localDrives(): Promise<string[]> {
   return await invoke<string[]>("fs_local_drives");
 }
+
+/** Create a single new local directory (errors if the parent doesn't exist). */
+export async function localMkdir(path: string): Promise<void> {
+  await invoke("fs_local_mkdir", { path });
+}
+
+/** Rename / move a local entry (file or directory). */
+export async function localRename(from: string, to: string): Promise<void> {
+  await invoke("fs_local_rename", { from, to });
+}
+
+/** Delete a local entry (recursively for a directory). Confirm in the UI first. */
+export async function localDelete(path: string): Promise<void> {
+  await invoke("fs_local_delete", { path });
+}

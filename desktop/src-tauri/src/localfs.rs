@@ -1,8 +1,10 @@
 //! Local filesystem browsing for the dual-pane SFTP file manager.
 //!
-//! Read-only listing only — copying *to* the local disk reuses `sftp_download`
-//! (which writes the file), and copying *from* it reuses `sftp_upload`. No new
-//! crates: home dir comes from the standard env vars.
+//! Listing + a small set of write operations (mkdir / rename / delete) so the
+//! LOCAL pane is a first-class file manager, not read-only. Copying *to* the
+//! local disk reuses `sftp_download` (which writes the file), and copying *from*
+//! it reuses `sftp_upload`. No new crates: home dir comes from the standard env
+//! vars and the write ops use `std::fs`.
 
 use serde::Serialize;
 use std::path::Path;
@@ -89,4 +91,34 @@ pub fn fs_local_list(path: String) -> Result<Vec<LocalEntry>, String> {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(out)
+}
+
+/// Create a single new local directory. Mirrors `sftp_mkdir`: a single level
+/// (NOT `create_dir_all`), so creating into a non-existent parent errors out
+/// rather than silently materialising the whole chain.
+#[tauri::command]
+pub fn fs_local_mkdir(path: String) -> Result<(), String> {
+    std::fs::create_dir(&path).map_err(|e| format!("{path}: {e}"))
+}
+
+/// Rename / move a local entry (file or directory). Mirrors `sftp_rename`.
+#[tauri::command]
+pub fn fs_local_rename(from: String, to: String) -> Result<(), String> {
+    std::fs::rename(&from, &to).map_err(|e| format!("{from} → {to}: {e}"))
+}
+
+/// Delete a local entry: recursively for a directory, single-shot for a file.
+/// Always invoked behind a UI confirm, mirroring `sftp_remove`.
+#[tauri::command]
+pub fn fs_local_delete(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    let is_dir = std::fs::symlink_metadata(p)
+        .map(|m| m.is_dir())
+        .map_err(|e| format!("{path}: {e}"))?;
+    let res = if is_dir {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
+    };
+    res.map_err(|e| format!("{path}: {e}"))
 }

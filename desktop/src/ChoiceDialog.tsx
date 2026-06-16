@@ -2,7 +2,7 @@
 // (plus cancel), for flows with >2 outcomes where a yes/no ConfirmDialog can't
 // express the choice (e.g. "enable history as light OR full").
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "./components/primitives";
 import { useBackdropClose } from "./useBackdropClose";
@@ -32,10 +32,35 @@ export function ChoiceDialog({
 }: Props) {
   const { t } = useTranslation();
   const { backdropProps, contentProps } = useBackdropClose(onCancel);
+  const optsRef = useRef<HTMLDivElement>(null);
+
+  // Focus the first option as soon as the dialog opens so it's keyboard-ready —
+  // no mouse click needed before arrows/Enter work.
+  useEffect(() => {
+    const id = requestAnimationFrame(() =>
+      optsRef.current?.querySelector<HTMLButtonElement>("button")?.focus(),
+    );
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
+      if (e.key === "Escape") {
+        onCancel();
+        return;
+      }
+      // Up/Down move focus between the option buttons.
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        const btns = Array.from(
+          optsRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+        );
+        if (btns.length === 0) return;
+        e.preventDefault();
+        const cur = btns.indexOf(document.activeElement as HTMLButtonElement);
+        const delta = e.key === "ArrowDown" ? 1 : -1;
+        const next = (cur + delta + btns.length) % btns.length;
+        btns[next < 0 ? 0 : next].focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -53,7 +78,7 @@ export function ChoiceDialog({
         <div className="font-mono text-sm text-nx-muted mb-5 whitespace-pre-line">
           {message}
         </div>
-        <div className="flex flex-col gap-2">
+        <div ref={optsRef} className="flex flex-col gap-2">
           {options.map((o) => (
             <button
               key={o.value}

@@ -9,7 +9,10 @@ import { useBackdropClose } from "./useBackdropClose";
 
 interface Section {
   title: string;
-  items: { keys: string[]; desc: string }[];
+  // `keys` are rendered as adjacent <kbd> chips (a chord). To show an
+  // *alternative* binding on the same row, use { alt: ["Ctrl", "/"] } — it's
+  // rendered after an "/" separator so "? / Ctrl+/" doesn't read as a combo.
+  items: { keys: string[]; alt?: string[]; desc: string }[];
 }
 
 interface Props {
@@ -55,8 +58,7 @@ export function ShortcutsOverlay({ onClose }: Props) {
         { keys: ["Ctrl", "H"], desc: t("shortcuts.k_history") },
         { keys: ["Ctrl", "S"], desc: t("shortcuts.k_open_sftp") },
         { keys: ["Ctrl", "Shift", "L"], desc: t("shortcuts.k_lock") },
-        { keys: ["?"], desc: t("shortcuts.k_this_overlay") },
-        { keys: ["Ctrl", "/"], desc: t("shortcuts.k_this_overlay") },
+        { keys: ["?"], alt: ["Ctrl", "/"], desc: t("shortcuts.k_this_overlay") },
         { keys: ["Esc"], desc: t("shortcuts.k_close_overlay") },
       ],
     },
@@ -112,6 +114,19 @@ export function ShortcutsOverlay({ onClose }: Props) {
                           {k}
                         </kbd>
                       ))}
+                      {it.alt && (
+                        <>
+                          <span className="text-nx-soft px-0.5">/</span>
+                          {it.alt.map((k, j) => (
+                            <kbd
+                              key={`alt-${j}`}
+                              className="px-1.5 py-0.5 border border-nx-border rounded-nx-sm bg-nx-panel text-nx-accent text-micro"
+                            >
+                              {k}
+                            </kbd>
+                          ))}
+                        </>
+                      )}
                     </span>
                     <span className="text-nx-text">{it.desc}</span>
                   </li>

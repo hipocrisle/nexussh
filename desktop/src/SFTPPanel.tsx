@@ -307,16 +307,50 @@ function FileTypeChip({ entry }: { entry: Row }) {
   );
 }
 
+// Is this a Windows-style path? (drive-letter prefix or any backslash present.)
+function isWindowsPath(p: string): boolean {
+  return /^[A-Za-z]:/.test(p) || p.includes("\\");
+}
+
 function Breadcrumb({
   path,
   onNavigate,
   compact,
+  /** When set, the path is treated as a LOCAL filesystem path and rebuilt with
+   *  the platform's own separator / root form (Windows: "C:\a\b", POSIX: "/a/b").
+   *  The remote pane never sets this — it's always POSIX. */
+  local,
 }: {
   path: string;
   onNavigate: (p: string) => void;
   compact?: boolean;
+  local?: boolean;
 }) {
-  const segments = path.split("/").filter(Boolean);
+  const win = local && isWindowsPath(path);
+  // Split on BOTH separators so a stray mix never produces empty / malformed
+  // segments. For Windows the first segment is the drive ("C:").
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+
+  // Root button: clicking it goes to the drive root ("C:\") on Windows, "/" on
+  // POSIX. For Windows the drive lives in segments[0], so build it from there.
+  const winDrive = win && segments.length > 0 ? segments[0] : "";
+  const rootTarget = win ? (winDrive ? winDrive + "\\" : "\\") : "/";
+  const rootLabel = win ? (winDrive || "\\") : "/";
+
+  // For Windows we render the drive as the root button (segments[0]) and start
+  // the clickable segment list after it; POSIX keeps the leading "/" root button
+  // and lists every segment.
+  const listSegs = win ? segments.slice(1) : segments;
+  // Build the clickable target for the i-th item of listSegs.
+  const targetFor = (i: number): string => {
+    if (win) {
+      // drive + backslash + joined sub-segments (no trailing slash)
+      return winDrive + "\\" + segments.slice(1, i + 2).join("\\");
+    }
+    return "/" + segments.slice(0, i + 1).join("/");
+  };
+  const sepChar = win ? "\\" : "/";
+
   return (
     <div
       className={
@@ -324,21 +358,24 @@ function Breadcrumb({
         (compact ? "px-2.5 py-1 text-meta font-mono" : "px-3 py-1")
       }
     >
-      <button onClick={() => onNavigate("/")} className="text-nx-muted hover:text-nx-soft shrink-0">
-        /
+      <button
+        onClick={() => onNavigate(rootTarget)}
+        className="text-nx-muted hover:text-nx-soft shrink-0"
+      >
+        {rootLabel}
       </button>
-      {segments.map((seg, i) => {
-        const isLast = i === segments.length - 1;
-        const subPath = "/" + segments.slice(0, i + 1).join("/");
+      {listSegs.map((seg, i) => {
+        const isLast = i === listSegs.length - 1;
+        const subPath = targetFor(i);
         return (
           <span key={i} className="flex items-center gap-1.5 shrink-0">
+            <span className="text-nx-accent">{sepChar}</span>
             <button
               onClick={() => onNavigate(subPath)}
               className={isLast ? "text-nx-text" : "text-nx-soft hover:underline"}
             >
               {seg}
             </button>
-            {!isLast && <span className="text-nx-accent">/</span>}
           </span>
         );
       })}
@@ -1176,12 +1213,14 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-divider shrink-0">
           <h2 className="text-lg font-mono text-nx-accent">&gt; sftp</h2>
           <span className="text-meta text-nx-muted font-mono truncate">{title}</span>
-          <IconButton
-            className="ml-auto"
-            icon={<HelpCircle size={15} />}
+          <button
             onClick={() => setHelpOpen(true)}
-            title={t("sftp.help") + " (F1)"}
-          />
+            title={t("sftp.help")}
+            className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-nx text-meta font-mono text-nx-muted hover:text-nx-accent hover:bg-nx-elevated transition-colors"
+          >
+            <HelpCircle size={14} />
+            <span>{t("sftp.help_hint")}</span>
+          </button>
           <IconButton
             className={dualPane ? "!text-nx-accent !bg-nx-elevated" : ""}
             icon={<Columns2 size={15} />}
@@ -1278,6 +1317,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
           setSel={setRemoteSel}
           loading={loading}
           variant="full"
+          active={!dualPane}
           atRoot={cwd === "/"}
           onOpenDir={(name) => navigate(joinPath(cwd, name))}
           onUp={() => navigate(parentPath(cwd))}
@@ -1321,6 +1361,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
             {/* LOCAL pane (left) */}
             <Pane
               title={t("sftp.local")}
+              local
               titleIcon={<HardDrive size={13} className="text-nx-accent2" />}
               path={localCwd}
               loading={localLoading}
@@ -1633,11 +1674,16 @@ function FileList({
   const gap = variant === "full" ? 16 : 12;
   const pad = variant === "full" ? "px-3.5" : "px-3";
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Keep keyboard focus on the active pane. Re-run not just when this pane
+  // becomes active but whenever its listing changes (navigation incl. Backspace
+  // / "..", mkdir, delete, rename, refresh, copy completion) — those re-render
+  // the list and would otherwise drop DOM focus, freezing the arrow keys until
+  // a Tab round-trip. `rows` identity changes on every reload, so it's the key.
   useEffect(() => {
     if (active && scrollRef.current && !scrollRef.current.contains(document.activeElement)) {
       scrollRef.current.focus({ preventScroll: true });
     }
-  }, [active]);
+  }, [active, rows, loading]);
 
   // Drop-target highlight: true while a cross-pane internal drag hovers THIS
   // list. dragenter/leave fire per child element, so we count depth to avoid
@@ -1645,46 +1691,67 @@ function FileList({
   const [dropActive, setDropActive] = useState(false);
   const dragDepthRef = useRef(0);
 
-  // Read the source pane from an internal drag, or null if it isn't one (e.g. an
-  // OS-file drag — those are handled by Tauri, never reach here as a valid type).
+  // Is this drag an internal pane-to-pane drag? On dragover/dragenter the
+  // dataTransfer payload is NOT readable (security) — we can only inspect
+  // `types`. WebKitGTK (Tauri/Linux) frequently omits custom MIME types from
+  // `types` during dragover, so gating preventDefault on the type being present
+  // means drop never fires. We therefore treat ANY drag while `dnd` is wired as
+  // a candidate (the OS-file drag is handled by Tauri's own listener and does
+  // not deliver these HTML5 events), and only on `drop` — where getData works —
+  // do we read the actual source pane and bail if it isn't one of ours.
+  function looksInternal(e: React.DragEvent): boolean {
+    if (!dnd) return false;
+    const types = e.dataTransfer.types;
+    // If types are listed and clearly an OS file drag, ignore; otherwise accept.
+    if (types.includes(DND_PANE_MIME)) return true;
+    if (types.includes("Files")) return false;
+    return true;
+  }
+
   function readDragSource(e: React.DragEvent): "local" | "remote" | null {
     if (!dnd) return null;
-    const v = e.dataTransfer.types.includes(DND_PANE_MIME)
-      ? e.dataTransfer.getData(DND_PANE_MIME)
-      : "";
+    const v = e.dataTransfer.getData(DND_PANE_MIME);
     return v === "local" || v === "remote" ? v : null;
   }
 
   function paneDragOver(e: React.DragEvent) {
-    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
-    // Only a cross-pane drag is a valid drop here; same-pane shows no target.
+    if (!looksInternal(e)) return;
+    // REQUIRED: without preventDefault on dragover the drop event never fires.
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   }
   function paneDragEnter(e: React.DragEvent) {
-    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
+    if (!looksInternal(e)) return;
+    e.preventDefault();
     dragDepthRef.current += 1;
     setDropActive(true);
   }
   function paneDragLeave(e: React.DragEvent) {
-    if (!dnd || !e.dataTransfer.types.includes(DND_PANE_MIME)) return;
+    if (!looksInternal(e)) return;
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) setDropActive(false);
   }
   function paneDrop(e: React.DragEvent) {
     if (!dnd) return;
+    e.preventDefault();
     const src = readDragSource(e);
     dragDepthRef.current = 0;
     setDropActive(false);
-    if (!src) return;
-    e.preventDefault();
+    if (!src) return; // not one of ours — ignore
     dnd.onDrop(src);
   }
 
   // --- Mouse selection on a row ---
   function clickRow(idx: number, ev: React.MouseEvent) {
-    if (ev.ctrlKey || ev.metaKey) {
-      // Toggle this row; cursor follows it.
+    if (ev.shiftKey) {
+      // Range from anchor (or cursor) to here.
+      setSel((prev) => {
+        const from = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : idx;
+        return { cursor: idx, selected: new Set(rangeNames(rows, from, idx)), anchor: from };
+      });
+    } else {
+      // Plain click === checkbox click (and === Ctrl/Cmd+click): TOGGLE this row's
+      // membership, MC-style — other selections are preserved. Cursor follows.
       setSel((prev) => {
         const next = new Set(prev.selected);
         const name = rows[idx].name;
@@ -1692,15 +1759,6 @@ function FileList({
         else next.add(name);
         return { cursor: idx, selected: next, anchor: idx };
       });
-    } else if (ev.shiftKey) {
-      // Range from anchor (or cursor) to here.
-      setSel((prev) => {
-        const from = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : idx;
-        return { cursor: idx, selected: new Set(rangeNames(rows, from, idx)), anchor: from };
-      });
-    } else {
-      // Plain click — cursor + sole selection.
-      setSel(() => ({ cursor: idx, selected: new Set([rows[idx].name]), anchor: idx }));
     }
   }
 
@@ -1732,17 +1790,26 @@ function FileList({
       ev.stopPropagation();
     };
 
+    // The ".." parent row is cursor index -1 (only when not at root). It's
+    // cursorable but never selectable: Space/Insert no-op on it, it never enters
+    // `selected`, and Enter on it navigates up.
+    const minCursor = atRoot ? 0 : -1;
+
     if (k === "ArrowDown" || k === "ArrowUp") {
       consume();
+      if (len === 0 && atRoot) return;
       const dir = k === "ArrowDown" ? 1 : -1;
-      const nextIdx = Math.max(0, Math.min(len - 1, (cur < 0 ? -1 : cur) + dir));
-      if (len === 0) return;
+      const base = cur < minCursor ? minCursor : cur;
+      const nextIdx = Math.max(minCursor, Math.min(len - 1, base + dir));
       if (ev.shiftKey) {
+        // Range select can't include the non-selectable "..": clamp anchor/cursor
+        // to real rows for the range computation.
         setSel((prev) => {
-          const anchor = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : nextIdx;
+          const c = Math.max(0, nextIdx);
+          const anchor = prev.anchor >= 0 ? prev.anchor : prev.cursor >= 0 ? prev.cursor : c;
           return {
             cursor: nextIdx,
-            selected: new Set(rangeNames(rows, anchor, nextIdx)),
+            selected: nextIdx < 0 ? prev.selected : new Set(rangeNames(rows, anchor, c)),
             anchor,
           };
         });
@@ -1751,12 +1818,12 @@ function FileList({
       }
     } else if (k === "Home") {
       consume();
-      if (len > 0) setSel((prev) => ({ ...prev, cursor: 0, anchor: 0 }));
+      setSel((prev) => ({ ...prev, cursor: minCursor, anchor: minCursor }));
     } else if (k === "End") {
       consume();
       if (len > 0) setSel((prev) => ({ ...prev, cursor: len - 1, anchor: len - 1 }));
     } else if (k === " " || k === "Insert") {
-      // MC/TC: toggle the cursor row + advance the cursor down.
+      // MC/TC: toggle the cursor row + advance the cursor down. No-op on "..".
       consume();
       if (cur >= 0 && cur < len) {
         const advance = Math.min(len - 1, cur + 1);
@@ -1770,7 +1837,9 @@ function FileList({
       }
     } else if (k === "Enter") {
       consume();
-      if (cur >= 0 && cur < len) openRow(cur);
+      // Enter on ".." (cursor -1) goes up; on a real row opens it.
+      if (cur === -1 && !atRoot) onUp();
+      else if (cur >= 0 && cur < len) openRow(cur);
     } else if (k === "Backspace") {
       consume();
       if (!atRoot) onUp();
@@ -1808,14 +1877,17 @@ function FileList({
           {t("sftp.drag_drop_here")}
         </div>
       )}
-      {/* ".." parent row — always first; navigates up, never selectable. */}
+      {/* ".." parent row — always first; cursorable (cursor index -1) but never
+          selectable; navigates up on click / Enter. */}
       {!atRoot && (
         <div
+          data-cursor={sel.cursor === -1 || undefined}
           onDoubleClick={onUp}
-          onClick={onUp}
+          onClick={() => setSel((prev) => ({ ...prev, cursor: -1, anchor: -1 }))}
           className={
             "nx-row grid items-center py-1.5 cursor-pointer text-body select-none text-nx-muted " +
-            pad
+            pad +
+            (sel.cursor === -1 ? " ring-1 ring-inset ring-nx-accent/70 bg-nx-elevated/40" : "")
           }
           style={{ gridTemplateColumns: grid, columnGap: gap }}
         >
@@ -1944,6 +2016,7 @@ function Pane({
   active,
   onActivate,
   extraActions,
+  local,
   children,
 }: {
   title: string;
@@ -1959,6 +2032,8 @@ function Pane({
   active?: boolean;
   onActivate?: () => void;
   extraActions?: React.ReactNode;
+  /** This is the LOCAL pane → breadcrumb uses platform-aware path joining. */
+  local?: boolean;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -2006,7 +2081,7 @@ function Pane({
       {/* Path bar — clickable breadcrumb */}
       <div className="px-3 py-1.5 border-b border-nx-divider shrink-0 min-w-0">
         {path ? (
-          <Breadcrumb path={path} onNavigate={onNavigate} compact />
+          <Breadcrumb path={path} onNavigate={onNavigate} compact local={local} />
         ) : (
           <div className="px-2.5 py-1 rounded-nx border border-nx-border bg-nx-panel text-meta font-mono text-nx-soft truncate">
             —
@@ -2098,8 +2173,8 @@ function SftpHelpOverlay({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const rows: { keys: string; desc: string }[] = [
+    // Function keys — contiguous F1…F8.
     { keys: "F1", desc: t("sftp.hk_help") },
-    { keys: "Tab", desc: t("sftp.hk_switch_pane") },
     { keys: "F2", desc: t("sftp.hk_save") },
     { keys: "F3", desc: t("sftp.hk_view") },
     { keys: "F4", desc: t("sftp.hk_edit") },
@@ -2107,6 +2182,8 @@ function SftpHelpOverlay({ onClose }: { onClose: () => void }) {
     { keys: "F6", desc: t("sftp.hk_rename") },
     { keys: "F7", desc: t("sftp.hk_mkdir") },
     { keys: "F8 / Del", desc: t("sftp.hk_delete") },
+    // Navigation & other keys.
+    { keys: "Tab", desc: t("sftp.hk_switch_pane") },
     { keys: "↑ ↓ Home End", desc: t("sftp.hk_arrows") },
     { keys: "Space / Ins", desc: t("sftp.hk_select") },
     { keys: "Enter", desc: t("sftp.hk_open") },

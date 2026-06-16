@@ -12,6 +12,7 @@ import {
   Terminal as TerminalIcon,
   Globe,
   Info,
+  X,
 } from "lucide-react";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { useIsMobile } from "./useIsMobile";
@@ -190,6 +191,15 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
               </span>
               <span style={{ color: t.border }}>|</span>
               <LanguageSwitcher />
+              <span style={{ color: t.border }}>|</span>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={tr("shortcuts.close")}
+                className="inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text hover:bg-nx-elevated active:bg-nx-bg-2"
+              >
+                <X size={14} />
+              </button>
             </div>
           </header>
         )}

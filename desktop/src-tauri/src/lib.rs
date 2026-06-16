@@ -1,3 +1,4 @@
+mod account_crypto;
 mod android_keepalive;
 mod android_updater;
 mod biometric;

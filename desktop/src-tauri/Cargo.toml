@@ -55,6 +55,22 @@ tokio-socks = "0.5.2"
 ureq = "2.12"
 sha2 = "0.10"
 
+# --- Account-sync (Phase 0) client-side E2E crypto (account_crypto.rs) ---
+# Split-KDF (Argon2id via the existing `argon2` dep) -> HKDF-SHA256 sub-keys
+# (auth verifier + key-wrapping key) -> XChaCha20-Poly1305 AEAD for wrapping the
+# random user key and encrypting items. All versions match what's already in the
+# tree transitively, so cargo unifies rather than duplicating.
+hkdf = "0.12"
+# `getrandom` feature pulls in rand_core+OsRng and the AeadCore::generate_nonce
+# helper used to mint a fresh 24-byte XNonce per seal.
+chacha20poly1305 = { version = "0.10", features = ["getrandom"] }
+# rand_core::OsRng for the random user key / recovery key / account salt.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# Human-readable recovery "emergency kit" (RFC4648 base32, dash-grouped).
+base32 = "0.5"
+# Zeroize sensitive key buffers on drop.
+zeroize = "1.8"
+
 # Android-only: JNI access to PackageInstaller for the in-app updater.
 # Access to the JNIEnv/Activity comes from Tauri 2's
 # `webview.jni_handle().exec(...)` (works on the WebView UI thread).

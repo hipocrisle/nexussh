@@ -59,9 +59,24 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   // switches incl. downgrades work). Treat same-version as "no update" here so
   // every caller keeps its "non-null ⇒ actionable" contract. A different
   // version — higher OR lower (channel switch) — is actionable.
-  const r = await invoke<UpdateInfo | null>("check_for_update", {
-    channel: currentChannel(),
-  });
+  //
+  // Retry transient failures (a network blip, or the brief window while a new
+  // release's manifest asset is being swapped on GitHub) before surfacing an
+  // error — otherwise a single hiccup shows "error sending request".
+  const ch = currentChannel();
+  let lastErr: unknown;
+  let r: UpdateInfo | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((res) => setTimeout(res, 1500));
+    try {
+      r = await invoke<UpdateInfo | null>("check_for_update", { channel: ch });
+      lastErr = undefined;
+      break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr !== undefined) throw lastErr;
   if (r && r.version === r.current_version) return null;
   return r;
 }

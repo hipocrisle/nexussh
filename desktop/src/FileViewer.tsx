@@ -166,7 +166,7 @@ export function FileViewer({
         if (mode === "view" && editable) setMode("edit");
         return;
       }
-      if (e.key === "F2" || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s")) {
+      if (e.key === "F2" || ((e.ctrlKey || e.metaKey) && e.code === "KeyS")) {
         consume();
         doSave();
         return;

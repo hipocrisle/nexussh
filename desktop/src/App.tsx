@@ -1337,7 +1337,7 @@ function App() {
         (e.ctrlKey || e.metaKey) &&
         !e.shiftKey &&
         !e.altKey &&
-        e.key.toLowerCase() === "f"
+        e.code === "KeyF"
       ) {
         e.preventDefault();
       }
@@ -1354,7 +1354,7 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
-      const k = e.key.toLowerCase();
+      const code = e.code;
       // When the SFTP browser is open it OWNS the function keys (F1/F5–F8) —
       // the panel binds them on its own capture-phase listener. Bail out here so
       // they never reach the app (notably F5, the WebView's page-reload, which
@@ -1370,7 +1370,7 @@ function App() {
           fn(activeWorkspaceId);
         }
       };
-      if (meta && !e.shiftKey && !e.altKey && k === "s") {
+      if (meta && !e.shiftKey && !e.altKey && code === "KeyS") {
         // Ctrl/Cmd+S — open the SFTP browser for the active host. If it's
         // already open but collapsed, ensure it's VISIBLE (un-collapse).
         e.preventDefault();
@@ -1380,7 +1380,7 @@ function App() {
         } else if (activeSession) {
           openSftp(activeSession);
         }
-      } else if (meta && e.shiftKey && !e.altKey && k === "s") {
+      } else if (meta && e.shiftKey && !e.altKey && code === "KeyS") {
         // Ctrl/Cmd+Shift+S — toggle collapse/restore of the SFTP panel. If it
         // isn't open yet, open it for the active host (then it's visible).
         e.preventDefault();
@@ -1390,34 +1390,34 @@ function App() {
         } else if (activeSession) {
           openSftp(activeSession);
         }
-      } else if (meta && !e.shiftKey && k === "t") {
+      } else if (meta && !e.shiftKey && code === "KeyT") {
         // Ctrl/Cmd+T — open host picker (new tab).
         e.preventDefault();
         e.stopPropagation();
         openSshPicker();
-      } else if (meta && k === ",") {
+      } else if (meta && code === "Comma") {
         // Ctrl/Cmd+, — toggle Settings.
         e.preventDefault();
         e.stopPropagation();
         setSettingsOpen((v) => !v);
-      } else if (meta && e.shiftKey && k === "l") {
+      } else if (meta && e.shiftKey && code === "KeyL") {
         // Ctrl/Cmd+Shift+L — lock the app (vault). SSH sessions keep running.
         e.preventDefault();
         e.stopPropagation();
         if (vault?.configured) lockApp();
-      } else if (meta && !e.shiftKey && k === "w") {
+      } else if (meta && !e.shiftKey && code === "KeyW") {
         // Ctrl/Cmd+W — close focused tab (single pane = whole workspace).
         inActiveWs((wsId) => {
           const ws = workspaces.find((w) => w.id === wsId);
           if (ws && ws.focusedPaneId) closePane(wsId, ws.focusedPaneId);
         });
-      } else if (meta && e.shiftKey && k === "d") {
+      } else if (meta && e.shiftKey && code === "KeyD") {
         // Ctrl/Cmd+Shift+D — split focused pane right.
         inActiveWs((wsId) => splitFocusedPane(wsId, "row"));
-      } else if (meta && e.shiftKey && k === "e") {
+      } else if (meta && e.shiftKey && code === "KeyE") {
         // Ctrl/Cmd+Shift+E — split focused pane down.
         inActiveWs((wsId) => splitFocusedPane(wsId, "col"));
-      } else if (meta && !e.shiftKey && !e.altKey && k === "h") {
+      } else if (meta && !e.shiftKey && !e.altKey && code === "KeyH") {
         // Ctrl/Cmd+H — open the session History panel (same as the header button).
         e.preventDefault();
         e.stopPropagation();
@@ -1439,9 +1439,9 @@ function App() {
           setSwitchPulseId(nextId);
         }
       } else if (
-        !isMobile && !meta && !e.altKey && !e.shiftKey && e.key === "?"
+        !isMobile && !meta && !e.altKey && e.shiftKey && code === "Slash"
       ) {
-        // `?` — open keyboard-shortcuts cheat-sheet. Skip when typing in an
+        // `?` (Shift+/) — open keyboard-shortcuts cheat-sheet. Skip when typing in an
         // input/textarea/contenteditable so it doesn't fire while editing.
         // Mobile: there's no physical keyboard so the overlay is useless;
         // gated out.
@@ -1456,7 +1456,7 @@ function App() {
           e.stopPropagation();
           setShortcutsOpen((v) => !v);
         }
-      } else if (!isMobile && meta && !e.shiftKey && !e.altKey && e.key === "/") {
+      } else if (!isMobile && meta && !e.shiftKey && !e.altKey && code === "Slash") {
         // Ctrl+/ — same cheat-sheet (works even while typing).
         e.preventDefault();
         e.stopPropagation();
@@ -1465,17 +1465,18 @@ function App() {
         meta &&
         !e.shiftKey &&
         !e.altKey &&
-        /^[1-9]$/.test(e.key)
+        /^(Digit|Numpad)[1-9]$/.test(code)
       ) {
-        // Ctrl/Cmd+1..9 — jump to workspace at that index.
-        const n = parseInt(e.key, 10) - 1;
+        // Ctrl/Cmd+1..9 — jump to workspace at that index. Use the physical
+        // key (e.code Digit1..9 / Numpad1..9) so it's layout-independent.
+        const n = parseInt(code.slice(-1), 10) - 1;
         if (workspaces[n]) {
           e.preventDefault();
           e.stopPropagation();
           setActiveWorkspaceId(workspaces[n].id);
           wakeWorkspace(workspaces[n].id);
         }
-      } else if (meta && e.shiftKey && k === "t") {
+      } else if (meta && e.shiftKey && code === "KeyT") {
         // Ctrl/Cmd+Shift+T — restore last closed tab (browser-style).
         const last = closedStackRef.current.pop();
         if (last) {
@@ -1511,7 +1512,7 @@ function App() {
         e.shiftKey &&
         !e.altKey &&
         !e.metaKey &&
-        (k === "c" || k === "i" || e.key === "J")
+        (code === "KeyC" || code === "KeyI" || code === "KeyJ")
       ) {
         // Block WebView's DevTools / Inspect shortcuts so Ctrl+Shift+C stays
         // ours for copy.

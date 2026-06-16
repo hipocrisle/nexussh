@@ -523,6 +523,10 @@ pub async fn sftp_upload(
         );
     }
     remote.flush().await?;
+    // Fully commit + close the handle: shutdown drains outstanding write acks and
+    // closes the remote file, guarding against a small upload not being committed
+    // before the handle drops.
+    remote.shutdown().await?;
     emit_progress(
         &app,
         &mut last,
@@ -627,10 +631,21 @@ pub async fn sftp_read_text(
     })
 }
 
-/// Overwrite a remote text file with `content` (UTF-8 bytes), truncating to the
-/// new length. The existing file mode is preserved when the server reports it
-/// (read metadata first, reapply after the write) — if the mode isn't available
-/// the server's default for a freshly-created file applies.
+/// Overwrite a remote text file with `content` (UTF-8 bytes) ATOMICALLY, never
+/// truncating the live file in place.
+///
+/// The naive approach (open the target with CREATE|TRUNCATE then write) zeroes
+/// the file the instant it's opened — so any failure of the subsequent write /
+/// flush (permissions, quota, dropped connection) destroys the original and
+/// leaves it empty, often silently. Instead we write a sibling temp file, verify
+/// its size, then swap it into place with a rename-and-backup dance so `path`
+/// always holds either the old contents or the fully-written new contents.
+///
+/// The temp lives in the SAME directory as the target so the rename is atomic
+/// (same filesystem) and is governed by the directory's write permission. The
+/// previous file mode is preserved when the server reports it.
+///
+/// Remote paths are POSIX, so `/` is the only separator.
 #[tauri::command]
 pub async fn sftp_write_text(
     state: State<'_, Arc<SftpManager>>,
@@ -640,35 +655,96 @@ pub async fn sftp_write_text(
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
 
-    // Capture the current mode so we can reapply it after the truncating write
-    // (CREATE on a server may otherwise reset perms to a default).
-    let prev_mode = h
+    // Derive POSIX parent dir + basename. No '/' → file is in the (implicit)
+    // current dir; use "." so the temp/backup land alongside it.
+    let (dir, base) = match path.rfind('/') {
+        Some(idx) => {
+            let d = &path[..idx];
+            let dir = if d.is_empty() { "/" } else { d };
+            (dir.to_string(), path[idx + 1..].to_string())
+        }
+        None => (".".to_string(), path.clone()),
+    };
+    // Join `dir` + `name` without doubling the slash for the root dir.
+    let join = |name: &str| -> String {
+        if dir == "/" {
+            format!("/{name}")
+        } else {
+            format!("{dir}/{name}")
+        }
+    };
+    let temp = join(&format!(".{base}.nexussh-tmp"));
+    let backup = join(&format!(".{base}.nexussh-bak"));
+
+    // Best-effort cleanup of any stale temp from a previous aborted save —
+    // open_with_flags(...TRUNCATE) would handle a leftover anyway, but removing
+    // it keeps perms/ownership from leaking across saves.
+    let _ = h.sftp.remove_file(temp.clone()).await;
+
+    // Stat the target once: tells us whether it already exists (so we know
+    // whether to back it up before the swap) and captures its mode (None if the
+    // file is new or the server doesn't report perms). The mode is reapplied to
+    // the temp before the swap so perms survive the rename.
+    let orig_meta = h.sftp.metadata(path.clone()).await.ok();
+    let original_exists = orig_meta.is_some();
+    let prev_mode = orig_meta.and_then(|m| m.permissions);
+
+    // 1) Write the full content to the temp file and close it cleanly.
+    //    shutdown() drains outstanding write acks AND closes the handle, which is
+    //    stronger than flush()+drop for ensuring the bytes are committed.
+    {
+        let mut file = h
+            .sftp
+            .open_with_flags(
+                temp.clone(),
+                OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
+            )
+            .await
+            .map_err(|e| {
+                SftpError::Other(format!("creating temp file {temp}: {e}"))
+            })?;
+        if let Err(e) = file.write_all(content.as_bytes()).await {
+            drop(file);
+            let _ = h.sftp.remove_file(temp.clone()).await;
+            return Err(SftpError::Other(format!(
+                "writing temp file {temp}: {e}"
+            )));
+        }
+        if let Err(e) = file.shutdown().await {
+            drop(file);
+            let _ = h.sftp.remove_file(temp.clone()).await;
+            return Err(SftpError::Other(format!(
+                "closing temp file {temp}: {e}"
+            )));
+        }
+        drop(file);
+    }
+
+    // 2) Verify: re-stat the temp and confirm the byte count matches. A
+    //    partial/failed write is reported here and the temp removed — never
+    //    silently committed over the original.
+    let want = content.as_bytes().len() as u64;
+    let got = h
         .sftp
-        .metadata(path.clone())
+        .metadata(temp.clone())
         .await
-        .ok()
-        .and_then(|m| m.permissions);
+        .map_err(|e| SftpError::Other(format!("stat temp file {temp}: {e}")))?
+        .size
+        .unwrap_or(0);
+    if got != want {
+        let _ = h.sftp.remove_file(temp.clone()).await;
+        return Err(SftpError::Other(format!(
+            "write verification failed: wrote {got} of {want} bytes"
+        )));
+    }
 
-    // WRITE|CREATE|TRUNCATE: overwrite from scratch at the new length.
-    let mut file = h
-        .sftp
-        .open_with_flags(
-            path.clone(),
-            OpenFlags::WRITE | OpenFlags::CREATE | OpenFlags::TRUNCATE,
-        )
-        .await?;
-    file.write_all(content.as_bytes()).await?;
-    file.flush().await?;
-    // Drop the handle before re-stat/chmod so the write is fully closed.
-    drop(file);
-
-    // Reapply the original mode if we had one (best-effort — a failure here
-    // doesn't lose the content, so don't fail the whole save over it).
+    // 3) Preserve the original mode on the temp (best-effort — a chmod failure
+    //    doesn't endanger the content, so don't abort the save over it).
     if let Some(mode) = prev_mode {
         let _ = h
             .sftp
             .set_metadata(
-                path,
+                temp.clone(),
                 Metadata {
                     permissions: Some(mode),
                     ..Default::default()
@@ -676,6 +752,43 @@ pub async fn sftp_write_text(
             )
             .await;
     }
+
+    // 4) Swap the temp into place. russh-sftp's rename (FXP_RENAME) fails when the
+    //    destination exists on OpenSSH, so the original is first moved aside to a
+    //    backup; `path` is then never left missing for longer than one rename and
+    //    is always restorable if the final rename fails.
+    if original_exists {
+        let _ = h.sftp.remove_file(backup.clone()).await; // clear stale backup
+        h.sftp
+            .rename(path.clone(), backup.clone())
+            .await
+            .map_err(|e| {
+                SftpError::Other(format!(
+                    "backing up original {path} -> {backup}: {e}"
+                ))
+            })?;
+
+        if let Err(e) = h.sftp.rename(temp.clone(), path.clone()).await {
+            // Final swap failed — restore the user's original and clean up so the
+            // file is exactly as it was before this save.
+            let _ = h.sftp.rename(backup.clone(), path.clone()).await;
+            let _ = h.sftp.remove_file(temp.clone()).await;
+            return Err(SftpError::Other(format!(
+                "committing {temp} -> {path}: {e}"
+            )));
+        }
+        // New content is live; drop the backup (best-effort).
+        let _ = h.sftp.remove_file(backup).await;
+    } else {
+        // New file: no original to protect, just move the temp into place.
+        if let Err(e) = h.sftp.rename(temp.clone(), path.clone()).await {
+            let _ = h.sftp.remove_file(temp.clone()).await;
+            return Err(SftpError::Other(format!(
+                "committing {temp} -> {path}: {e}"
+            )));
+        }
+    }
+
     Ok(())
 }
 

@@ -137,6 +137,26 @@ function joinPath(dir: string, name: string): string {
   return dir.endsWith("/") ? dir + name : dir + "/" + name;
 }
 
+// Build the panel `error` string for a finished upload/copy batch. Real transfer
+// failures (permission denied, quota, missing dir) are listed first and
+// prominently — never folded into / overwritten by the "skipped directory" note.
+// Returns null when there's nothing to report.
+function buildTransferError(
+  t: (k: string, o?: Record<string, unknown>) => string,
+  failed: { name: string; msg: string }[],
+  skippedDirs: string[],
+): string | null {
+  const parts: string[] = [];
+  if (failed.length > 0) {
+    const list = failed.map((f) => `${f.name}: ${f.msg}`).join(" · ");
+    parts.push(`${t("sftp.transfer_failed")}: ${list}`);
+  }
+  if (skippedDirs.length > 0) {
+    parts.push(t("sftp.copy_skipped_dir", { name: skippedDirs.join(", ") }));
+  }
+  return parts.length > 0 ? parts.join("  —  ") : null;
+}
+
 function parentPath(p: string): string {
   if (p === "/" || p === "") return "/";
   const trimmed = p.replace(/\/+$/, "");
@@ -771,13 +791,18 @@ export function SFTPPanel({
       dropBusyRef.current = true;
       const dir = cwdRef.current;
       setError(null);
-      const skipped: string[] = [];
+      // Real transfer errors (permission denied, no such dir, quota) are kept
+      // SEPARATE from intentionally-skipped directories so a genuine failure is
+      // surfaced prominently instead of being masked by a "directory skipped"
+      // note. A path with no usable basename is treated as a skipped dir.
+      const failed: { name: string; msg: string }[] = [];
+      const skippedDirs: string[] = [];
       try {
         for (const p of paths) {
           const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
           const base = norm.split("/").pop();
           if (!base) {
-            skipped.push(p);
+            skippedDirs.push(p);
             continue;
           }
           const remoteDest = joinPath(dir, base);
@@ -785,20 +810,15 @@ export function SFTPPanel({
           try {
             await sftpUpload(id, p, remoteDest, tid);
           } catch (e) {
-            // User-cancelled drops are not errors — just stop this file.
+            // User-cancelled drops are not errors — just stop this file silently.
             if (!isCancelled(e)) {
-              // A dropped directory (or unreadable path) lands here — note and
-              // continue rather than aborting the whole batch.
-              skipped.push(base);
-              setError(`${base}: ${String(e)}`);
+              failed.push({ name: base, msg: String(e) });
             }
           } finally {
             endTransfer(tid);
           }
         }
-        if (skipped.length > 0) {
-          setError(t("sftp.drop_skipped_dir", { name: skipped.join(", ") }));
-        }
+        setError(buildTransferError(t, failed, skippedDirs));
       } finally {
         dropBusyRef.current = false;
         if (idRef.current) load(idRef.current, cwdRef.current);
@@ -977,7 +997,8 @@ export function SFTPPanel({
     if (!sftpId) return;
     const targets = localOpTargets();
     const files = targets.filter((e) => !e.is_dir);
-    const skippedDirs = targets.filter((e) => e.is_dir);
+    const skippedDirs = targets.filter((e) => e.is_dir).map((d) => d.name);
+    const failed: { name: string; msg: string }[] = [];
     setError(null);
     for (const f of files) {
       const remoteHave = entries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
@@ -999,15 +1020,16 @@ export function SFTPPanel({
         );
       } catch (e) {
         endTransfer(tid);
+        // Cancelling one file just skips it silently; a real error is collected
+        // and surfaced (don't abort the rest of the batch).
         if (isCancelled(e)) continue;
-        setError(`${f.name}: ${String(e)}`);
-        break;
+        failed.push({ name: f.name, msg: String(e) });
+        continue;
       }
       endTransfer(tid);
     }
-    if (skippedDirs.length > 0) {
-      setError(t("sftp.copy_skipped_dir", { name: skippedDirs.map((d) => d.name).join(", ") }));
-    }
+    const msg = buildTransferError(t, failed, skippedDirs);
+    if (msg) setError(msg);
     refresh(); // refresh destination (remote) pane
   }
 
@@ -1016,7 +1038,8 @@ export function SFTPPanel({
     if (!sftpId || !localCwd) return;
     const targets = remoteOpTargets();
     const files = targets.filter((e) => !e.is_dir);
-    const skippedDirs = targets.filter((e) => e.is_dir);
+    const skippedDirs = targets.filter((e) => e.is_dir).map((d) => d.name);
+    const failed: { name: string; msg: string }[] = [];
     setLocalError(null);
     for (const f of files) {
       const localHave = localEntries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
@@ -1038,15 +1061,16 @@ export function SFTPPanel({
         );
       } catch (e) {
         endTransfer(tid);
+        // Cancelling one file just skips it silently; a real error is collected
+        // and surfaced (don't abort the rest of the batch).
         if (isCancelled(e)) continue;
-        setLocalError(`${f.name}: ${String(e)}`);
-        break;
+        failed.push({ name: f.name, msg: String(e) });
+        continue;
       }
       endTransfer(tid);
     }
-    if (skippedDirs.length > 0) {
-      setLocalError(t("sftp.copy_skipped_dir", { name: skippedDirs.map((d) => d.name).join(", ") }));
-    }
+    const msg = buildTransferError(t, failed, skippedDirs);
+    if (msg) setLocalError(msg);
     refreshLocal(); // refresh destination (local) pane
   }
 
@@ -1470,8 +1494,14 @@ export function SFTPPanel({
               }
             >
               {localError && (
-                <div className="px-3 py-1.5 text-meta font-mono text-nx-error border-b border-nx-divider truncate shrink-0">
-                  ✗ {localError}
+                <div className="px-3 py-1.5 text-meta font-mono text-nx-error border-b border-nx-divider break-words max-h-20 overflow-y-auto shrink-0 flex items-start gap-2">
+                  <span className="flex-1 min-w-0">✗ {localError}</span>
+                  <IconButton
+                    icon={<X size={12} />}
+                    onClick={() => setLocalError(null)}
+                    title={t("sftp.help_close")}
+                    className="shrink-0 !p-0.5"
+                  />
                 </div>
               )}
               <FileList
@@ -1559,10 +1589,21 @@ export function SFTPPanel({
           </div>
         )}
 
-        {/* Footer status */}
-        <div className="px-4 py-2 border-t border-nx-divider font-mono text-meta shrink-0 flex items-center gap-2">
+        {/* Footer status — errors are shown prominently (full text, wrapped, with
+            a dismiss button) so a real transfer failure is never truncated away. */}
+        <div className="px-4 py-2 border-t border-nx-divider font-mono text-meta shrink-0 flex items-start gap-2">
           {error ? (
-            <span className="text-nx-error truncate">✗ {error}</span>
+            <>
+              <span className="text-nx-error break-words flex-1 min-w-0 max-h-20 overflow-y-auto">
+                ✗ {error}
+              </span>
+              <IconButton
+                icon={<X size={12} />}
+                onClick={() => setError(null)}
+                title={t("sftp.help_close")}
+                className="shrink-0 !p-0.5"
+              />
+            </>
           ) : (
             <span className="text-nx-muted">
               {entries.length} {t("sftp.items")}
@@ -1750,6 +1791,19 @@ function FileList({
       scrollRef.current.focus({ preventScroll: true });
     }
   }, [active, rows, loading]);
+
+  // Keep the cursor row visible: whenever the cursor moves (Arrow/Home/End/
+  // PageUp-Down/Space-advance, or landing on ".."), scroll that row into view
+  // within the scroll container. block:"nearest" only nudges when the row is
+  // out of view, so it doesn't fight the user's own mouse-wheel scrolling and
+  // stays jank-free. Gated on `active` so a background pane never grabs scroll.
+  useEffect(() => {
+    if (!active || loading) return;
+    const container = scrollRef.current;
+    if (!container) return;
+    const el = container.querySelector<HTMLElement>("[data-cursor]");
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active, loading, sel.cursor, rows]);
 
   // --- Mouse selection on a row ---
   function clickRow(idx: number, ev: React.MouseEvent) {

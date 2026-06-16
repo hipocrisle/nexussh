@@ -279,9 +279,20 @@ jobs:
             gh release create channel-beta --repo "$REPO" --prerelease --target main \
               --title channel-beta --notes "Rolling beta channel — current beta installers + manifest. Do not delete."
           fi
-          # Upload the new beta's installers + manifest FIRST (no broken window),
-          # then prune any stale assets from previous betas.
-          gh release upload channel-beta "$EXE" "$DEB" "$RPM" latest.json --repo "$REPO" --clobber
+          # Publish atomically so a client updating mid-run never sees a half-written
+          # state (this caused a transient "error sending request" once):
+          # 1) installers first — versioned names, so they don't clobber prior betas
+          #    and the manifest below can only reference files that already exist;
+          # 2) latest.json (the update trigger) LAST, swapped atomically via a temp
+          #    asset + rename, so it's never momentarily absent or half-uploaded.
+          gh release upload channel-beta "$EXE" "$DEB" "$RPM" --repo "$REPO" --clobber
+          cp latest.json latest.json.new
+          gh release upload channel-beta latest.json.new --repo "$REPO" --clobber
+          gh release delete-asset channel-beta latest.json --repo "$REPO" --yes 2>/dev/null || true
+          NEW_URL=$(gh release view channel-beta --repo "$REPO" --json assets \
+            --jq '.assets[] | select(.name=="latest.json.new") | .apiUrl')
+          gh api --method PATCH "$NEW_URL" -f name=latest.json >/dev/null
+          # Prune stale assets from previous betas (after the swap, so latest.json stays).
           KEEP=" $WIN_FILE $DEB_FILE $RPM_FILE latest.json "
           for a in $(gh release view channel-beta --repo "$REPO" --json assets --jq '.assets[].name'); do
             case "$KEEP" in *" $a "*) ;; *) echo "prune $a"; gh release delete-asset channel-beta "$a" --repo "$REPO" --yes || true;; esac

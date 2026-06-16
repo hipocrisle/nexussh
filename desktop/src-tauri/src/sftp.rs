@@ -11,7 +11,6 @@
 //! without OOM since only one chunk is held at a time.
 
 use russh::client::{self};
-use russh_sftp::client::fs::Metadata;
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use serde::Serialize;
@@ -646,6 +645,28 @@ pub async fn sftp_read_text(
 /// previous file mode is preserved when the server reports it.
 ///
 /// Remote paths are POSIX, so `/` is the only separator.
+///
+/// Change a path's permissions WITHOUT truncating its contents.
+///
+/// CRITICAL: russh-sftp's `set_metadata` builds the SETSTAT request from a
+/// `Metadata` via `From<&Metadata> for FileAttributes`, which ALWAYS sets
+/// `size: Some(metadata.len())`. A `Metadata::default()` has len 0, so
+/// `set_metadata(path, Metadata { permissions: Some(mode), ..Default::default() })`
+/// sends size=0 and the SFTP server TRUNCATES the file to empty. (This silently
+/// destroyed files on every editor save and every chmod.) We stat the path first
+/// and reuse the real metadata — correct size/uid/gid/times — changing only the
+/// permissions, so the size sent equals the current size (no truncation).
+async fn set_mode_preserving(
+    sftp: &SftpSession,
+    path: &str,
+    mode: u32,
+) -> Result<(), SftpError> {
+    let mut m = sftp.metadata(path.to_string()).await?;
+    m.permissions = Some(mode);
+    sftp.set_metadata(path.to_string(), m).await?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn sftp_write_text(
     state: State<'_, Arc<SftpManager>>,
@@ -741,16 +762,8 @@ pub async fn sftp_write_text(
     // 3) Preserve the original mode on the temp (best-effort — a chmod failure
     //    doesn't endanger the content, so don't abort the save over it).
     if let Some(mode) = prev_mode {
-        let _ = h
-            .sftp
-            .set_metadata(
-                temp.clone(),
-                Metadata {
-                    permissions: Some(mode),
-                    ..Default::default()
-                },
-            )
-            .await;
+        // best-effort — a chmod failure doesn't endanger the content
+        let _ = set_mode_preserving(&h.sftp, &temp, mode).await;
     }
 
     // 4) Swap the temp into place. russh-sftp's rename (FXP_RENAME) fails when the
@@ -800,15 +813,7 @@ pub async fn sftp_chmod(
     mode: u32,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
-    h.sftp
-        .set_metadata(
-            path,
-            Metadata {
-                permissions: Some(mode),
-                ..Default::default()
-            },
-        )
-        .await?;
+    set_mode_preserving(&h.sftp, &path, mode).await?;
     Ok(())
 }
 
@@ -836,17 +841,7 @@ pub async fn sftp_chmod_recursive(
 
     let set_mode = |p: String| {
         let sftp = &h.sftp;
-        let p2 = p.clone();
-        async move {
-            sftp.set_metadata(
-                p2,
-                Metadata {
-                    permissions: Some(mode),
-                    ..Default::default()
-                },
-            )
-            .await
-        }
+        async move { set_mode_preserving(sftp, &p, mode).await }
     };
 
     // Apply to the root directory itself first.

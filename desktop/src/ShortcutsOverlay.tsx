@@ -57,6 +57,7 @@ export function ShortcutsOverlay({ onClose }: Props) {
         { keys: ["Ctrl", ","], desc: t("shortcuts.k_settings") },
         { keys: ["Ctrl", "H"], desc: t("shortcuts.k_history") },
         { keys: ["Ctrl", "S"], desc: t("shortcuts.k_open_sftp") },
+        { keys: ["Ctrl", "Shift", "S"], desc: t("shortcuts.k_collapse_sftp") },
         { keys: ["Ctrl", "Shift", "L"], desc: t("shortcuts.k_lock") },
         { keys: ["?"], alt: ["Ctrl", "/"], desc: t("shortcuts.k_this_overlay") },
         { keys: ["Esc"], desc: t("shortcuts.k_close_overlay") },

@@ -635,11 +635,35 @@ function App() {
     args: ConnectArgs;
     title: string;
   } | null>(null);
+  // Collapse (minimise) state for the SFTP panel. When true the panel stays
+  // MOUNTED (cwd / selection / in-flight transfers all preserved) but is hidden
+  // so the terminal underneath is usable; a floating chip restores it.
+  const [sftpCollapsed, setSftpCollapsed] = useState(false);
   // Mirror of "is the SFTP panel open?" for the global keydown handler, so it
   // can early-return for the function keys the panel owns (F1/F5–F8) without
-  // re-subscribing the listener on every sftpTarget change.
+  // re-subscribing the listener on every sftpTarget change. Gated on NOT
+  // collapsed — while collapsed the panel is hidden and the terminal owns those
+  // keys.
   const sftpOpenRef = useRef(false);
-  sftpOpenRef.current = !!sftpTarget;
+  sftpOpenRef.current = !!sftpTarget && !sftpCollapsed;
+  // Focus the active terminal's hidden helper textarea so keystrokes go to the
+  // PTY immediately after the SFTP panel is collapsed.
+  function focusActiveTerminal() {
+    requestAnimationFrame(() => {
+      const ta = document.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      ta?.focus({ preventScroll: true });
+    });
+  }
+  // Collapse / restore helpers used by both the panel button and the hotkeys.
+  function collapseSftp() {
+    setSftpCollapsed(true);
+    focusActiveTerminal();
+  }
+  function restoreSftp() {
+    setSftpCollapsed(false);
+  }
   // Tunnels panel. `open` toggles visibility; `newTunnel` (when set) wires the
   // panel's "+ New tunnel" button to an ad-hoc forward against that host.
   const [tunnelsPanel, setTunnelsPanel] = useState<{
@@ -1275,10 +1299,26 @@ function App() {
         }
       };
       if (meta && !e.shiftKey && !e.altKey && k === "s") {
-        // Ctrl/Cmd+S — open the SFTP browser for the active host.
+        // Ctrl/Cmd+S — open the SFTP browser for the active host. If it's
+        // already open but collapsed, ensure it's VISIBLE (un-collapse).
         e.preventDefault();
         e.stopPropagation();
-        if (activeSession) openSftp(activeSession);
+        if (sftpTarget) {
+          restoreSftp();
+        } else if (activeSession) {
+          openSftp(activeSession);
+        }
+      } else if (meta && e.shiftKey && !e.altKey && k === "s") {
+        // Ctrl/Cmd+Shift+S — toggle collapse/restore of the SFTP panel. If it
+        // isn't open yet, open it for the active host (then it's visible).
+        e.preventDefault();
+        e.stopPropagation();
+        if (sftpTarget) {
+          if (sftpCollapsed) restoreSftp();
+          else collapseSftp();
+        } else if (activeSession) {
+          openSftp(activeSession);
+        }
       } else if (meta && !e.shiftKey && k === "t") {
         // Ctrl/Cmd+T — open host picker (new tab).
         e.preventDefault();
@@ -1409,7 +1449,7 @@ function App() {
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [activeId, activeWorkspaceId, workspaces, activeSession]);
+  }, [activeId, activeWorkspaceId, workspaces, activeSession, sftpTarget, sftpCollapsed]);
 
   // Suppress the WebView's native context menu and replace it with our own.
   useEffect(() => {
@@ -1686,6 +1726,7 @@ function App() {
       h = { ...h, user: creds.user };
       auth = { kind: "password", password: creds.password };
     }
+    setSftpCollapsed(false); // a fresh open is always visible
     setSftpTarget({
       args: buildConnectArgs(h, auth),
       title: `${h.user}@${h.host}`,
@@ -3424,7 +3465,18 @@ function App() {
           <SFTPPanel
             connectArgs={sftpTarget.args}
             title={sftpTarget.title}
-            onClose={() => setSftpTarget(null)}
+            collapsed={sftpCollapsed}
+            onCollapse={() =>
+              setSftpCollapsed((c) => {
+                const next = !c;
+                if (next) focusActiveTerminal();
+                return next;
+              })
+            }
+            onClose={() => {
+              setSftpTarget(null);
+              setSftpCollapsed(false);
+            }}
           />
         )}
         {tunnelsPanel?.open && (

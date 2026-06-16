@@ -38,6 +38,8 @@ import {
   ArrowLeft,
   CornerLeftUp,
   HelpCircle,
+  Minus,
+  FolderOpen,
 } from "lucide-react";
 import type { ConnectArgs } from "./ssh";
 import {
@@ -77,6 +79,12 @@ interface Props {
   connectArgs: ConnectArgs;
   title: string;
   onClose: () => void;
+  /** When true the panel stays MOUNTED (cwd / selection / in-flight transfers
+   *  all preserved) but is visually hidden and its backdrop stops capturing
+   *  pointer events, so the terminal underneath is fully usable. */
+  collapsed?: boolean;
+  /** Minimise (non-destructive): hide the panel, keep it mounted. */
+  onCollapse?: () => void;
 }
 
 // ── Generic row entry (lowest common denominator of SftpEntry / LocalEntry) ──
@@ -383,7 +391,7 @@ function Breadcrumb({
   );
 }
 
-export function SFTPPanel({ connectArgs, title, onClose }: Props) {
+export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }: Props) {
   const { t } = useTranslation();
   const [sftpId, setSftpId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("/");
@@ -410,8 +418,36 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     name: string;
     mode: "view" | "edit";
   } | null>(null);
-  const { backdropProps, contentProps } = useBackdropClose(onClose);
+  // Esc / backdrop-click = full close — but ONLY while visible. When collapsed
+  // the panel is hidden and the terminal owns the keyboard, so Esc must reach
+  // the terminal, not tear the panel down.
+  const collapsedRef = useRef(collapsed);
+  collapsedRef.current = collapsed;
+  const guardedClose = useCallback(() => {
+    if (!collapsedRef.current) onClose();
+  }, [onClose]);
+  const { backdropProps, contentProps } = useBackdropClose(guardedClose);
   const idRef = useRef<string | null>(null);
+  // On restore (collapsed → visible) move keyboard focus back into the panel's
+  // active pane so Arrow/Space/Enter work immediately. The pane's FileList owns
+  // a focusable scroll container (tabIndex=0); focus the active one.
+  const contentRef = useRef<HTMLDivElement>(null);
+  const wasCollapsedRef = useRef(collapsed);
+  useEffect(() => {
+    if (wasCollapsedRef.current && !collapsed) {
+      requestAnimationFrame(() => {
+        const lists = contentRef.current?.querySelectorAll<HTMLElement>(
+          '[data-sftp-list][tabindex="0"]',
+        );
+        if (!lists || lists.length === 0) return;
+        const target =
+          Array.from(lists).find((el) => el.dataset.sftpActive === "1") ??
+          lists[0];
+        target.focus({ preventScroll: true });
+      });
+    }
+    wasCollapsedRef.current = collapsed;
+  }, [collapsed]);
   // True while OS files are being dragged over the panel (drop-zone overlay).
   const [dragOver, setDragOver] = useState(false);
 
@@ -1048,6 +1084,10 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
   // are left to the focused FileList's own handler (Batch-1 behaviour).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // While collapsed the panel is hidden and the terminal is in use — it must
+      // NOT own F1-F8/Tab/Delete. Bail out so those keys reach the terminal /
+      // global app handler (Ctrl+Shift+S restore is handled in App.tsx).
+      if (collapsed) return;
       // Don't hijack Tab/Delete while the user is typing in a field (a prompt /
       // chmod octal box). Function keys are still ours everywhere.
       const tgt = e.target as HTMLElement | null;
@@ -1140,7 +1180,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [dualPane, activePane, helpOpen, entries, remoteSel, viewer, cwd]);
+  }, [dualPane, activePane, helpOpen, entries, remoteSel, viewer, cwd, collapsed]);
 
   // Build the right-click menu. If the clicked row is part of the active
   // multi-selection, operations apply to the WHOLE selection; otherwise they
@@ -1186,12 +1226,35 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
     .reduce((sum, e) => sum + e.size, 0);
 
   return (
+    <>
+    {/* Restore chip — floating, unobtrusive; shown only while collapsed. Lives
+        OUTSIDE the hidden backdrop so it stays clickable; restores the panel. */}
+    {collapsed && (
+      <button
+        onClick={() => onCollapse?.()}
+        title={t("sftp.restore_chip")}
+        aria-label={t("sftp.restore_chip")}
+        className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 px-3 py-2 rounded-nx border border-nx-border bg-nx-panel/95 backdrop-blur-sm shadow-glow-sm text-meta font-mono text-nx-soft hover:text-nx-text hover:bg-nx-elevated transition-colors"
+      >
+        <FolderOpen size={14} className="text-nx-accent2 shrink-0" />
+        <span className="text-nx-accent">sftp</span>
+        <span className="text-nx-muted truncate max-w-[14rem]">{title}</span>
+      </button>
+    )}
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className={
+        "fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm " +
+        // Collapsed: keep MOUNTED (state intact) but display:none so it paints
+        // nothing AND its backdrop can't capture pointer events — the terminal
+        // underneath stays fully interactive.
+        (collapsed ? "hidden" : "")
+      }
+      aria-hidden={collapsed}
       {...backdropProps}
     >
       <div
         {...contentProps}
+        ref={contentRef}
         className={
           "nx-modal-enter relative w-full h-[80vh] flex flex-col bg-nx-bg border border-nx-border rounded-nx shadow-glow-md overflow-hidden transition-[max-width] duration-200 " +
           (dualPane ? "max-w-7xl" : "max-w-5xl")
@@ -1227,6 +1290,14 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
             onClick={() => setDualPane((v) => !v)}
             title={t("sftp.dual_pane")}
           />
+          {onCollapse && (
+            <IconButton
+              icon={<Minus size={15} />}
+              onClick={onCollapse}
+              title={t("sftp.collapse")}
+              aria-label={t("sftp.collapse")}
+            />
+          )}
           <IconButton
             icon={<span className="text-base leading-none">×</span>}
             onClick={onClose}
@@ -1546,6 +1617,7 @@ export function SFTPPanel({ connectArgs, title, onClose }: Props) {
         />
       )}
     </div>
+    </>
   );
 }
 
@@ -1866,6 +1938,8 @@ function FileList({
           : "")
       }
       tabIndex={0}
+      data-sftp-list=""
+      data-sftp-active={active ? "1" : "0"}
       onKeyDown={onKeyDown}
       onDragOver={dnd ? paneDragOver : undefined}
       onDragEnter={dnd ? paneDragEnter : undefined}

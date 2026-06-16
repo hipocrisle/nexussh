@@ -10,6 +10,8 @@ export interface LocalEntry {
   is_dir: boolean;
   /** Size in bytes (0 for directories). */
   size: number;
+  /** Unix mtime in seconds (0 if unavailable). */
+  mtime: number;
 }
 
 /** The user's home directory (falls back to "/"). */

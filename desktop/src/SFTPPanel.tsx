@@ -115,6 +115,48 @@ interface Row {
   is_dir: boolean;
   is_symlink?: boolean;
   size: number;
+  /** Unix mtime in seconds (0 if unknown). */
+  mtime: number;
+}
+
+// ── Sorting ─────────────────────────────────────────────────────────────────
+// Each pane has its OWN sort state (key + direction). Directories are ALWAYS
+// grouped before files; the chosen sort applies WITHIN each group. The ".." row
+// is rendered separately and never participates here. Default = name asc.
+type SortKey = "name" | "size" | "mtime";
+type SortDir = "asc" | "desc";
+interface SortState {
+  key: SortKey;
+  dir: SortDir;
+}
+
+const DEFAULT_SORT: SortState = { key: "name", dir: "asc" };
+
+// Return a NEW array sorted dirs-first, then by the chosen key/direction within
+// each group. Never mutates the input (we sort a shallow copy) so the backend
+// `entries` / `localEntries` stay untouched.
+function sortRows<T extends Row>(rows: T[], sort: SortState): T[] {
+  const sign = sort.dir === "asc" ? 1 : -1;
+  const cmp = (a: T, b: T): number => {
+    // Dirs first, regardless of sort key/direction.
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    let primary = 0;
+    if (sort.key === "name") {
+      primary = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    } else if (sort.key === "size") {
+      // Dirs have no meaningful size — order them by name among themselves.
+      primary = a.is_dir
+        ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        : a.size - b.size;
+    } else {
+      primary = a.mtime - b.mtime;
+    }
+    if (primary !== 0) return primary * sign;
+    // Stable tie-break by name (ascending, independent of direction) so equal
+    // sizes / mtimes have a deterministic, readable order.
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  };
+  return [...rows].sort(cmp);
 }
 
 function fmtSize(n: number): string {
@@ -219,8 +261,8 @@ const GRID = "28px 22px 1fr 110px 160px 130px 110px";
 
 // Compact grid used by both panes when the dual-pane manager is active — the
 // columns are narrower so two lists fit side by side (checkbox · icon · name ·
-// size).
-const PANE_GRID = "26px 20px 1fr 78px";
+// size · modified).
+const PANE_GRID = "26px 20px 1fr 78px 112px";
 
 // ── Persistence (localStorage) ──────────────────────────────────────────────
 // The view mode (dual vs single) and the last-visited directories survive across
@@ -230,6 +272,8 @@ const PANE_GRID = "26px 20px 1fr 78px";
 const LS_DUAL = "nexussh.sftp.dualPane";
 const LS_LOCAL_DIR = "nexussh.sftp.localDir";
 const LS_REMOTE_DIR_PREFIX = "nexussh.sftp.remoteDir."; // + host
+const LS_SORT_REMOTE = "nexussh.sftp.sort.remote";
+const LS_SORT_LOCAL = "nexussh.sftp.sort.local";
 
 function readDualPane(): boolean {
   try {
@@ -276,6 +320,38 @@ function writeRemoteDir(host: string, p: string) {
   }
 }
 
+// Per-pane sort persistence. A corrupt / unknown value falls back to the
+// default (name asc) so a bad stored entry can never break the listing.
+function readSort(key: string): SortState {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return { ...DEFAULT_SORT };
+    const v = JSON.parse(raw) as Partial<SortState>;
+    const k: SortKey =
+      v.key === "size" || v.key === "mtime" || v.key === "name" ? v.key : "name";
+    const d: SortDir = v.dir === "desc" ? "desc" : "asc";
+    return { key: k, dir: d };
+  } catch {
+    return { ...DEFAULT_SORT };
+  }
+}
+function writeSort(key: string, s: SortState) {
+  try {
+    localStorage.setItem(key, JSON.stringify(s));
+  } catch {
+    /* ignore */
+  }
+}
+
+// Toggle helper for a header click: clicking the active column flips direction;
+// clicking a different column switches to it (ascending).
+function nextSort(prev: SortState, key: SortKey): SortState {
+  if (prev.key === key) {
+    return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
+  }
+  return { key, dir: "asc" };
+}
+
 // ── Selection / cursor model ────────────────────────────────────────────────
 // A pane owns:
 //   • cursor   — the single focused row index (-1 when nothing/empty)
@@ -301,6 +377,42 @@ function rangeNames(rows: Row[], a: number, b: number): string[] {
   const out: string[] = [];
   for (let i = lo; i <= hi; i++) out.push(rows[i].name);
   return out;
+}
+
+/** A clickable column header that drives sorting. Shows a ▲/▼ indicator when it
+ *  is the active sort column. `align` right-justifies numeric columns (size). */
+function SortHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = "left",
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  align?: "left" | "right";
+}) {
+  const activeCol = sort.key === sortKey;
+  return (
+    <button
+      type="button"
+      onClick={() => onSort(sortKey)}
+      className={
+        "flex items-center gap-1 min-w-0 uppercase tracking-[0.12em] hover:text-nx-soft transition-colors " +
+        (align === "right" ? "justify-end text-right" : "") +
+        (activeCol ? " text-nx-accent" : "")
+      }
+    >
+      <span className="truncate">{label}</span>
+      {activeCol && (
+        <span className="shrink-0 text-[9px] leading-none">
+          {sort.dir === "asc" ? "▲" : "▼"}
+        </span>
+      )}
+    </button>
+  );
 }
 
 function FileTypeIcon({ entry }: { entry: Row }) {
@@ -454,6 +566,11 @@ export function SFTPPanel({
   } | null>(null);
   const [remoteSel, setRemoteSel] = useState<PaneSel>(emptySel());
   const selected = remoteSel.selected;
+  // Per-pane sort (key + direction), restored from localStorage. The remote and
+  // local panes sort independently.
+  const [remoteSort, setRemoteSort] = useState<SortState>(() =>
+    readSort(LS_SORT_REMOTE),
+  );
   // Active transfers keyed by transferId → live progress for the bar. Kept in a
   // module-level store (transfers.ts), not component state, so the bars + their
   // labels survive the panel being closed and reopened mid-transfer.
@@ -525,6 +642,43 @@ export function SFTPPanel({
   const [localError, setLocalError] = useState<string | null>(null);
   const [localSel, setLocalSel] = useState<PaneSel>(emptySel());
   const localSelected = localSel.selected;
+  const [localSort, setLocalSort] = useState<SortState>(() =>
+    readSort(LS_SORT_LOCAL),
+  );
+
+  // Derived, sorted views the UI actually renders. The cursor/selection,
+  // op-targets, and viewer all index into THESE arrays — the same order the user
+  // sees — so selection-by-name and index-based ops stay consistent after a
+  // re-sort. The raw backend arrays (`entries` / `localEntries`) are untouched.
+  const sortedEntries = sortRows(entries, remoteSort);
+  const sortedLocalEntries = sortRows(localEntries, localSort);
+
+  // Persist each pane's sort choice so it survives reopen.
+  useEffect(() => {
+    writeSort(LS_SORT_REMOTE, remoteSort);
+  }, [remoteSort]);
+  useEffect(() => {
+    writeSort(LS_SORT_LOCAL, localSort);
+  }, [localSort]);
+
+  // Header click → change the pane's sort. Re-sorting moves rows, so clamp the
+  // cursor to the new list length (selection is name-based and stays valid).
+  const onRemoteSort = useCallback((key: SortKey) => {
+    setRemoteSort((prev) => nextSort(prev, key));
+    setRemoteSel((prev) => ({
+      ...prev,
+      cursor: Math.min(prev.cursor, entries.length - 1),
+      anchor: Math.min(prev.anchor, entries.length - 1),
+    }));
+  }, [entries.length]);
+  const onLocalSort = useCallback((key: SortKey) => {
+    setLocalSort((prev) => nextSort(prev, key));
+    setLocalSel((prev) => ({
+      ...prev,
+      cursor: Math.min(prev.cursor, localEntries.length - 1),
+      anchor: Math.min(prev.anchor, localEntries.length - 1),
+    }));
+  }, [localEntries.length]);
   // Local drive roots (Windows: C:\, D:\, …; Linux/mac: just "/"). The picker is
   // shown only when more than one root exists, so it's effectively Windows-only.
   const [localDriveList, setLocalDriveList] = useState<string[]>([]);
@@ -944,9 +1098,9 @@ export function SFTPPanel({
   // selection if non-empty, otherwise just the cursor row.
   function remoteOpTargets(): SftpEntry[] {
     if (remoteSel.selected.size > 0) {
-      return entries.filter((e) => remoteSel.selected.has(e.name));
+      return sortedEntries.filter((e) => remoteSel.selected.has(e.name));
     }
-    const c = entries[remoteSel.cursor];
+    const c = sortedEntries[remoteSel.cursor];
     return c ? [c] : [];
   }
 
@@ -954,7 +1108,7 @@ export function SFTPPanel({
   // edit). No-op for a directory, ".." (cursor -1), or when no cursor is set —
   // the viewer is text-files-only.
   function openViewer(mode: "view" | "edit") {
-    const c = entries[remoteSel.cursor];
+    const c = sortedEntries[remoteSel.cursor];
     if (!c || c.is_dir) return;
     setViewer({ path: joinPath(cwd, c.name), name: c.name, mode });
   }
@@ -1001,9 +1155,9 @@ export function SFTPPanel({
   // The local entries to copy: selection if non-empty, else the cursor row.
   function localOpTargets(): LocalEntry[] {
     if (localSel.selected.size > 0) {
-      return localEntries.filter((e) => localSel.selected.has(e.name));
+      return sortedLocalEntries.filter((e) => localSel.selected.has(e.name));
     }
-    const c = localEntries[localSel.cursor];
+    const c = sortedLocalEntries[localSel.cursor];
     return c ? [c] : [];
   }
 
@@ -1144,7 +1298,7 @@ export function SFTPPanel({
   // Open the LOCAL cursor file in the OS default app (F3/F4 when the local pane
   // is active, or the local context menu). No-op for a directory / empty cursor.
   async function onLocalOpenExternal(entry?: LocalEntry) {
-    const target = entry ?? localEntries[localSel.cursor];
+    const target = entry ?? sortedLocalEntries[localSel.cursor];
     if (!target || target.is_dir) return;
     setLocalError(null);
     try {
@@ -1279,10 +1433,10 @@ export function SFTPPanel({
         // Rename the cursor entry on whichever pane is active.
         consume();
         if (localActive) {
-          const lc = localEntries[localSel.cursor];
+          const lc = sortedLocalEntries[localSel.cursor];
           if (lc) onLocalRename(lc);
         } else {
-          const c = entries[remoteSel.cursor];
+          const c = sortedEntries[remoteSel.cursor];
           if (c) onRename(c);
         }
         return;
@@ -1316,8 +1470,10 @@ export function SFTPPanel({
     helpOpen,
     entries,
     remoteSel,
+    remoteSort,
     localEntries,
     localSel,
+    localSort,
     localCwd,
     viewer,
     cwd,
@@ -1330,7 +1486,7 @@ export function SFTPPanel({
   function rowMenu(entry: SftpEntry): MenuItem[] {
     const inSelection = remoteSel.selected.size > 0 && remoteSel.selected.has(entry.name);
     const targets = inSelection
-      ? entries.filter((e) => remoteSel.selected.has(e.name))
+      ? sortedEntries.filter((e) => remoteSel.selected.has(e.name))
       : [entry];
     const n = targets.length;
     const items: MenuItem[] = [];
@@ -1370,7 +1526,7 @@ export function SFTPPanel({
     const inSelection =
       localSel.selected.size > 0 && localSel.selected.has(entry.name);
     const targets = inSelection
-      ? localEntries.filter((e) => localSel.selected.has(e.name))
+      ? sortedLocalEntries.filter((e) => localSel.selected.has(e.name))
       : [entry];
     const n = targets.length;
     const items: MenuItem[] = [];
@@ -1567,16 +1723,32 @@ export function SFTPPanel({
         >
           <div />
           <div />
-          <div>{t("sftp.col_name")}</div>
-          <div className="text-right">{t("sftp.col_size")}</div>
-          <div>{t("sftp.col_modified")}</div>
+          <SortHeader
+            label={t("sftp.col_name")}
+            sortKey="name"
+            sort={remoteSort}
+            onSort={onRemoteSort}
+          />
+          <SortHeader
+            label={t("sftp.col_size")}
+            sortKey="size"
+            sort={remoteSort}
+            onSort={onRemoteSort}
+            align="right"
+          />
+          <SortHeader
+            label={t("sftp.col_modified")}
+            sortKey="mtime"
+            sort={remoteSort}
+            onSort={onRemoteSort}
+          />
           <div>{t("sftp.col_perms")}</div>
           <div>{t("sftp.col_owner")}</div>
         </div>
 
         {/* Body */}
         <FileList
-          rows={entries}
+          rows={sortedEntries}
           sel={remoteSel}
           setSel={setRemoteSel}
           loading={loading}
@@ -1612,7 +1784,7 @@ export function SFTPPanel({
                 <div className="text-right tabular-nums text-nx-dim">
                   {sf.is_dir ? "—" : fmtSize(sf.size)}
                 </div>
-                <div className="text-nx-dim tabular-nums">{fmtMtime(sf.mtime)}</div>
+                <div className="text-nx-dim tabular-nums">{fmtMtime(sf.mtime) || "—"}</div>
                 <div className="tabular-nums text-nx-soft">{fmtPerms(sf.permissions)}</div>
                 <div className="text-nx-muted truncate">
                   {sf.owner || (sf.uid ? String(sf.uid) : "")}
@@ -1634,6 +1806,8 @@ export function SFTPPanel({
               titleIcon={<HardDrive size={13} className="text-nx-accent2" />}
               path={localCwd}
               loading={localLoading}
+              sort={localSort}
+              onSort={onLocalSort}
               active={activePane === "local"}
               onActivate={() => setActivePane("local")}
               upDisabled={!localCwd || localParent(localCwd) === localCwd}
@@ -1672,7 +1846,7 @@ export function SFTPPanel({
                 </div>
               )}
               <FileList
-                rows={localEntries}
+                rows={sortedLocalEntries}
                 sel={localSel}
                 setSel={setLocalSel}
                 loading={localLoading}
@@ -1719,6 +1893,8 @@ export function SFTPPanel({
               titleIcon={<Server size={13} className="text-nx-accent2" />}
               path={cwd}
               loading={loading}
+              sort={remoteSort}
+              onSort={onRemoteSort}
               active={activePane === "remote"}
               onActivate={() => setActivePane("remote")}
               upDisabled={!sftpId || cwd === "/"}
@@ -1737,7 +1913,7 @@ export function SFTPPanel({
               }
             >
               <FileList
-                rows={entries}
+                rows={sortedEntries}
                 sel={remoteSel}
                 setSel={setRemoteSel}
                 loading={loading}
@@ -2217,6 +2393,9 @@ function CompactCells({ row }: { row: Row }) {
       <div className="text-right tabular-nums text-nx-dim">
         {row.is_dir ? "—" : fmtSize(row.size)}
       </div>
+      <div className="tabular-nums text-nx-dim truncate">
+        {fmtMtime(row.mtime) || "—"}
+      </div>
     </>
   );
 }
@@ -2242,6 +2421,8 @@ function Pane({
   onActivate,
   extraActions,
   local,
+  sort,
+  onSort,
   children,
 }: {
   title: string;
@@ -2259,6 +2440,9 @@ function Pane({
   extraActions?: React.ReactNode;
   /** This is the LOCAL pane → breadcrumb uses platform-aware path joining. */
   local?: boolean;
+  /** This pane's sort state + header-click handler (clickable column headers). */
+  sort: SortState;
+  onSort: (key: SortKey) => void;
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -2314,15 +2498,32 @@ function Pane({
         )}
       </div>
 
-      {/* Column header */}
+      {/* Column header — clickable to sort this pane. */}
       <div
-        className="grid items-center px-3 py-1 text-micro uppercase tracking-[0.12em] text-nx-muted border-b border-nx-divider shrink-0"
+        className="grid items-center px-3 py-1 text-micro text-nx-muted border-b border-nx-divider shrink-0"
         style={{ gridTemplateColumns: PANE_GRID, columnGap: 12 }}
       >
         <div />
         <div />
-        <div>{t("sftp.col_name")}</div>
-        <div className="text-right">{t("sftp.col_size")}</div>
+        <SortHeader
+          label={t("sftp.col_name")}
+          sortKey="name"
+          sort={sort}
+          onSort={onSort}
+        />
+        <SortHeader
+          label={t("sftp.col_size")}
+          sortKey="size"
+          sort={sort}
+          onSort={onSort}
+          align="right"
+        />
+        <SortHeader
+          label={t("sftp.col_modified")}
+          sortKey="mtime"
+          sort={sort}
+          onSort={onSort}
+        />
       </div>
 
       {/* Body (FileList) */}

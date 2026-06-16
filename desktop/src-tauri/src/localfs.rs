@@ -14,6 +14,8 @@ pub struct LocalEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Unix mtime in seconds (0 if unavailable).
+    pub mtime: u64,
 }
 
 /// The user's home directory (`$HOME`, or `%USERPROFILE%` on Windows). Falls
@@ -77,10 +79,18 @@ pub fn fs_local_list(path: String) -> Result<Vec<LocalEntry>, String> {
             Err(_) => continue, // unreadable entry — skip, don't abort
         };
         let name = entry.file_name().to_string_lossy().into_owned();
+        // Unix mtime in seconds; 0 when the platform / fs doesn't report it.
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         out.push(LocalEntry {
             name,
             is_dir: meta.is_dir(),
             size: if meta.is_dir() { 0 } else { meta.len() },
+            mtime,
         });
     }
 

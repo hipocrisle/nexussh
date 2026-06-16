@@ -85,6 +85,16 @@ interface Props {
   collapsed?: boolean;
   /** Minimise (non-destructive): hide the panel, keep it mounted. */
   onCollapse?: () => void;
+  /** Seed the remote cwd / local dir on mount (per-session memory from App).
+   *  When present and non-empty they take precedence over the home/root +
+   *  localStorage defaults; if a seeded dir no longer lists, we fall back to the
+   *  normal resolution rather than erroring. */
+  initialRemotePath?: string;
+  initialLocalPath?: string;
+  /** Fired whenever the remote cwd OR the local dir changes, with the current
+   *  pair. App persists it onto the session entry so a tab-switch remount can
+   *  resume here via initial*Path. */
+  onPathChange?: (remote: string, local: string) => void;
 }
 
 // ── Generic row entry (lowest common denominator of SftpEntry / LocalEntry) ──
@@ -386,7 +396,16 @@ function Breadcrumb({
   );
 }
 
-export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }: Props) {
+export function SFTPPanel({
+  connectArgs,
+  title,
+  onClose,
+  collapsed,
+  onCollapse,
+  initialRemotePath,
+  initialLocalPath,
+  onPathChange,
+}: Props) {
   const { t } = useTranslation();
   const [sftpId, setSftpId] = useState<string | null>(null);
   const [cwd, setCwd] = useState("/");
@@ -517,21 +536,26 @@ export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }
       } catch {
         home = "/";
       }
-      const remembered = readLocalDir();
-      if (remembered) {
+      // Try, in order: per-session seed (initialLocalPath), the shared
+      // last-visited local dir, then home. First one that lists wins; a stale
+      // path silently falls through to the next.
+      const candidates = [initialLocalPath, readLocalDir()].filter(
+        (p): p is string => !!p,
+      );
+      for (const cand of candidates) {
         try {
-          const list = await localList(remembered);
+          const list = await localList(cand);
           setLocalEntries(list);
-          setLocalCwd(remembered);
+          setLocalCwd(cand);
           setLocalSel(emptySel());
           return;
         } catch {
-          /* stored dir gone — fall through to home */
+          /* stored / seeded dir gone — try the next candidate */
         }
       }
       await loadLocal(home || "/");
     })();
-  }, [dualPane, localCwd, loadLocal]);
+  }, [dualPane, localCwd, loadLocal, initialLocalPath]);
 
   // Persist the view-mode choice. Single-pane has only the remote side, so
   // pin the active pane to remote whenever dual-pane is off.
@@ -549,6 +573,23 @@ export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }
     // real navigation (sftpId present) so we don't overwrite with the placeholder.
     if (sftpId && cwd) writeRemoteDir(connectArgs.host, cwd);
   }, [cwd, sftpId, connectArgs.host]);
+
+  // Report the current (remote, local) path pair up to App so it can be stored
+  // on the per-session SFTP entry and re-seeded after a tab-switch remount.
+  // Gated on sftpId so the placeholder "/" before connect resolves never
+  // clobbers a previously-saved path. Deduped via a ref so re-renders that don't
+  // actually move either dir don't re-fire. onPathChange is read through a ref
+  // so the effect doesn't re-run when App passes a fresh closure each render.
+  const onPathChangeRef = useRef(onPathChange);
+  onPathChangeRef.current = onPathChange;
+  const lastReportedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sftpId || !cwd) return;
+    const key = cwd + " " + localCwd;
+    if (lastReportedRef.current === key) return;
+    lastReportedRef.current = key;
+    onPathChangeRef.current?.(cwd, localCwd);
+  }, [cwd, localCwd, sftpId]);
 
   function navigateLocal(path: string) {
     loadLocal(path);
@@ -677,16 +718,25 @@ export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }
         } catch {
           home = "/";
         }
-        // Restore the last remote dir for this host if it still lists; otherwise
-        // fall back to the resolved home.
-        const remembered = readRemoteDir(connectArgs.host);
+        // Resolve the starting dir, most-specific first:
+        //   1. initialRemotePath — per-session memory from App (survives a
+        //      tab-switch remount); takes precedence when present.
+        //   2. the last remote dir saved for this host in localStorage.
+        //   3. the resolved home, else "/".
+        // Each candidate is tried with a list() call; if it no longer lists we
+        // fall through to the next rather than erroring.
         let start = home || "/";
-        if (remembered && remembered !== start) {
+        const candidates = [
+          initialRemotePath,
+          readRemoteDir(connectArgs.host),
+        ].filter((p): p is string => !!p && p !== start);
+        for (const cand of candidates) {
           try {
-            await sftpList(id, remembered);
-            start = remembered;
+            await sftpList(id, cand);
+            start = cand;
+            break;
           } catch {
-            /* stored dir gone — keep home */
+            /* stored / seeded dir gone — try the next candidate */
           }
         }
         await load(id, start);
@@ -1192,7 +1242,14 @@ export function SFTPPanel({ connectArgs, title, onClose, collapsed, onCollapse }
         onClick={() => onCollapse?.()}
         title={t("sftp.restore_chip")}
         aria-label={t("sftp.restore_chip")}
-        className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 px-3 py-2 rounded-nx border border-nx-border bg-nx-panel/95 backdrop-blur-sm shadow-glow-sm text-meta font-mono text-nx-soft hover:text-nx-text hover:bg-nx-elevated transition-colors"
+        // Sit ABOVE the 22px bottom StatusLine (utf-8 · ssh-2.0 · clock) with a
+        // small gap, instead of overlapping it. The StatusLine reserves the
+        // mobile safe-area via nx-safe-bottom, so add that inset too to clear it
+        // on devices with a home-indicator. 22px bar + ~10px gap = 32px base.
+        style={{
+          bottom: "calc(32px + env(safe-area-inset-bottom, 0px))",
+        }}
+        className="fixed right-4 z-50 inline-flex items-center gap-2 px-3 py-2 rounded-nx border border-nx-border bg-nx-panel/95 backdrop-blur-sm shadow-glow-sm text-meta font-mono text-nx-soft hover:text-nx-text hover:bg-nx-elevated transition-colors"
       >
         <FolderOpen size={14} className="text-nx-accent2 shrink-0" />
         <span className="text-nx-accent">sftp</span>

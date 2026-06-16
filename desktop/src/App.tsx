@@ -637,7 +637,20 @@ function App() {
   // transfers preserved) but hidden so the terminal underneath is usable; a
   // floating chip restores it.
   const [sftpBySession, setSftpBySession] = useState<
-    Record<string, { args: ConnectArgs; title: string; collapsed: boolean }>
+    Record<
+      string,
+      {
+        args: ConnectArgs;
+        title: string;
+        collapsed: boolean;
+        // Last-visited remote / local dirs for THIS session's browser. Persisted
+        // here (not just in the panel) so they survive the panel being unmounted
+        // when the user switches to another tab and back — the keyed render
+        // remounts the panel, and these seed its initial cwd / local dir.
+        remotePath?: string;
+        localPath?: string;
+      }
+    >
   >({});
   // The SFTP entry belonging to the currently-focused session (the only one we
   // ever render). Null when the active session has no SFTP browser open.
@@ -648,15 +661,46 @@ function App() {
   // collapsed the panel is hidden and the terminal owns those keys.
   const sftpOpenRef = useRef(false);
   sftpOpenRef.current = !!sftpEntry && !sftpEntry.collapsed;
-  // Focus the active terminal's hidden helper textarea so keystrokes go to the
-  // PTY immediately after the SFTP panel is collapsed.
+  // Focus the FOCUSED pane's terminal (its hidden xterm helper textarea) so
+  // keystrokes go straight to the PTY after the SFTP panel collapses.
+  //
+  // Two things made the old version unreliable: (1) it ran inside the collapse
+  // setState updater, BEFORE React re-rendered the panel to display:none — the
+  // still-visible panel/backdrop held focus, so a single rAF fired too early and
+  // the focus was immediately stolen back; (2) it queried `.xterm-helper-textarea`
+  // globally, grabbing whichever pane's textarea came first in the DOM rather
+  // than the focused pane's (wrong target in split view).
+  //
+  // Fix: call this AFTER collapsed flips to true, and defer past the DOM settle
+  // with a double rAF plus a setTimeout(0) fallback (covers the frame where the
+  // panel's own restore-focus effect / display:none haven't applied yet). Scope
+  // the lookup to the focused pane via its data-session-id wrapper.
   function focusActiveTerminal() {
-    requestAnimationFrame(() => {
-      const ta = document.querySelector<HTMLTextAreaElement>(
-        ".xterm-helper-textarea",
-      );
+    const doFocus = () => {
+      const sid = focusedSession?.id;
+      const root = sid
+        ? document.querySelector<HTMLElement>(`[data-session-id="${sid}"]`)
+        : null;
+      const ta =
+        root?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea") ??
+        document.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
       ta?.focus({ preventScroll: true });
-    });
+    };
+    requestAnimationFrame(() => requestAnimationFrame(doFocus));
+    // Fallback for the case where the panel's display:none / blur lands a tick
+    // later than the rAF pair — re-assert focus once the macrotask queue drains.
+    setTimeout(doFocus, 0);
+  }
+  // Persist the active session's SFTP browser paths whenever the panel reports a
+  // navigation. Stored on the per-session entry so a tab-switch remount restarts
+  // where the user left off (see initialRemotePath / initialLocalPath below).
+  function onSftpPathChange(remotePath: string, localPath: string) {
+    if (!activeId) return;
+    setSftpBySession((m) =>
+      m[activeId]
+        ? { ...m, [activeId]: { ...m[activeId], remotePath, localPath } }
+        : m,
+    );
   }
   // Collapse / restore helpers used by both the panel button and the hotkeys.
   // They act on the ACTIVE session's SFTP entry only.
@@ -666,16 +710,21 @@ function App() {
       m[activeId] ? { ...m, [activeId]: { ...m[activeId], collapsed: false } } : m,
     );
   }
-  // Toggle collapse/restore for the active session's SFTP entry.
+  // Toggle collapse/restore for the active session's SFTP entry. When this
+  // collapses the panel we hand keyboard focus back to the terminal — but only
+  // AFTER the state commit (the focus helper is deferred), so the panel is
+  // actually display:none by the time we focus and won't steal it back.
   function toggleSftpCollapse() {
     if (!activeId) return;
+    let collapsing = false;
     setSftpBySession((m) => {
       const e = m[activeId];
       if (!e) return m;
       const next = !e.collapsed;
-      if (next) focusActiveTerminal();
+      collapsing = next;
       return { ...m, [activeId]: { ...e, collapsed: next } };
     });
+    if (collapsing) focusActiveTerminal();
   }
   // Close (full unmount) the active session's SFTP entry.
   function closeSftp() {
@@ -2852,6 +2901,7 @@ function App() {
             return (
               <div
                 key={p.session.id}
+                data-session-id={p.session.id}
                 onMouseDownCapture={() => setFocusedPane(w.id, p.id)}
                 style={style}
               >
@@ -3498,11 +3548,15 @@ function App() {
         {sftpEntry && activeId && (
           <SFTPPanel
             // Key on the session id so switching tabs remounts the panel for the
-            // newly-focused session (resetting remote cwd to root is acceptable).
+            // newly-focused session. Per-session remote/local paths are seeded
+            // back via initial*Path so the remount resumes where it left off.
             key={activeId}
             connectArgs={sftpEntry.args}
             title={sftpEntry.title}
             collapsed={sftpEntry.collapsed}
+            initialRemotePath={sftpEntry.remotePath}
+            initialLocalPath={sftpEntry.localPath}
+            onPathChange={onSftpPathChange}
             onCollapse={toggleSftpCollapse}
             onClose={closeSftp}
           />

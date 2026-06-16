@@ -60,6 +60,19 @@ export function UpdatesSection({ s, set, t }: Props) {
     }
   }
 
+  // Switching the release channel auto-runs the very same check the manual
+  // button runs — no separate "now press Check" step. We persist the new
+  // channel FIRST (set() writes localStorage synchronously, and
+  // checkForUpdate() reads the channel from localStorage, not React state),
+  // then reuse check(). Guards: ignore no-op clicks (same channel) and skip
+  // while a check/install is already in flight so manual + auto can't race.
+  function selectChannel(c: NexuSettings["channel"]) {
+    if (c === s.channel) return;
+    set({ channel: c });
+    if (status === "checking" || status === "installing") return;
+    void check();
+  }
+
   async function install() {
     setError(null);
     setStatus("installing");
@@ -138,7 +151,7 @@ export function UpdatesSection({ s, set, t }: Props) {
             <button
               key={c}
               type="button"
-              onClick={() => set({ channel: c })}
+              onClick={() => selectChannel(c)}
               className="px-4 py-2 uppercase tracking-wider transition-colors"
               style={{
                 background: s.channel === c ? t.bgElevated : t.bgPanel,

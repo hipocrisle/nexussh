@@ -15,32 +15,62 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Url};
 use tauri_plugin_updater::{Updater, UpdaterExt};
 
-/// Rolling per-channel manifest URL. Unknown/None → None (fall back to the
-/// endpoint baked into tauri.conf.json, for back-compat with old installs).
+fn chan_slug(channel: Option<&str>) -> Option<&'static str> {
+    match channel {
+        Some("beta") => Some("beta"),
+        Some("stable") => Some("stable"),
+        _ => None,
+    }
+}
+
+/// Rolling per-channel manifest URL on GitHub releases (PRIMARY). Unknown/None →
+/// None (then the endpoint baked into tauri.conf.json is used, for back-compat).
 fn channel_endpoint(channel: Option<&str>) -> Option<String> {
-    let c = match channel {
-        Some("beta") => "beta",
-        Some("stable") => "stable",
-        _ => return None,
-    };
+    let c = chan_slug(channel)?;
     Some(format!(
         "https://github.com/hipocrisle/nexussh/releases/download/channel-{c}/latest.json"
     ))
 }
 
+/// Self-hosted manifest URL (FALLBACK), served from the RU node behind
+/// upd.hipogas.org — a different domain/IP than GitHub's release CDN. When
+/// GitHub's CDN is unreachable (e.g. a poisoned OS DNS cache for the
+/// githubusercontent hosts) the updater still finds the update here. The
+/// installer URLs inside this manifest also point at upd.hipogas.org, so the
+/// whole update path can avoid GitHub.
+fn selfhost_endpoint(channel: Option<&str>) -> Option<String> {
+    let c = chan_slug(channel)?;
+    Some(format!("https://upd.hipogas.org/nexussh/{c}/latest.json"))
+}
+
 /// Build a channel-aware updater that treats ANY remote release as installable
 /// (so on-the-fly channel switches, including downgrades, work). The frontend
 /// gates the actual prompt on `version != current_version`.
+///
+/// Endpoints are tried in order: GitHub (primary) then the self-hosted feed
+/// (fallback). A short per-request timeout makes a hung/unreachable GitHub CDN
+/// fail over to the fallback in seconds instead of hanging the whole check.
 fn build_updater(app: &AppHandle, channel: Option<&str>) -> Result<Updater, UpdateError> {
     let mut b = app
         .updater_builder()
-        .version_comparator(|_current, _update| true);
+        .version_comparator(|_current, _update| true)
+        .timeout(std::time::Duration::from_secs(12));
+    let mut eps: Vec<Url> = Vec::new();
     if let Some(ep) = channel_endpoint(channel) {
-        let url: Url = ep
-            .parse()
-            .map_err(|e| UpdateError::Plugin(format!("bad endpoint url: {e}")))?;
+        eps.push(
+            ep.parse()
+                .map_err(|e| UpdateError::Plugin(format!("bad endpoint url: {e}")))?,
+        );
+    }
+    if let Some(ep) = selfhost_endpoint(channel) {
+        eps.push(
+            ep.parse()
+                .map_err(|e| UpdateError::Plugin(format!("bad fallback url: {e}")))?,
+        );
+    }
+    if !eps.is_empty() {
         b = b
-            .endpoints(vec![url])
+            .endpoints(eps)
             .map_err(|e| UpdateError::Plugin(e.to_string()))?;
     }
     b.build().map_err(|e| UpdateError::Plugin(e.to_string()))

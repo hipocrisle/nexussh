@@ -23,9 +23,15 @@ interface ContentStopProps {
  *   contentProps  — spread onto the inner content (form/panel) so its
  *                   own clicks never reach the backdrop logic
  *
- * Also wires Escape to call onClose.
+ * A real backdrop click calls onClose. Escape calls `onEscape` when provided
+ * (so a caller can route the backdrop and Esc to DIFFERENT actions — e.g. the
+ * SFTP panel collapses on backdrop click but fully closes on Esc), otherwise
+ * Escape falls back to onClose.
  */
-export function useBackdropClose(onClose: () => void): {
+export function useBackdropClose(
+  onClose: () => void,
+  onEscape?: () => void,
+): {
   backdropProps: BackdropProps;
   contentProps: ContentStopProps;
 } {
@@ -35,12 +41,12 @@ export function useBackdropClose(onClose: () => void): {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        onClose();
+        (onEscape ?? onClose)();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, onEscape]);
 
   return {
     backdropProps: {

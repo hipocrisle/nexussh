@@ -631,21 +631,23 @@ function App() {
   const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
-  const [sftpTarget, setSftpTarget] = useState<{
-    args: ConnectArgs;
-    title: string;
-  } | null>(null);
-  // Collapse (minimise) state for the SFTP panel. When true the panel stays
-  // MOUNTED (cwd / selection / in-flight transfers all preserved) but is hidden
-  // so the terminal underneath is usable; a floating chip restores it.
-  const [sftpCollapsed, setSftpCollapsed] = useState(false);
-  // Mirror of "is the SFTP panel open?" for the global keydown handler, so it
-  // can early-return for the function keys the panel owns (F1/F5–F8) without
-  // re-subscribing the listener on every sftpTarget change. Gated on NOT
-  // collapsed — while collapsed the panel is hidden and the terminal owns those
-  // keys.
+  // SFTP browser state is PER-TAB: keyed by the focused session id, so a
+  // collapsed/open browser belongs to one tab's session and never bleeds onto
+  // other tabs. `collapsed` keeps the panel MOUNTED (cwd / selection / in-flight
+  // transfers preserved) but hidden so the terminal underneath is usable; a
+  // floating chip restores it.
+  const [sftpBySession, setSftpBySession] = useState<
+    Record<string, { args: ConnectArgs; title: string; collapsed: boolean }>
+  >({});
+  // The SFTP entry belonging to the currently-focused session (the only one we
+  // ever render). Null when the active session has no SFTP browser open.
+  const sftpEntry = activeId ? sftpBySession[activeId] ?? null : null;
+  // Mirror of "is the active SFTP panel open?" for the global keydown handler, so
+  // it can early-return for the function keys the panel owns (F1/F5–F8) without
+  // re-subscribing the listener on every change. Gated on NOT collapsed — while
+  // collapsed the panel is hidden and the terminal owns those keys.
   const sftpOpenRef = useRef(false);
-  sftpOpenRef.current = !!sftpTarget && !sftpCollapsed;
+  sftpOpenRef.current = !!sftpEntry && !sftpEntry.collapsed;
   // Focus the active terminal's hidden helper textarea so keystrokes go to the
   // PTY immediately after the SFTP panel is collapsed.
   function focusActiveTerminal() {
@@ -657,12 +659,33 @@ function App() {
     });
   }
   // Collapse / restore helpers used by both the panel button and the hotkeys.
-  function collapseSftp() {
-    setSftpCollapsed(true);
-    focusActiveTerminal();
-  }
+  // They act on the ACTIVE session's SFTP entry only.
   function restoreSftp() {
-    setSftpCollapsed(false);
+    if (!activeId) return;
+    setSftpBySession((m) =>
+      m[activeId] ? { ...m, [activeId]: { ...m[activeId], collapsed: false } } : m,
+    );
+  }
+  // Toggle collapse/restore for the active session's SFTP entry.
+  function toggleSftpCollapse() {
+    if (!activeId) return;
+    setSftpBySession((m) => {
+      const e = m[activeId];
+      if (!e) return m;
+      const next = !e.collapsed;
+      if (next) focusActiveTerminal();
+      return { ...m, [activeId]: { ...e, collapsed: next } };
+    });
+  }
+  // Close (full unmount) the active session's SFTP entry.
+  function closeSftp() {
+    if (!activeId) return;
+    setSftpBySession((m) => {
+      if (!m[activeId]) return m;
+      const n = { ...m };
+      delete n[activeId];
+      return n;
+    });
   }
   // Tunnels panel. `open` toggles visibility; `newTunnel` (when set) wires the
   // panel's "+ New tunnel" button to an ad-hoc forward against that host.
@@ -888,7 +911,7 @@ function App() {
     shortcutsOpen,
     syncPanelOpen: false as boolean,
     vaultPanelOpen: false as boolean,
-    sftpTarget: null as unknown,
+    sftpOpen: false as boolean,
     closers: {} as Record<string, () => void>,
   });
   // Keep refs current.
@@ -917,7 +940,7 @@ function App() {
       syncPanelOpen ||
       vaultPanelOpen ||
       !!updatePanel ||
-      !!sftpTarget;
+      !!sftpEntry;
     if (anyOpen) {
       if (history.state?.nxOverlay !== true) {
         history.pushState({ nxOverlay: true }, "");
@@ -934,14 +957,14 @@ function App() {
     syncPanelOpen,
     vaultPanelOpen,
     updatePanel,
-    sftpTarget,
+    sftpEntry,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
   backRef.current.syncPanelOpen = syncPanelOpen;
   backRef.current.vaultPanelOpen = vaultPanelOpen;
   (backRef.current as { updatePanelOpen?: boolean }).updatePanelOpen =
     !!updatePanel;
-  (backRef.current as { sftpOpen?: boolean }).sftpOpen = !!sftpTarget;
+  (backRef.current as { sftpOpen?: boolean }).sftpOpen = !!sftpEntry;
   useEffect(() => {
     if (!isMobile) return;
     const onPop = () => {
@@ -950,7 +973,7 @@ function App() {
         sftpOpen?: boolean;
       };
       // Drill-down order: deepest/newest first.
-      if (b.sftpOpen) setSftpTarget(null);
+      if (b.sftpOpen) closeSftp();
       else if (b.updatePanelOpen) setUpdatePanel(null);
       else if (b.settingsOpen) setSettingsOpen(false);
       else if (b.shortcutsOpen) setShortcutsOpen(false);
@@ -1303,7 +1326,7 @@ function App() {
         // already open but collapsed, ensure it's VISIBLE (un-collapse).
         e.preventDefault();
         e.stopPropagation();
-        if (sftpTarget) {
+        if (sftpEntry) {
           restoreSftp();
         } else if (activeSession) {
           openSftp(activeSession);
@@ -1313,9 +1336,8 @@ function App() {
         // isn't open yet, open it for the active host (then it's visible).
         e.preventDefault();
         e.stopPropagation();
-        if (sftpTarget) {
-          if (sftpCollapsed) restoreSftp();
-          else collapseSftp();
+        if (sftpEntry) {
+          toggleSftpCollapse();
         } else if (activeSession) {
           openSftp(activeSession);
         }
@@ -1449,7 +1471,7 @@ function App() {
     };
     window.addEventListener("keydown", handler, true);
     return () => window.removeEventListener("keydown", handler, true);
-  }, [activeId, activeWorkspaceId, workspaces, activeSession, sftpTarget, sftpCollapsed]);
+  }, [activeId, activeWorkspaceId, workspaces, activeSession, sftpBySession]);
 
   // Suppress the WebView's native context menu and replace it with our own.
   useEffect(() => {
@@ -1726,11 +1748,15 @@ function App() {
       h = { ...h, user: creds.user };
       auth = { kind: "password", password: creds.password };
     }
-    setSftpCollapsed(false); // a fresh open is always visible
-    setSftpTarget({
+    // SFTP belongs to the active tab's session. Without one there's no terminal
+    // to sit behind, so no-op (prior fallback behaviour).
+    if (!activeId) return;
+    const entry = {
       args: buildConnectArgs(h, auth),
       title: `${h.user}@${h.host}`,
-    });
+      collapsed: false, // a fresh open is always visible
+    };
+    setSftpBySession((m) => ({ ...m, [activeId]: entry }));
   }
 
   // Open the Tunnels panel listing all active tunnels (header entry point).
@@ -2212,6 +2238,14 @@ function App() {
       sshDisconnect(pane.session.id).catch(() => {});
     }
     clearReconnect(pane.session.id);
+    // Drop any per-session SFTP browser bound to this closing session so it can
+    // never linger as a stale entry.
+    setSftpBySession((m) => {
+      if (!m[pane.session.id]) return m;
+      const n = { ...m };
+      delete n[pane.session.id];
+      return n;
+    });
     // Stash for Ctrl+Shift+T (restore last closed). Keep last 20 hosts only.
     closedStackRef.current.push(pane.session.host);
     if (closedStackRef.current.length > 20) closedStackRef.current.shift();
@@ -3461,22 +3495,16 @@ function App() {
             onChange={setSync}
           />
         )}
-        {sftpTarget && (
+        {sftpEntry && activeId && (
           <SFTPPanel
-            connectArgs={sftpTarget.args}
-            title={sftpTarget.title}
-            collapsed={sftpCollapsed}
-            onCollapse={() =>
-              setSftpCollapsed((c) => {
-                const next = !c;
-                if (next) focusActiveTerminal();
-                return next;
-              })
-            }
-            onClose={() => {
-              setSftpTarget(null);
-              setSftpCollapsed(false);
-            }}
+            // Key on the session id so switching tabs remounts the panel for the
+            // newly-focused session (resetting remote cwd to root is acceptable).
+            key={activeId}
+            connectArgs={sftpEntry.args}
+            title={sftpEntry.title}
+            collapsed={sftpEntry.collapsed}
+            onCollapse={toggleSftpCollapse}
+            onClose={closeSftp}
           />
         )}
         {tunnelsPanel?.open && (

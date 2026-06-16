@@ -836,39 +836,47 @@ export function SFTPPanel({
   }, []);
 
   // Decide what to do when a transfer target already exists. Returns:
-  //   "overwrite" — start fresh (resume=false); the default for new / equal-or-
-  //                 larger targets where there's nothing to resume.
-  //   "resume"    — continue from the existing bytes (resume=true).
-  //   "skip"      — already fully transferred; caller should report and skip.
+  //   "overwrite" — re-copy from scratch (resume=false). Default for a fresh
+  //                 target (no prompt), and the auto-focused choice otherwise.
+  //   "resume"    — continue from the existing bytes (resume=true); only offered
+  //                 when the target is SMALLER than the source (a partial copy).
+  //   "skip"      — user explicitly chose to leave the existing file untouched.
   //   null        — user cancelled.
   // `targetSize` is the bytes already present at the destination, `sourceSize`
-  // the full size of the file being transferred.
+  // the full size of the file being transferred. We never auto-skip when a
+  // target exists: editing a file usually keeps its byte size, so silently
+  // skipping a same-size target would no-op a changed file. Always prompt.
   const resolveResume = useCallback(
     async (
       name: string,
       targetSize: number,
       sourceSize: number,
     ): Promise<"overwrite" | "resume" | "skip" | null> => {
-      // Nothing there yet, or unknown source size → plain overwrite (no prompt).
-      if (targetSize <= 0 || sourceSize <= 0) return "overwrite";
-      // Already complete (or stale-larger) — nothing to resume.
-      if (targetSize >= sourceSize) return "skip";
+      // Nothing there yet → plain overwrite (fresh copy, no prompt).
+      if (targetSize <= 0) return "overwrite";
+      // Target exists → always ask. Overwrite is first so it's the default.
+      const options = [
+        { value: "overwrite", label: t("sftp.resume_overwrite") },
+        // Only offer resume when a partial transfer is plausible.
+        ...(sourceSize > 0 && targetSize < sourceSize
+          ? [{ value: "resume", label: t("sftp.resume_action") }]
+          : []),
+        { value: "skip", label: t("sftp.resume_skip") },
+      ];
       const choice = await askChoice(
-        t("sftp.resume_prompt", {
+        t("sftp.resume_exists", {
           name,
           have: fmtSize(targetSize),
-          total: fmtSize(sourceSize),
+          total: sourceSize > 0 ? fmtSize(sourceSize) : "?",
         }),
         {
           title: t("sftp.resume_title"),
           cancelLabel: t("sftp.cancel"),
-          options: [
-            { value: "resume", label: t("sftp.resume_action") },
-            { value: "overwrite", label: t("sftp.resume_overwrite") },
-          ],
+          options,
         },
       );
-      if (choice === "resume" || choice === "overwrite") return choice;
+      if (choice === "overwrite" || choice === "resume" || choice === "skip")
+        return choice;
       return null; // cancelled
     },
     [t],
@@ -1038,7 +1046,7 @@ export function SFTPPanel({
     const mode = await resolveResume(base, remoteHave, srcSize);
     if (mode === null) return; // cancelled
     if (mode === "skip") {
-      setError(t("sftp.resume_complete", { name: base }));
+      setError(t("sftp.resume_skipped", { name: base }));
       return;
     }
     const remoteDest = joinPath(cwd, base);
@@ -1075,7 +1083,7 @@ export function SFTPPanel({
     const mode = await resolveResume(entry.name, have, entry.size);
     if (mode === null) return; // cancelled
     if (mode === "skip") {
-      setError(t("sftp.resume_complete", { name: entry.name }));
+      setError(t("sftp.resume_skipped", { name: entry.name }));
       return;
     }
     const tid = startTransfer(entry.name, "download", dest);
@@ -1133,7 +1141,7 @@ export function SFTPPanel({
       const mode = await resolveResume(f.name, have, f.size);
       if (mode === null) continue; // cancelled this file
       if (mode === "skip") {
-        setError(t("sftp.resume_complete", { name: f.name }));
+        setError(t("sftp.resume_skipped", { name: f.name }));
         continue;
       }
       const tid = startTransfer(f.name, "download", dest);
@@ -1174,7 +1182,7 @@ export function SFTPPanel({
       const mode = await resolveResume(f.name, remoteHave, f.size);
       if (mode === null) continue; // cancelled this file
       if (mode === "skip") {
-        setError(t("sftp.resume_complete", { name: f.name }));
+        setError(t("sftp.resume_skipped", { name: f.name }));
         continue;
       }
       const remoteDest = joinPath(cwd, f.name);
@@ -1215,7 +1223,7 @@ export function SFTPPanel({
       const mode = await resolveResume(f.name, localHave, f.size);
       if (mode === null) continue; // cancelled this file
       if (mode === "skip") {
-        setLocalError(t("sftp.resume_complete", { name: f.name }));
+        setLocalError(t("sftp.resume_skipped", { name: f.name }));
         continue;
       }
       const localDest = localJoin(localCwd, f.name);

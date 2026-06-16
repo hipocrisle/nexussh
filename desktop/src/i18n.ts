@@ -363,8 +363,12 @@ const ru = {
     resume_title: "Файл уже существует",
     resume_prompt:
       "«{{name}}» уже есть ({{have}} из {{total}}). Докачать недостающее или перезаписать заново?",
+    resume_exists:
+      "«{{name}}» уже существует ({{have}}, источник {{total}}). Перезаписать заново или пропустить?",
     resume_action: "Докачать",
     resume_overwrite: "Перезаписать",
+    resume_skip: "Пропустить",
+    resume_skipped: "«{{name}}» пропущено",
     resume_complete: "«{{name}}» уже загружено полностью",
     help: "Горячие клавиши",
     help_hint: "F1 справка",
@@ -1221,8 +1225,12 @@ const en = {
     resume_title: "File already exists",
     resume_prompt:
       '"{{name}}" already exists ({{have}} of {{total}}). Resume the rest or overwrite from scratch?',
+    resume_exists:
+      '"{{name}}" already exists ({{have}}, source {{total}}). Overwrite from scratch or skip?',
     resume_action: "Resume",
     resume_overwrite: "Overwrite",
+    resume_skip: "Skip",
+    resume_skipped: '"{{name}}" skipped',
     resume_complete: '"{{name}}" is already fully transferred',
     help: "Hotkeys",
     help_hint: "F1 help",

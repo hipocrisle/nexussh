@@ -908,10 +908,52 @@ pub async fn sftp_remove(
     is_dir: bool,
 ) -> Result<(), SftpError> {
     let h = get_session(&state, &sftp_id).await?;
-    if is_dir {
-        h.sftp.remove_dir(path).await?;
-    } else {
+    if !is_dir {
         h.sftp.remove_file(path).await?;
+        return Ok(());
+    }
+
+    // Recursive directory delete. SFTP rmdir fails on a non-empty directory, so
+    // we must clear the tree first. Traversal is iterative (explicit stack) so a
+    // very deep tree can't blow the call stack.
+    //
+    // We walk the tree top-down, removing files (and symlinks — including links
+    // that point at directories) as we go and recording every REAL subdirectory
+    // in `dirs` in discovery order. Then we remove the directories deepest-first
+    // (reverse discovery order) so each is empty by the time we rmdir it.
+    //
+    // Symlinks are deleted with remove_file (the link entry itself) and never
+    // descended into, so we can't wander out of the original tree via a link.
+    let mut dirs: Vec<String> = vec![path.clone()];
+    let mut stack: Vec<String> = vec![path];
+    while let Some(dir) = stack.pop() {
+        let entries = h.sftp.read_dir(dir.clone()).await?;
+        for entry in entries {
+            let name = entry.file_name();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = if dir.ends_with('/') {
+                format!("{dir}{name}")
+            } else {
+                format!("{dir}/{name}")
+            };
+            let ft = entry.file_type();
+            if ft.is_dir() && !ft.is_symlink() {
+                // Real subdirectory: record it and descend.
+                dirs.push(child.clone());
+                stack.push(child);
+            } else {
+                // File, or a symlink (even one pointing at a directory): unlink
+                // the entry itself without following it.
+                h.sftp.remove_file(child).await?;
+            }
+        }
+    }
+
+    // Now every directory is empty of files; remove deepest-first.
+    while let Some(dir) = dirs.pop() {
+        h.sftp.remove_dir(dir).await?;
     }
     Ok(())
 }

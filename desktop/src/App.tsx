@@ -1248,6 +1248,7 @@ function App() {
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,
+        keepalive: settings.keepalive,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,
@@ -1733,6 +1734,7 @@ function App() {
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,
+        keepalive: settings.keepalive,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,
@@ -1790,6 +1792,7 @@ function App() {
       allow_legacy: h.allowLegacy,
       encrypt_known_hosts: hostsEncrypted(),
       timeout: settings.timeout,
+      keepalive: settings.keepalive,
     };
   }
 
@@ -2020,6 +2023,7 @@ function App() {
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,
+        keepalive: settings.keepalive,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,

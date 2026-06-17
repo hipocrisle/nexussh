@@ -256,23 +256,6 @@ export function UpdatesSection({ s, set, t }: Props) {
           )}
         </div>
       </Row>
-
-      <Row
-        label={tr("settings.updates.verify")}
-        hint={tr("settings.updates.verify_hint")}
-        t={t}
-      >
-        <Toggle
-          checked={s.verifySigs}
-          onChange={(v) => set({ verifySigs: v })}
-          t={t}
-          label={tr("settings.updates.verify_label")}
-          onLabel={tr("settings.nav.on")}
-          offLabel={tr("settings.nav.off")}
-          enabledLabel={tr("settings.toggle.enabled")}
-          disabledLabel={tr("settings.toggle.disabled")}
-        />
-      </Row>
     </Section>
   );
 }

@@ -16,7 +16,6 @@ export interface NexuSettings {
 
   channel: "stable" | "beta";
   autoUpdate: boolean;
-  verifySigs: boolean;
 
   defaultPort: number; // 1–65535
   defaultUser: string;
@@ -36,9 +35,11 @@ export interface NexuSettings {
   /** Record session output to encrypted history (requires the vault). Default
    *  off. A per-host `recordHistory` override wins over this. */
   historyEnabled: boolean;
-  /** "light" skips alt-screen/TUI output (smaller + more private); "full"
-   *  records everything including vim/htop/Claude Code. */
-  historyMode: "light" | "full";
+  /** Recording always skips alt-screen/TUI output ("light"): smaller + more
+   *  private. The old "full" mode was removed (it filled history with vim/htop
+   *  redraw garbage); only "light" remains. Kept as a single-member union so a
+   *  persisted "full" is normalized to "light" on load (see load()). */
+  historyMode: "light";
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -50,7 +51,6 @@ export const DEFAULTS: NexuSettings = {
   rainOpacity: 0.15,
   channel: "stable",
   autoUpdate: true,
-  verifySigs: true,
   defaultPort: 22,
   defaultUser: "root",
   timeout: 15,
@@ -86,6 +86,9 @@ function load(): NexuSettings {
       const merged = { ...DEFAULTS, ...parsed };
       // nightly channel was removed — fold any saved value back to stable.
       if ((merged.channel as string) !== "beta") merged.channel = "stable";
+      // "full" history mode was removed — fold any saved value back to "light"
+      // (the only mode that still does anything).
+      if ((merged.historyMode as string) !== "light") merged.historyMode = "light";
       return merged;
     }
   } catch {

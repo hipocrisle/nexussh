@@ -694,9 +694,6 @@ const ru = {
       check_again: "Проверить ещё раз",
       up_to_date: "У вас последняя версия.",
       released_at: "выпущено {{date}}",
-      verify: "Проверять подписи",
-      verify_hint: "Отвергать обновления, не подписанные встроенным публичным ключом. Настоятельно рекомендуется.",
-      verify_label: "проверка подписи",
     },
     behavior: {
       kicker: "03 рантайм",
@@ -734,10 +731,6 @@ const ru = {
       history_hint:
         "Шифрованная запись вывода сессий (нужен vault, открывается мастер-паролем). Можно переопределить для каждого хоста.",
       history_label: "записывать",
-      history_mode: "Режим записи",
-      history_mode_hint:
-        "Полный — пишет всё, включая TUI (vim/htop). Выкл = лёгкий: пропускает alt-screen (меньше и приватнее).",
-      history_full_label: "полный (с TUI)",
       history_usage: "Объём истории",
       history_usage_hint:
         "Сколько записей на диске. Старые удаляются автоматически по лимитам.",
@@ -1628,9 +1621,6 @@ const en = {
       check_again: "Check again",
       up_to_date: "You're on the latest version.",
       released_at: "released {{date}}",
-      verify: "Verify signatures",
-      verify_hint: "Reject updates that don't match the embedded public key. Strongly recommended.",
-      verify_label: "signature check",
     },
     behavior: {
       kicker: "03 runtime",
@@ -1668,10 +1658,6 @@ const en = {
       history_hint:
         "Encrypted recording of session output (needs the vault; opened with the master password). Can be overridden per host.",
       history_label: "record",
-      history_mode: "Recording mode",
-      history_mode_hint:
-        "Full records everything including TUIs (vim/htop). Off = light: skips alt-screen (smaller + more private).",
-      history_full_label: "full (with TUI)",
       history_usage: "History size",
       history_usage_hint:
         "How many recordings are on disk. Old ones are pruned automatically by the limits.",

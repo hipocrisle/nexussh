@@ -26,6 +26,9 @@ export interface ConnectArgs {
   /** Connect-phase timeout in seconds (TCP connect + SSH handshake). 0/absent
    *  falls back to a sane default backend-side. Separate from keepalive. */
   timeout?: number;
+  /** Post-connect keepalive interval in seconds. 0/absent uses the backend
+   *  default (does NOT disable keepalive). */
+  keepalive?: number;
   /** Record this session to encrypted history (started backend-side before the
    *  output loop, so the banner/prompt isn't missed). */
   record_history?: boolean;

@@ -95,8 +95,14 @@ async fn connect_and_auth(
         let mut c = client::Config::default();
         c.preferred = crate::ssh::preferred_for(args.allow_legacy);
         // Tunnels sit idle waiting for browser connections — keep the transport
-        // warm so the server doesn't drop it before the panel is opened.
-        c.keepalive_interval = Some(Duration::from_secs(30));
+        // warm so the server doesn't drop it before the panel is opened. The
+        // user's keepalive setting overrides the 30s idle-tunnel default when
+        // set; 0/absent keeps today's 30s behavior. keepalive_max stays 3.
+        c.keepalive_interval = Some(if args.keepalive == 0 {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_secs(args.keepalive)
+        });
         c.keepalive_max = 3;
         c
     });

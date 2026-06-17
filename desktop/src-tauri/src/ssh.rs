@@ -104,6 +104,12 @@ pub struct ConnectArgs {
     /// This is SEPARATE from the post-connect keepalive/inactivity timeout.
     #[serde(default)]
     pub timeout: u64,
+    /// Post-connect keepalive interval in seconds (russh `keepalive_interval`).
+    /// 0 or absent → [`DEFAULT_KEEPALIVE_SECS`] (the historical hard-coded
+    /// value). 0 does NOT disable keepalive — we always want one running so the
+    /// liveness/VPN logic keeps working.
+    #[serde(default)]
+    pub keepalive: u64,
 }
 
 /// Fallback connect-phase timeout when the frontend sends 0 / omits the field.
@@ -117,6 +123,20 @@ pub fn connect_timeout(secs: u64) -> std::time::Duration {
     } else {
         secs
     };
+    std::time::Duration::from_secs(secs)
+}
+
+/// Historical hard-coded keepalive interval (was `from_secs(20)` inline). Used
+/// when the frontend sends 0 / omits the field so the default behavior is
+/// unchanged for existing users.
+pub const DEFAULT_KEEPALIVE_SECS: u64 = 20;
+
+/// Resolve the effective keepalive interval: treat 0 / missing as the default.
+/// NOTE: 0 means "use default", NOT "disable keepalive" — we never want to turn
+/// keepalive off (the VPN-liveness logic relies on it running). This only sets
+/// `keepalive_interval`; `keepalive_max` is governed separately and untouched.
+pub fn keepalive_interval(secs: u64) -> std::time::Duration {
+    let secs = if secs == 0 { DEFAULT_KEEPALIVE_SECS } else { secs };
     std::time::Duration::from_secs(secs)
 }
 
@@ -536,7 +556,10 @@ pub async fn ssh_connect(
     // — the real cause of variable VPN drops. With 0, we never proactively
     // disconnect; a truly dead link is still caught when the TCP socket closes.
     let mut cfg = client::Config::default();
-    cfg.keepalive_interval = Some(std::time::Duration::from_secs(20));
+    // Interval is user-configurable (0/absent → DEFAULT_KEEPALIVE_SECS = 20s,
+    // the historical value). keepalive_max stays 0 — see the comment above; we
+    // never force-disconnect on missed keepalives (critical for VPN sessions).
+    cfg.keepalive_interval = Some(keepalive_interval(args.keepalive));
     cfg.keepalive_max = 0;
     // Offer legacy algorithms only when the host opted in (old gear Cisco/ESXi).
     cfg.preferred = preferred_for(args.allow_legacy);

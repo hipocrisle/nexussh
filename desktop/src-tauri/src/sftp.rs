@@ -182,6 +182,9 @@ pub async fn sftp_connect(
     let config = Arc::new({
         let mut c = client::Config::default();
         c.preferred = crate::ssh::preferred_for(args.allow_legacy);
+        // Honour the user's keepalive interval (0/absent → backend default).
+        // keepalive_max left at the russh default (unchanged behavior).
+        c.keepalive_interval = Some(crate::ssh::keepalive_interval(args.keepalive));
         c
     });
 

@@ -1247,6 +1247,7 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        timeout: settings.timeout,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,
@@ -1731,6 +1732,7 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        timeout: settings.timeout,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,
@@ -1787,6 +1789,7 @@ function App() {
       vpn: resolveHostVpn(h),
       allow_legacy: h.allowLegacy,
       encrypt_known_hosts: hostsEncrypted(),
+      timeout: settings.timeout,
     };
   }
 
@@ -2016,6 +2019,7 @@ function App() {
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
+        timeout: settings.timeout,
         record_history: doRec,
         history_mode: hist.mode,
         history_host_id: h.id,

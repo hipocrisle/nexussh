@@ -198,27 +198,41 @@ pub async fn sftp_connect(
 
     // Route through the built-in VPN (xray SOCKS) when the host is flagged,
     // mirroring ssh.rs — otherwise a VPN-only host can't open files.
-    let (mut session, xray_child) = if let Some(node) = &args.vpn {
-        let socks_port = crate::ssh::free_local_port()?;
-        let child = crate::vpn::spawn_xray(node, socks_port)
-            .map_err(|e| SftpError::Other(format!("xray spawn: {e}")))?;
-        crate::ssh::wait_socks_ready(socks_port)
+    // Bound the connect phase (TCP/SOCKS connect + handshake) so a dead host
+    // fails fast — mirrors ssh.rs. Separate from post-connect keepalive.
+    let timeout = crate::ssh::connect_timeout(args.timeout);
+    let establish = async {
+        if let Some(node) = &args.vpn {
+            let socks_port = crate::ssh::free_local_port()?;
+            let child = crate::vpn::spawn_xray(node, socks_port)
+                .map_err(|e| SftpError::Other(format!("xray spawn: {e}")))?;
+            crate::ssh::wait_socks_ready(socks_port)
+                .await
+                .map_err(|e| SftpError::Other(e.to_string()))?;
+            let proxy = format!("127.0.0.1:{socks_port}");
+            let stream = crate::ssh::socks_connect_with_retry(
+                proxy.as_str(),
+                &args.host,
+                args.port,
+            )
             .await
-            .map_err(|e| SftpError::Other(e.to_string()))?;
-        let proxy = format!("127.0.0.1:{socks_port}");
-        let stream = crate::ssh::socks_connect_with_retry(
-            proxy.as_str(),
-            &args.host,
-            args.port,
-        )
-        .await
-        .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
-        let session =
-            client::connect_stream(config, stream.into_inner(), handler()).await?;
-        (session, Some(child))
-    } else {
-        let addr = format!("{}:{}", args.host, args.port);
-        (client::connect(config, addr.as_str(), handler()).await?, None)
+            .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
+            let session =
+                client::connect_stream(config, stream.into_inner(), handler()).await?;
+            Ok::<_, SftpError>((session, Some(child)))
+        } else {
+            let addr = format!("{}:{}", args.host, args.port);
+            Ok((client::connect(config, addr.as_str(), handler()).await?, None))
+        }
+    };
+    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(SftpError::Other(format!(
+                "connection timed out after {}s",
+                timeout.as_secs()
+            )))
+        }
     };
 
     let auth_ok = match &args.auth {

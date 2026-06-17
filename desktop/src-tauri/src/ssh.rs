@@ -98,6 +98,26 @@ pub struct ConnectArgs {
     pub history_host_id: Option<String>,
     #[serde(default)]
     pub history_label: Option<String>,
+    /// Connect-phase timeout in seconds: bounds the TCP connect + SSH handshake
+    /// (and the SOCKS connect on the VPN path) so a dead host fails fast instead
+    /// of hanging for minutes. 0 or absent → [`DEFAULT_CONNECT_TIMEOUT_SECS`].
+    /// This is SEPARATE from the post-connect keepalive/inactivity timeout.
+    #[serde(default)]
+    pub timeout: u64,
+}
+
+/// Fallback connect-phase timeout when the frontend sends 0 / omits the field.
+/// Mirrors the UI default (`settings.timeout` = 15s). Never "no timeout".
+pub const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 15;
+
+/// Resolve the effective connect timeout: treat 0 / missing as the default.
+pub fn connect_timeout(secs: u64) -> std::time::Duration {
+    let secs = if secs == 0 {
+        DEFAULT_CONNECT_TIMEOUT_SECS
+    } else {
+        secs
+    };
+    std::time::Duration::from_secs(secs)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -532,22 +552,37 @@ pub async fn ssh_connect(
         app: app.clone(),
         use_vault: args.encrypt_known_hosts,
     };
-    let (mut session, xray_child) = if let Some(node) = &args.vpn {
-        let socks_port = free_local_port()?;
-        let child = crate::vpn::spawn_xray(node, socks_port)
-            .map_err(|e| SshError::Other(format!("xray spawn: {e}")))?;
-        wait_socks_ready(socks_port).await?;
-        let proxy = format!("127.0.0.1:{socks_port}");
-        let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
-            .await
-            .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
-        let session =
-            client::connect_stream(config, stream.into_inner(), handler).await?;
-        (session, Some(child))
-    } else {
-        let addr = format!("{}:{}", args.host, args.port);
-        let session = client::connect(config, addr.as_str(), handler).await?;
-        (session, None)
+    // Bound the whole connect phase (TCP/SOCKS connect + russh handshake) so a
+    // dead host fails fast instead of hanging for minutes. Separate from the
+    // post-connect keepalive timeout configured above.
+    let timeout = connect_timeout(args.timeout);
+    let establish = async {
+        if let Some(node) = &args.vpn {
+            let socks_port = free_local_port()?;
+            let child = crate::vpn::spawn_xray(node, socks_port)
+                .map_err(|e| SshError::Other(format!("xray spawn: {e}")))?;
+            wait_socks_ready(socks_port).await?;
+            let proxy = format!("127.0.0.1:{socks_port}");
+            let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+                .await
+                .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
+            let session =
+                client::connect_stream(config, stream.into_inner(), handler).await?;
+            Ok::<_, SshError>((session, Some(child)))
+        } else {
+            let addr = format!("{}:{}", args.host, args.port);
+            let session = client::connect(config, addr.as_str(), handler).await?;
+            Ok((session, None))
+        }
+    };
+    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(SshError::Other(format!(
+                "connection timed out after {}s",
+                timeout.as_secs()
+            )))
+        }
     };
 
     let auth_ok = match &args.auth {

@@ -23,6 +23,9 @@ export interface ConnectArgs {
   allow_legacy?: boolean;
   /** When host-list encryption is on, pin host keys in the vault not the file. */
   encrypt_known_hosts?: boolean;
+  /** Connect-phase timeout in seconds (TCP connect + SSH handshake). 0/absent
+   *  falls back to a sane default backend-side. Separate from keepalive. */
+  timeout?: number;
   /** Record this session to encrypted history (started backend-side before the
    *  output loop, so the banner/prompt isn't missed). */
   record_history?: boolean;

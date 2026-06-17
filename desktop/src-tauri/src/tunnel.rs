@@ -108,24 +108,38 @@ async fn connect_and_auth(
         use_vault: args.encrypt_known_hosts,
     };
 
-    let (mut session, xray_child) = if let Some(node) = &args.vpn {
-        let socks_port = crate::ssh::free_local_port()?;
-        let child = crate::vpn::spawn_xray(node, socks_port)
-            .map_err(|e| TunnelError::Other(format!("xray spawn: {e}")))?;
-        crate::ssh::wait_socks_ready(socks_port)
-            .await
-            .map_err(|e| TunnelError::Other(e.to_string()))?;
-        let proxy = format!("127.0.0.1:{socks_port}");
-        let stream =
-            crate::ssh::socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+    // Bound the connect phase (TCP/SOCKS connect + handshake) so a dead host
+    // fails fast — mirrors ssh.rs/sftp.rs. Separate from post-connect keepalive.
+    let timeout = crate::ssh::connect_timeout(args.timeout);
+    let establish = async {
+        if let Some(node) = &args.vpn {
+            let socks_port = crate::ssh::free_local_port()?;
+            let child = crate::vpn::spawn_xray(node, socks_port)
+                .map_err(|e| TunnelError::Other(format!("xray spawn: {e}")))?;
+            crate::ssh::wait_socks_ready(socks_port)
                 .await
-                .map_err(|e| TunnelError::Other(format!("socks connect: {e}")))?;
-        let session =
-            client::connect_stream(config, stream.into_inner(), handler()).await?;
-        (session, Some(child))
-    } else {
-        let addr = format!("{}:{}", args.host, args.port);
-        (client::connect(config, addr.as_str(), handler()).await?, None)
+                .map_err(|e| TunnelError::Other(e.to_string()))?;
+            let proxy = format!("127.0.0.1:{socks_port}");
+            let stream =
+                crate::ssh::socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+                    .await
+                    .map_err(|e| TunnelError::Other(format!("socks connect: {e}")))?;
+            let session =
+                client::connect_stream(config, stream.into_inner(), handler()).await?;
+            Ok::<_, TunnelError>((session, Some(child)))
+        } else {
+            let addr = format!("{}:{}", args.host, args.port);
+            Ok((client::connect(config, addr.as_str(), handler()).await?, None))
+        }
+    };
+    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+        Ok(res) => res?,
+        Err(_) => {
+            return Err(TunnelError::Other(format!(
+                "connection timed out after {}s",
+                timeout.as_secs()
+            )))
+        }
     };
 
     let auth_ok = match &args.auth {

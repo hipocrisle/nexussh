@@ -16,13 +16,24 @@
 //! equality directly; we document the coupling and require the caller to pass the
 //! same password used for the vault).
 //!
-//! # Item ⇄ vault mapping
-//! Each vault KV entry becomes exactly ONE server item:
-//!   * `item_id` = the vault key verbatim (e.g. `__hostlist__`,
-//!     `host.<id>.password`, `nexussh.known_hosts.<id>`).
-//!   * `type`    = derived from the key prefix ([`item_type_for_key`]).
-//!   * `ciphertext` = `account_crypto::encrypt_item(value_bytes, user_key)`.
-//! On pull we decrypt with `user_key` and write the value back into the vault.
+//! # Per-host opt-in sync (NOT "sync the whole vault")
+//! A host is synced **only** if its record in the local `__hostlist__` carries
+//! `sync == true`. The `__hostlist__` blob itself is NEVER an item, and nothing
+//! that isn't an explicitly-flagged host (or one of its secrets) ever leaves the
+//! device. For each flagged host `<id>` we build up to three items:
+//!   * `host.<id>`            (type `host`)          — that ONE host record JSON.
+//!   * `host.<id>.password`   (type `host-password`) — if that vault key exists.
+//!   * `nexussh.known_hosts.<id>` (type `known_host`) — if that vault key exists.
+//! `item_id` is the synthetic key above (for `host.<id>` it is NOT a vault key —
+//! the record is sliced out of `__hostlist__`); for the two secret items it is
+//! the literal vault key. `ciphertext = account_crypto::encrypt_item(bytes, uk)`.
+//! On pull we decrypt with `user_key` and MERGE per-record back into the local
+//! `__hostlist__` (preserving every local host), writing secrets per-key.
+//!
+//! Items we used to sync but no longer do (a host un-flagged true→false, or
+//! deleted) are pushed as TOMBSTONES so other devices drop the synced copy. We
+//! remember the set of item_ids we last synced (`synced_item_ids`) to detect
+//! un-flagging across runs.
 //!
 //! # ALL crypto goes through [`crate::account_crypto`]
 //! This module never derives keys or seals/opens AEAD itself; it only calls the
@@ -137,12 +148,20 @@ struct AccountConfig {
     /// last sync" for push and conflict resolution.
     #[serde(default)]
     updated_at: HashMap<String, u64>,
-    /// Keys we know to have been deleted locally (tombstones to push). Maps the
-    /// key to the deletion timestamp (ms). Cleared once the server acks them.
+    /// Item ids we know to have been deleted locally (tombstones to push). Maps
+    /// the item_id to the deletion timestamp (ms). Cleared once the server acks
+    /// them. Includes synthetic `host.<id>` ids as well as secret vault keys.
     #[serde(default)]
     tombstones: HashMap<String, u64>,
-    /// True once the first full push has happened. Before it, push uploads
-    /// EVERYTHING (we can't know what "changed" on a brand-new device).
+    /// The set of item_ids we synced on the LAST push (host records + their
+    /// secrets). Comparing this against the currently-flagged set lets us detect
+    /// a host that was un-flagged (sync true→false) or removed so we can push a
+    /// tombstone for it. Stored as a map (id → 1) for stable JSON round-trips.
+    #[serde(default)]
+    synced_item_ids: HashMap<String, u8>,
+    /// True once the first push has happened. Before it, we still only push
+    /// flagged hosts — but we force-push all of them regardless of timestamps
+    /// (a brand-new device has no notion of "what changed").
     #[serde(default)]
     did_initial_push: bool,
 }
@@ -160,6 +179,7 @@ impl Default for AccountConfig {
             item_revs: HashMap::new(),
             updated_at: HashMap::new(),
             tombstones: HashMap::new(),
+            synced_item_ids: HashMap::new(),
             did_initial_push: false,
         }
     }
@@ -209,21 +229,130 @@ fn now_ms() -> u64 {
 }
 
 // ===========================================================================
-// Item ⇄ vault key mapping
+// Item ⇄ vault key mapping (per-host opt-in model)
 // ===========================================================================
 
-/// Derive the server item `type` from a vault key. Purely a hint for the server
-/// (and future UI); the `item_id` is always the full key, so types never collide.
+/// The vault key holding the JSON array of ALL host records (synced + local).
+/// This blob is the local source of truth and is NEVER uploaded as an item.
+const HOSTLIST_KEY: &str = "__hostlist__";
+
+/// Item types. `host` carries a single host record (NOT a vault key — it's
+/// sliced out of `__hostlist__`); the secret types carry literal vault keys.
+const ITEM_TYPE_HOST: &str = "host";
+const ITEM_TYPE_HOST_PASSWORD: &str = "host-password";
+const ITEM_TYPE_KNOWN_HOST: &str = "known_host";
+
+/// Synthetic item_id for a host record. NOT a vault key (the record lives inside
+/// `__hostlist__`); we coin it so the server can store the record per-host.
+fn host_item_id(id: &str) -> String {
+    format!("host.{id}")
+}
+/// Vault key for a host's password secret.
+fn host_password_key(id: &str) -> String {
+    format!("host.{id}.password")
+}
+/// Vault key for a host's known-host (host-key) pin. NOTE: the live TOFU store
+/// is currently a single global `__known_hosts__` map, so these per-host keys do
+/// not yet exist in practice — this is the forward-compatible extension point for
+/// when per-host pins land. We sync the key only `if it exists`, so it is a
+/// harmless no-op today.
+fn known_host_key(id: &str) -> String {
+    format!("nexussh.known_hosts.{id}")
+}
+
+/// Derive the server item `type` from an item_id. A `host.<id>` id with no
+/// `.password` suffix is the record itself; `host.<id>.password` is the password
+/// secret; `nexussh.known_hosts.<id>` is a host-key pin.
 pub fn item_type_for_key(key: &str) -> &'static str {
-    if key == "__hostlist__" {
-        "hostlist"
+    if key.starts_with("nexussh.known_hosts.") {
+        ITEM_TYPE_KNOWN_HOST
     } else if key.starts_with("host.") && key.ends_with(".password") {
-        "password"
-    } else if key.starts_with("nexussh.known_hosts.") {
-        "known_host"
+        ITEM_TYPE_HOST_PASSWORD
+    } else if key.starts_with("host.") {
+        ITEM_TYPE_HOST
     } else {
+        // Anything else (incl. `__hostlist__`) is NOT a syncable item type.
         "other"
     }
+}
+
+/// Extract the `<id>` from a `host.<id>` item_id (the record item, not a secret).
+/// Returns None for password/known-host/other ids.
+fn host_id_from_item(item_id: &str) -> Option<&str> {
+    let rest = item_id.strip_prefix("host.")?;
+    if rest.ends_with(".password") || rest.is_empty() {
+        return None;
+    }
+    Some(rest)
+}
+
+// ---------------------------------------------------------------------------
+// __hostlist__ helpers — the blob is a JSON ARRAY of host record objects.
+// We treat each record as an opaque serde_json::Value keyed by its `id`, so we
+// never need to model every field; we only read `id`/`sync` and (optionally)
+// strip a device-local field. This keeps us forward-compatible with new fields.
+// ---------------------------------------------------------------------------
+
+/// Parse `__hostlist__` into a Vec of record objects. Tolerates a missing/empty
+/// blob (→ empty list) and a non-array shape (→ empty list, never panics).
+fn parse_hostlist(raw: Option<&str>) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    let raw = match raw {
+        Some(r) if !r.trim().is_empty() => r,
+        _ => return Vec::new(),
+    };
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Array(arr)) => arr
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::Object(m) => Some(m),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Serialize a list of record objects back to the `__hostlist__` JSON array.
+fn serialize_hostlist(records: &[serde_json::Map<String, serde_json::Value>]) -> String {
+    let arr = serde_json::Value::Array(
+        records
+            .iter()
+            .map(|m| serde_json::Value::Object(m.clone()))
+            .collect(),
+    );
+    serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
+}
+
+/// The record's `id` as a string, if present.
+fn record_id(rec: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    rec.get("id").and_then(|v| v.as_str()).map(String::from)
+}
+
+/// True when the record is flagged for sync (`sync == true`). Missing/false/any
+/// non-true value → local-only.
+fn record_is_synced(rec: &serde_json::Map<String, serde_json::Value>) -> bool {
+    rec.get("sync").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// The record's `updatedAt`/`lastUsedAt` as an LWW timestamp (ms). The frontend
+/// doesn't carry a dedicated ms field, so we fall back to 0 and rely on the
+/// per-item `updated_at` map for LWW; this helper only mines an explicit numeric
+/// `updatedAt` if a future frontend adds one.
+fn record_updated_at(rec: &serde_json::Map<String, serde_json::Value>) -> u64 {
+    rec.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+/// Produce the host RECORD payload we actually upload: the record JSON with any
+/// purely-device-local fields stripped. Today only `vpnProfileId` qualifies — it
+/// references a VPN profile kept in this device's localStorage (`nexussh.vpnProfiles`)
+/// that never syncs, so the id is meaningless on another device. Everything else
+/// (incl. `forwards`/tunnel config and `useVpn`/`vpnExit`) rides with the host.
+/// `sync:true` is forced on so a pulled record stays flagged on the new device.
+fn record_for_upload(rec: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    let mut out = rec.clone();
+    out.remove("vpnProfileId"); // device-specific; see hosts.ts
+    out.insert("sync".into(), serde_json::Value::Bool(true));
+    serde_json::Value::Object(out)
 }
 
 // ===========================================================================
@@ -752,21 +881,110 @@ pub async fn account_sync_now(
     .map_err(|e| AccountError::Other(e.to_string()))??;
     let pull: PullResponse = serde_json::from_value(pull_raw)?;
 
+    // Load the local host list ONCE; merge incoming `host.<id>` records into this
+    // in-memory Vec (preserving every local host), then write it back ONCE after
+    // the pull loop. Secret items (password/known_host) write per-key immediately.
+    let mut hostlist = parse_hostlist(vault::get_opt(&vault_state, HOSTLIST_KEY).as_deref());
+    let mut hostlist_dirty = false;
+
     for item in &pull.items {
         let key = &item.item_id;
+        let itype = item_type_for_key(key);
         let local_updated = cfg.updated_at.get(key).copied().unwrap_or(0);
         let remote_updated = item.updated_at.unwrap_or(0);
 
+        // ---- host RECORD item (lives inside __hostlist__) -------------------
+        if itype == ITEM_TYPE_HOST {
+            let id = match host_id_from_item(key) {
+                Some(i) => i.to_string(),
+                None => continue,
+            };
+            let pos = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+
+            if item.deleted {
+                // Tombstone for a host record: drop it from the list ONLY if our
+                // local copy is itself flagged-synced (never delete a purely-local
+                // host). Skip if our copy is strictly newer (we re-push it).
+                if let Some(p) = pos {
+                    let local_synced = record_is_synced(&hostlist[p]);
+                    let local_ts = record_updated_at(&hostlist[p]).max(local_updated);
+                    if local_synced && (local_ts <= remote_updated || remote_updated == 0) {
+                        hostlist.remove(p);
+                        hostlist_dirty = true;
+                        // Also drop its secrets (only the synced host's).
+                        for sk in [host_password_key(&id), known_host_key(&id)] {
+                            if vault::get_opt(&vault_state, &sk).is_some() {
+                                vault::delete_key(&vault_state, &sk)?;
+                            }
+                            cfg.updated_at.remove(&sk);
+                            cfg.tombstones.remove(&sk);
+                        }
+                        report.deleted_locally += 1;
+                    }
+                }
+                cfg.updated_at.remove(key);
+                cfg.tombstones.remove(key);
+                cfg.synced_item_ids.remove(key);
+                cfg.item_revs.insert(key.clone(), item.rev);
+                report.latest_rev = report.latest_rev.max(item.rev);
+                report.pulled += 1;
+                continue;
+            }
+
+            // Decrypt the record JSON.
+            let ct = B64.decode(&item.ciphertext)?;
+            let plaintext = ac::decrypt_item(&ct, &user_key)?;
+            let remote_rec: serde_json::Map<String, serde_json::Value> =
+                match serde_json::from_slice(&plaintext) {
+                    Ok(serde_json::Value::Object(m)) => m,
+                    _ => continue, // malformed record → skip, don't corrupt the list
+                };
+
+            let apply_remote = match pos {
+                None => true, // absent locally → add it.
+                Some(p) => {
+                    // LWW: prefer an explicit record `updatedAt`, else the per-item
+                    // map. Equal → remote wins (idempotent on identical content).
+                    let local_ts = record_updated_at(&hostlist[p]).max(local_updated);
+                    remote_updated >= local_ts
+                }
+            };
+            if apply_remote {
+                let mut rec = remote_rec;
+                rec.insert("sync".into(), serde_json::Value::Bool(true));
+                rec.insert("id".into(), serde_json::Value::String(id.clone()));
+                match pos {
+                    Some(p) => hostlist[p] = rec, // UPSERT existing
+                    None => hostlist.push(rec),   // add new synced host
+                }
+                hostlist_dirty = true;
+                cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
+                cfg.tombstones.remove(key);
+                cfg.synced_item_ids.insert(key.clone(), 1);
+                report.pulled += 1;
+            }
+            cfg.item_revs.insert(key.clone(), item.rev);
+            report.latest_rev = report.latest_rev.max(item.rev);
+            continue;
+        }
+
+        // ---- secret items (password / known_host) → vault per-key ----------
+        if itype != ITEM_TYPE_HOST_PASSWORD && itype != ITEM_TYPE_KNOWN_HOST {
+            // Not a host-owned item (e.g. a stale `__hostlist__`/`other`); ignore.
+            cfg.item_revs.insert(key.clone(), item.rev);
+            report.latest_rev = report.latest_rev.max(item.rev);
+            continue;
+        }
+
         if item.deleted {
-            // Tombstone: remove the local key UNLESS our copy is strictly newer
-            // (we then keep ours and will push it back, re-creating the item).
             if local_updated <= remote_updated || remote_updated == 0 {
                 if vault::get_opt(&vault_state, key).is_some() {
                     vault::delete_key(&vault_state, key)?;
                     report.deleted_locally += 1;
                 }
                 cfg.updated_at.remove(key);
-                cfg.tombstones.remove(key); // server already has the tombstone
+                cfg.tombstones.remove(key);
+                cfg.synced_item_ids.remove(key);
             }
             cfg.item_revs.insert(key.clone(), item.rev);
             report.latest_rev = report.latest_rev.max(item.rev);
@@ -774,83 +992,42 @@ pub async fn account_sync_now(
             continue;
         }
 
-        // Decrypt the remote ciphertext with the user key.
         let ct = B64.decode(&item.ciphertext)?;
         let plaintext = ac::decrypt_item(&ct, &user_key)?;
         let remote_value = String::from_utf8_lossy(&plaintext).into_owned();
-
-        // LWW: apply remote only when it is at least as new as our local copy.
-        // Equal timestamps → remote wins (idempotent: same content typically).
         let local_value = vault::get_opt(&vault_state, key);
         let apply_remote = match &local_value {
-            None => true, // we don't have it → take remote.
-            Some(lv) => {
-                if lv == &remote_value {
-                    false // identical, nothing to do.
-                } else {
-                    remote_updated >= local_updated
-                }
-            }
+            None => true,
+            Some(lv) => lv != &remote_value && remote_updated >= local_updated,
         };
         if apply_remote {
-            vault::put_key(&vault_state, key, remote_value)?; // per-key write
+            vault::put_key(&vault_state, key, remote_value)?;
             cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
             cfg.tombstones.remove(key);
+            cfg.synced_item_ids.insert(key.clone(), 1);
             report.pulled += 1;
         }
         cfg.item_revs.insert(key.clone(), item.rev);
         report.latest_rev = report.latest_rev.max(item.rev);
     }
+
+    // Write the merged host list back ONCE (only if it changed) — never wholesale
+    // replace; we mutated a per-record copy that still holds all local hosts.
+    if hostlist_dirty {
+        vault::put_key(&vault_state, HOSTLIST_KEY, serialize_hostlist(&hostlist))?;
+    }
     cfg.last_sync_rev = report.latest_rev.max(pull.latest_rev);
 
     // -------------------------------------------------------------------
-    // 2. PUSH: gather locally-changed keys + tombstones.
+    // 2. PUSH: enumerate ONLY the flagged hosts + their secrets, plus
+    //    tombstones for hosts that were un-flagged/removed since last sync.
     // -------------------------------------------------------------------
-    let local_keys = vault::list_keys(&vault_state)?;
-    let mut changes: Vec<PushChange> = Vec::new();
+    // Re-read the (possibly merged) host list so a freshly-pulled host can be
+    // re-pushed (e.g. to materialize its secrets) in the same run.
+    let hostlist_now =
+        parse_hostlist(vault::get_opt(&vault_state, HOSTLIST_KEY).as_deref());
 
-    for key in &local_keys {
-        // Skip non-syncable bookkeeping keys if any are introduced later; for now
-        // every vault KV entry is an item.
-        let value = match vault::get_opt(&vault_state, key) {
-            Some(v) => v,
-            None => continue,
-        };
-        let base_rev = cfg.item_revs.get(key).copied().unwrap_or(0);
-        let updated_at = *cfg.updated_at.entry(key.clone()).or_insert_with(now_ms);
-
-        // On the first sync push everything; afterwards push only keys the server
-        // hasn't acked at this rev (base_rev 0 = never pushed) OR whose local
-        // updated_at is newer than the last sync.
-        let changed = !cfg.did_initial_push
-            || base_rev == 0
-            || updated_at > cfg.last_sync_at.unwrap_or(0);
-        if !changed {
-            continue;
-        }
-        let ct = ac::encrypt_item(value.as_bytes(), &user_key)?;
-        changes.push(PushChange {
-            item_id: key.clone(),
-            r#type: item_type_for_key(key).to_string(),
-            ciphertext: B64.encode(&ct),
-            updated_at,
-            deleted: false,
-            base_rev,
-        });
-    }
-
-    // Tombstones for keys deleted locally since last sync.
-    for (key, ts) in cfg.tombstones.clone() {
-        let base_rev = cfg.item_revs.get(&key).copied().unwrap_or(0);
-        changes.push(PushChange {
-            item_id: key.clone(),
-            r#type: item_type_for_key(&key).to_string(),
-            ciphertext: String::new(),
-            updated_at: ts,
-            deleted: true,
-            base_rev,
-        });
-    }
+    let changes = build_push_changes(&hostlist_now, &vault_state, &user_key, &mut cfg)?;
 
     if !changes.is_empty() {
         let body = serde_json::json!({ "changes": changes });
@@ -867,9 +1044,11 @@ pub async fn account_sync_now(
             match res.status.as_str() {
                 "ok" => {
                     cfg.item_revs.insert(res.item_id.clone(), res.rev);
-                    // Pushed tombstones are now durable on the server → drop ours.
+                    // Pushed tombstones are now durable on the server → drop ours
+                    // and forget the item was ever synced.
                     if cfg.tombstones.remove(&res.item_id).is_some() {
                         cfg.updated_at.remove(&res.item_id);
+                        cfg.synced_item_ids.remove(&res.item_id);
                     }
                     report.pushed += 1;
                     report.latest_rev = report.latest_rev.max(res.rev);
@@ -909,6 +1088,117 @@ pub async fn account_sync_now(
     Ok(report)
 }
 
+/// Build the push change-set from the current host list: ONE record item per
+/// flagged host (+ its password / known-host secrets `if they exist`), and a
+/// TOMBSTONE for every item we synced last time that is no longer flagged
+/// (host un-flagged true→false or deleted). Updates `cfg.synced_item_ids` to the
+/// new flagged set and records tombstones in `cfg.tombstones`.
+///
+/// `__hostlist__` is never an item. Non-flagged hosts and unrelated vault keys
+/// never produce a change. Pure read of the vault + cfg mutation — no network.
+fn build_push_changes(
+    hostlist: &[serde_json::Map<String, serde_json::Value>],
+    vault_state: &State<'_, VaultState>,
+    user_key: &[u8; 32],
+    cfg: &mut AccountConfig,
+) -> Result<Vec<PushChange>> {
+    let mut changes: Vec<PushChange> = Vec::new();
+    // The item_ids that SHOULD exist on the server after this push.
+    let mut flagged_now: HashMap<String, u8> = HashMap::new();
+
+    for rec in hostlist {
+        if !record_is_synced(rec) {
+            continue; // local-only host → never leaves the device.
+        }
+        let id = match record_id(rec) {
+            Some(i) => i,
+            None => continue, // record without an id is unusable; skip.
+        };
+
+        // --- the host record item (sliced out of __hostlist__) -------------
+        let item_id = host_item_id(&id);
+        flagged_now.insert(item_id.clone(), 1);
+        let payload = record_for_upload(rec);
+        let bytes = serde_json::to_vec(&payload)?;
+        let updated_at = *cfg.updated_at.entry(item_id.clone()).or_insert_with(now_ms);
+        let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
+        // First-ever push, never-acked, or locally newer than the last sync.
+        let changed = !cfg.did_initial_push
+            || base_rev == 0
+            || updated_at > cfg.last_sync_at.unwrap_or(0);
+        if changed {
+            let ct = ac::encrypt_item(&bytes, user_key)?;
+            changes.push(PushChange {
+                item_id: item_id.clone(),
+                r#type: ITEM_TYPE_HOST.to_string(),
+                ciphertext: B64.encode(&ct),
+                updated_at,
+                deleted: false,
+                base_rev,
+            });
+        }
+
+        // --- the host's secrets, only if those vault keys exist ------------
+        for sk in [host_password_key(&id), known_host_key(&id)] {
+            let value = match vault::get_opt(vault_state, &sk) {
+                Some(v) => v,
+                None => continue,
+            };
+            flagged_now.insert(sk.clone(), 1);
+            let s_updated = *cfg.updated_at.entry(sk.clone()).or_insert_with(now_ms);
+            let s_base = cfg.item_revs.get(&sk).copied().unwrap_or(0);
+            let s_changed = !cfg.did_initial_push
+                || s_base == 0
+                || s_updated > cfg.last_sync_at.unwrap_or(0);
+            if s_changed {
+                let ct = ac::encrypt_item(value.as_bytes(), user_key)?;
+                changes.push(PushChange {
+                    item_id: sk.clone(),
+                    r#type: item_type_for_key(&sk).to_string(),
+                    ciphertext: B64.encode(&ct),
+                    updated_at: s_updated,
+                    deleted: false,
+                    base_rev: s_base,
+                });
+            }
+        }
+    }
+
+    // --- un-flagged / removed → TOMBSTONES --------------------------------
+    // Anything we synced last time but is not in the flagged set now must be
+    // dropped from the server (and from other devices). Record a tombstone so a
+    // crash mid-push still re-pushes it next run.
+    let ts = now_ms();
+    let previously: Vec<String> = cfg.synced_item_ids.keys().cloned().collect();
+    for old_id in previously {
+        if flagged_now.contains_key(&old_id) {
+            continue;
+        }
+        cfg.tombstones.entry(old_id.clone()).or_insert(ts);
+        cfg.synced_item_ids.remove(&old_id);
+    }
+
+    // Emit a push change for every pending tombstone (incl. ones recorded above
+    // and any left over from a previous failed run).
+    for (item_id, ts) in cfg.tombstones.clone() {
+        let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
+        changes.push(PushChange {
+            item_id: item_id.clone(),
+            r#type: item_type_for_key(&item_id).to_string(),
+            ciphertext: String::new(),
+            updated_at: ts,
+            deleted: true,
+            base_rev,
+        });
+    }
+
+    // The flagged set becomes the new "last synced" baseline. (Tombstoned ids
+    // are already removed from synced_item_ids above; acks clear them from
+    // `tombstones` in the push-result loop.)
+    cfg.synced_item_ids = flagged_now;
+    Ok(changes)
+}
+
 /// Resolve a single per-item conflict: the server gave us its current version.
 /// Apply LWW (decrypt server value, compare updated_at), then if WE still win,
 /// re-push our value with the server's rev as the new base_rev.
@@ -927,6 +1217,13 @@ async fn resolve_conflict(
 
     let remote_updated = srv.updated_at.unwrap_or(0);
     let local_updated = cfg.updated_at.get(key).copied().unwrap_or(0);
+
+    // Host RECORD conflicts resolve against the record inside __hostlist__, not a
+    // vault key. (Secrets fall through to the generic per-key path below.)
+    if item_type_for_key(key) == ITEM_TYPE_HOST {
+        return resolve_host_conflict(vault_state, user_key, cfg, srv, server_url, token, report)
+            .await;
+    }
 
     if srv.deleted {
         // Server deleted it. If our copy is newer we re-create it; else accept.
@@ -963,6 +1260,84 @@ async fn resolve_conflict(
             cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
             report.pulled += 1;
         }
+    }
+    Ok(())
+}
+
+/// Conflict resolution for a `host.<id>` RECORD item. Like [`resolve_conflict`]
+/// but the local copy is the matching record inside `__hostlist__` (never a vault
+/// key), and on "remote wins" we MERGE per-record (preserving all other hosts).
+async fn resolve_host_conflict(
+    vault_state: &State<'_, VaultState>,
+    user_key: &[u8; 32],
+    cfg: &mut AccountConfig,
+    srv: &RemoteItem,
+    server_url: &str,
+    token: &str,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let key = &srv.item_id;
+    let id = match host_id_from_item(key) {
+        Some(i) => i.to_string(),
+        None => return Ok(()),
+    };
+    let remote_updated = srv.updated_at.unwrap_or(0);
+    let local_updated = cfg.updated_at.get(key).copied().unwrap_or(0);
+
+    let mut hostlist =
+        parse_hostlist(vault::get_opt(vault_state, HOSTLIST_KEY).as_deref());
+    let pos = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+
+    if srv.deleted {
+        // Server deleted; re-push if our flagged copy is newer, else drop it.
+        match pos {
+            Some(p) if record_is_synced(&hostlist[p]) && local_updated > remote_updated => {
+                let payload = record_for_upload(&hostlist[p]);
+                let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key)?;
+                push_single(cfg, server_url, token, key, ITEM_TYPE_HOST, &B64.encode(&ct), local_updated, false, report).await?;
+            }
+            Some(p) if record_is_synced(&hostlist[p]) => {
+                hostlist.remove(p);
+                vault::put_key(vault_state, HOSTLIST_KEY, serialize_hostlist(&hostlist))?;
+                report.deleted_locally += 1;
+                cfg.updated_at.remove(key);
+                cfg.synced_item_ids.remove(key);
+            }
+            _ => {} // purely-local host (or absent) → never delete.
+        }
+        return Ok(());
+    }
+
+    // Server has a record. Decrypt + LWW against the local record.
+    let ct = B64.decode(&srv.ciphertext)?;
+    let remote_rec: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key)?) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => return Ok(()),
+        };
+
+    let local_wins = match pos {
+        Some(p) => record_updated_at(&hostlist[p]).max(local_updated) > remote_updated,
+        None => false,
+    };
+    if local_wins {
+        if let Some(p) = pos {
+            let payload = record_for_upload(&hostlist[p]);
+            let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key)?;
+            push_single(cfg, server_url, token, key, ITEM_TYPE_HOST, &B64.encode(&ct), local_updated, false, report).await?;
+        }
+    } else {
+        let mut rec = remote_rec;
+        rec.insert("sync".into(), serde_json::Value::Bool(true));
+        rec.insert("id".into(), serde_json::Value::String(id));
+        match pos {
+            Some(p) => hostlist[p] = rec,
+            None => hostlist.push(rec),
+        }
+        vault::put_key(vault_state, HOSTLIST_KEY, serialize_hostlist(&hostlist))?;
+        cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
+        cfg.synced_item_ids.insert(key.clone(), 1);
+        report.pulled += 1;
     }
     Ok(())
 }
@@ -1029,16 +1404,29 @@ mod tests {
         k
     }
 
-    // --- key → type mapping -------------------------------------------------
+    /// Build a synced/local host record object for tests.
+    fn rec(id: &str, sync: bool) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        m.insert("id".into(), serde_json::Value::String(id.into()));
+        m.insert("name".into(), serde_json::Value::String(format!("host-{id}")));
+        m.insert("host".into(), serde_json::Value::String("10.0.0.1".into()));
+        m.insert("sync".into(), serde_json::Value::Bool(sync));
+        m
+    }
+
+    // --- item id → type mapping --------------------------------------------
 
     #[test]
-    fn type_for_hostlist() {
-        assert_eq!(item_type_for_key("__hostlist__"), "hostlist");
+    fn type_for_host_record() {
+        assert_eq!(item_type_for_key("host.abc123"), "host");
+        // a host id is opaque; anything host.<...> that isn't a known secret is
+        // the record (forward-compatible with arbitrary record-bearing ids).
+        assert_eq!(item_type_for_key("host.abc.username"), "host");
     }
 
     #[test]
     fn type_for_password() {
-        assert_eq!(item_type_for_key("host.abc123.password"), "password");
+        assert_eq!(item_type_for_key("host.abc123.password"), "host-password");
     }
 
     #[test]
@@ -1052,7 +1440,16 @@ mod tests {
     #[test]
     fn type_for_other() {
         assert_eq!(item_type_for_key("some.random.key"), "other");
-        assert_eq!(item_type_for_key("host.abc.username"), "other");
+        // __hostlist__ is NEVER a syncable item type.
+        assert_eq!(item_type_for_key("__hostlist__"), "other");
+    }
+
+    #[test]
+    fn host_id_extraction() {
+        assert_eq!(host_id_from_item("host.abc123"), Some("abc123"));
+        assert_eq!(host_id_from_item("host.abc.password"), None);
+        assert_eq!(host_id_from_item("nexussh.known_hosts.x"), None);
+        assert_eq!(host_id_from_item("host."), None);
     }
 
     // --- item encrypt → (simulated server) → decrypt round-trip -------------
@@ -1075,16 +1472,16 @@ mod tests {
     #[test]
     fn push_change_serializes_with_snake_and_type() {
         let c = PushChange {
-            item_id: "__hostlist__".into(),
-            r#type: "hostlist".into(),
+            item_id: "host.abc".into(),
+            r#type: "host".into(),
             ciphertext: "Zm9v".into(),
             updated_at: 1_700_000_000_000,
             deleted: false,
             base_rev: 7,
         };
         let v = serde_json::to_value(&c).unwrap();
-        assert_eq!(v["item_id"], "__hostlist__");
-        assert_eq!(v["type"], "hostlist");
+        assert_eq!(v["item_id"], "host.abc");
+        assert_eq!(v["type"], "host");
         assert_eq!(v["base_rev"], 7);
         assert_eq!(v["deleted"], false);
     }
@@ -1136,16 +1533,15 @@ mod tests {
         assert!(!cfg.did_initial_push);
     }
 
-    // Two-key end-to-end mapping: simulate two vault entries → items → pull on a
-    // fresh device decrypts them back to the same values.
+    // Two-item end-to-end mapping: a host RECORD + its password → items → pull on
+    // a fresh device decrypts them back to the same values + correct types.
     #[test]
     fn two_items_encrypt_and_decrypt_back() {
         let uk = fake_user_key();
         let entries = [
-            ("__hostlist__", "[{\"id\":\"a\",\"host\":\"10.0.0.1\"}]"),
+            ("host.a", "{\"id\":\"a\",\"host\":\"10.0.0.1\",\"sync\":true}"),
             ("host.a.password", "hunter2"),
         ];
-        // Build the items as the server would store them.
         let mut server: Vec<RemoteItem> = Vec::new();
         for (i, (k, v)) in entries.iter().enumerate() {
             let ct = ac::encrypt_item(v.as_bytes(), &uk).unwrap();
@@ -1158,12 +1554,165 @@ mod tests {
                 deleted: false,
             });
         }
-        // Pull-side apply (decrypt) — assert we recover the originals + types.
         for (item, (k, v)) in server.iter().zip(entries.iter()) {
             let ct = B64.decode(&item.ciphertext).unwrap();
             let pt = ac::decrypt_item(&ct, &uk).unwrap();
             assert_eq!(String::from_utf8(pt).unwrap(), *v);
             assert_eq!(item.r#type, item_type_for_key(k));
         }
+        assert_eq!(server[0].r#type, "host");
+        assert_eq!(server[1].r#type, "host-password");
+    }
+
+    // --- __hostlist__ parse/serialize round-trip ----------------------------
+
+    #[test]
+    fn hostlist_round_trips_and_tolerates_garbage() {
+        let raw = "[{\"id\":\"a\",\"sync\":true},{\"id\":\"b\",\"sync\":false}]";
+        let list = parse_hostlist(Some(raw));
+        assert_eq!(list.len(), 2);
+        assert!(record_is_synced(&list[0]));
+        assert!(!record_is_synced(&list[1]));
+        // round-trips back to a 2-element array
+        let back = parse_hostlist(Some(&serialize_hostlist(&list)));
+        assert_eq!(back.len(), 2);
+        // garbage / empty / non-array → empty list, never panics
+        assert!(parse_hostlist(None).is_empty());
+        assert!(parse_hostlist(Some("")).is_empty());
+        assert!(parse_hostlist(Some("not json")).is_empty());
+        assert!(parse_hostlist(Some("{\"id\":\"x\"}")).is_empty());
+    }
+
+    // --- PUSH: only flagged hosts become items ------------------------------
+
+    #[test]
+    fn build_push_emits_only_flagged_hosts_with_record_item() {
+        let uk = fake_user_key();
+        // Three hosts; only `a` and `c` are flagged.
+        let list = vec![rec("a", true), rec("b", false), rec("c", true)];
+        let mut cfg = AccountConfig::default();
+        // No vault available in a unit test, so we exercise the record-only path
+        // by parsing the hostlist directly (secrets need the vault → covered by
+        // the integration path; here we assert record items + flag filtering).
+        // Build manually mirroring build_push_changes' record branch:
+        let mut flagged: Vec<String> = Vec::new();
+        for r in &list {
+            if record_is_synced(r) {
+                let id = record_id(r).unwrap();
+                let item_id = host_item_id(&id);
+                let payload = record_for_upload(r);
+                let _ct = ac::encrypt_item(&serde_json::to_vec(&payload).unwrap(), &uk).unwrap();
+                flagged.push(item_id);
+                cfg.synced_item_ids.insert(host_item_id(&id), 1);
+            }
+        }
+        assert_eq!(flagged, vec!["host.a".to_string(), "host.c".to_string()]);
+        // __hostlist__ itself is never an item id.
+        assert!(!flagged.iter().any(|k| k == "__hostlist__"));
+        // local-only host `b` produced nothing.
+        assert!(!flagged.iter().any(|k| k == "host.b"));
+    }
+
+    #[test]
+    fn record_for_upload_strips_vpn_profile_and_forces_sync() {
+        let mut r = rec("a", false);
+        r.insert("vpnProfileId".into(), serde_json::Value::String("local-123".into()));
+        r.insert("forwards".into(), serde_json::json!([{"id":"f1","localPort":8080}]));
+        let out = record_for_upload(&r);
+        let obj = out.as_object().unwrap();
+        // device-local vpnProfileId stripped
+        assert!(!obj.contains_key("vpnProfileId"));
+        // forwards/tunnel config rides with the host
+        assert!(obj.contains_key("forwards"));
+        // sync forced true so the pulled record stays flagged
+        assert_eq!(obj.get("sync"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    // --- PULL merge: upsert synced host, preserve local hosts ---------------
+    //
+    // Pure-logic mirror of account_sync_now's pull merge (no vault/network): a
+    // remote `host.a` record is merged into a local list that ALSO holds a
+    // local-only `host.b`; b must survive untouched and a must be upserted+flagged.
+    #[test]
+    fn pull_merge_upserts_synced_preserves_local() {
+        let mut hostlist = vec![rec("b", false)]; // local-only host present
+        let id = "a".to_string();
+        let remote_rec = {
+            let mut m = rec("a", true);
+            m.insert("host".into(), serde_json::Value::String("203.0.113.9".into()));
+            m
+        };
+        // merge logic (mirrors the pull loop's apply_remote=true branch)
+        let pos = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+        let mut r = remote_rec;
+        r.insert("sync".into(), serde_json::Value::Bool(true));
+        r.insert("id".into(), serde_json::Value::String(id.clone()));
+        match pos {
+            Some(p) => hostlist[p] = r,
+            None => hostlist.push(r),
+        }
+        assert_eq!(hostlist.len(), 2);
+        // local-only b preserved untouched
+        let b = hostlist.iter().find(|x| record_id(x).as_deref() == Some("b")).unwrap();
+        assert!(!record_is_synced(b));
+        // a upserted + flagged
+        let a = hostlist.iter().find(|x| record_id(x).as_deref() == Some("a")).unwrap();
+        assert!(record_is_synced(a));
+        assert_eq!(a.get("host").and_then(|v| v.as_str()), Some("203.0.113.9"));
+    }
+
+    // --- un-flag (sync true→false) → tombstone ------------------------------
+
+    #[test]
+    fn unflag_produces_tombstone() {
+        let mut cfg = AccountConfig::default();
+        // Last sync had host.a + its password synced.
+        cfg.synced_item_ids.insert("host.a".into(), 1);
+        cfg.synced_item_ids.insert("host.a.password".into(), 1);
+        cfg.did_initial_push = true;
+        // Now `a` is un-flagged → not in the flagged set; compute tombstones the
+        // way build_push_changes does.
+        let flagged_now: HashMap<String, u8> = HashMap::new();
+        let ts = 12345u64;
+        let previously: Vec<String> = cfg.synced_item_ids.keys().cloned().collect();
+        for old in previously {
+            if !flagged_now.contains_key(&old) {
+                cfg.tombstones.entry(old.clone()).or_insert(ts);
+                cfg.synced_item_ids.remove(&old);
+            }
+        }
+        assert!(cfg.tombstones.contains_key("host.a"));
+        assert!(cfg.tombstones.contains_key("host.a.password"));
+        assert!(cfg.synced_item_ids.is_empty());
+    }
+
+    // --- tombstone PULL removes ONLY a synced host --------------------------
+
+    #[test]
+    fn tombstone_pull_removes_only_synced_host() {
+        // Local list: a (synced), b (local-only).
+        let mut hostlist = vec![rec("a", true), rec("b", false)];
+
+        // Incoming tombstone for host.a → remove (it's flagged-synced locally).
+        let id_a = "a".to_string();
+        let pos_a = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id_a));
+        if let Some(p) = pos_a {
+            if record_is_synced(&hostlist[p]) {
+                hostlist.remove(p);
+            }
+        }
+        assert!(hostlist.iter().all(|r| record_id(r).as_deref() != Some("a")));
+        assert_eq!(hostlist.len(), 1);
+
+        // Incoming tombstone for host.b → MUST NOT remove (b is local-only).
+        let id_b = "b".to_string();
+        let pos_b = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id_b));
+        if let Some(p) = pos_b {
+            if record_is_synced(&hostlist[p]) {
+                hostlist.remove(p); // not reached: b isn't synced
+            }
+        }
+        assert_eq!(hostlist.len(), 1, "local-only host must survive a tombstone");
+        assert_eq!(record_id(&hostlist[0]).as_deref(), Some("b"));
     }
 }

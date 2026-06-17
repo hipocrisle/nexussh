@@ -66,6 +66,8 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
   const [user, setUser] = useState("");
   const [folder, setFolder] = useState("");
   const [port, setPort] = useState<string>("");
+  // Mark all imported hosts as account-synced. OFF by default.
+  const [syncImported, setSyncImported] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{ added: number; skipped: number } | null>(null);
@@ -122,6 +124,7 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
             auth: { kind: "password", password: "" },
             alwaysAskPassword: true,
             group,
+            sync: syncImported || undefined,
           });
         }
         // Yield every so often so the progress bar actually paints on big pastes.
@@ -228,6 +231,16 @@ export function BulkImportDialog({ onClose, onImported }: Props) {
             <p className="text-xs text-[var(--nx-text-muted)] font-mono">
               {t("bulk.hint")}
             </p>
+
+            <label className="flex items-center gap-2 cursor-pointer text-xs font-mono text-[var(--nx-text-soft)]">
+              <input
+                type="checkbox"
+                checked={syncImported}
+                onChange={(e) => setSyncImported(e.target.checked)}
+                className="accent-[var(--nx-accent)]"
+              />
+              {t("bulk.sync_imported")}
+            </label>
 
             {error && (
               <div className="text-[var(--nx-error)] text-sm font-mono break-all">

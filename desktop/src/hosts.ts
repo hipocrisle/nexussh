@@ -53,6 +53,11 @@ export interface HostRecord {
   /** Saved local-port forwards (ssh -L). Persisted with the record; ones marked
    *  `autoStart` are opened automatically after a successful shell connect. */
   forwards?: PortForward[];
+  /** Opt-in to account-sync. When true, this host (including its password, E2E
+   *  encrypted) rides the account sync to the user's other devices. OFF by
+   *  default — work/local hosts stay on this machine only. The Rust sync engine
+   *  reads this boolean to decide what to upload. */
+  sync?: boolean;
 }
 
 const STORE_FILE = "hosts.json";

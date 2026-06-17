@@ -98,6 +98,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   );
   const [vpnProfileId, setVpnProfileId] = useState("");
   const [vpnExit, setVpnExit] = useState("auto");
+  // Opt-in to account-sync. OFF by default — local/work hosts stay on-device.
+  const [sync, setSync] = useState(false);
   const [forwards, setForwards] = useState<PortForward[]>([]);
   // Open forward editor: null = closed, { initial?: PortForward } = open.
   // `initial` undefined → adding new; set → editing that forward.
@@ -124,6 +126,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
+    setSync(!!initial.sync);
     setForwards(initial.forwards ? initial.forwards.map((f) => ({ ...f })) : []);
     {
       const rh = initial.recordHistory;
@@ -286,6 +289,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,
+        sync: sync || undefined,
         recordHistory:
           recordHistory === "default"
             ? undefined
@@ -583,6 +587,18 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 { value: "on", label: t("dialog.record_on") },
                 { value: "off", label: t("dialog.record_off") },
               ]}
+            />
+
+            {/* Account-sync opt-in. OFF by default; flagged hosts (passwords
+             *  included, E2E) ride the account sync to other devices. */}
+            <div className={kicker + " mt-6 mb-3 block"}>
+              // {t("dialog.col_sync")}
+            </div>
+            <Checkbox
+              checked={sync}
+              onChange={setSync}
+              label={t("dialog.sync_host")}
+              hint={t("dialog.sync_host_hint")}
             />
 
             {/* Local port forwards (ssh -L). Rows with autoStart open on connect. */}

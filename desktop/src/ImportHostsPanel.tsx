@@ -69,6 +69,8 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState<number | null>(null);
+  // Mark all imported hosts as account-synced. OFF by default.
+  const [syncImported, setSyncImported] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(
     null,
   );
@@ -188,6 +190,7 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
             ? { kind: "key", path: idFile }
             : { kind: "password", password: "" },
           alwaysAskPassword: !idFile,
+          sync: syncImported || undefined,
         });
         setProgress({ done: recs.length, total: pick.length });
       }
@@ -387,6 +390,15 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
                 total: importableCount,
               })}
             </span>
+            <label className="flex items-center gap-1.5 cursor-pointer text-xs font-mono text-[var(--nx-text-soft)]">
+              <input
+                type="checkbox"
+                checked={syncImported}
+                onChange={(e) => setSyncImported(e.target.checked)}
+                className="accent-[var(--nx-accent)]"
+              />
+              {t("import.sync_imported")}
+            </label>
             <button
               onClick={onClose}
               className="ml-auto px-3 py-1.5 font-mono text-xs rounded border border-[var(--nx-border)] text-[var(--nx-text-soft)] hover:bg-[var(--nx-bg-panel)]"

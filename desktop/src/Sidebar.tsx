@@ -28,6 +28,8 @@ import {
   FoldVertical,
   UnfoldVertical,
   Network,
+  Cloud,
+  HardDrive,
 } from "lucide-react";
 import {
   HostRecord,
@@ -195,6 +197,10 @@ export function Sidebar({
   }, [hosts, filter]);
 
   const ungroupedLabel = t("sidebar.no_group");
+  // Distinct collapse-keys for each section's synthetic "ungrouped" bucket so
+  // folding one section's loose hosts doesn't fold the other's.
+  const UNGROUPED_SYNCED = "__synced__/" + ungroupedLabel;
+  const UNGROUPED_LOCAL = "__local__/" + ungroupedLabel;
 
   const [knownFolders, setKnownFolders] = useState<string[]>(() =>
     loadKnownFolders(),
@@ -205,43 +211,70 @@ export function Sidebar({
   // vault reset (which clears them) leaves a truly empty tree, not stale folders.
   useEffect(() => onHostsChanged(refreshFolders), [refreshFolders]);
 
-  const { root, ungrouped } = useMemo(() => {
-    const root: FolderNode = { path: "", name: "", children: new Map(), hosts: [] };
-    const ensure = (path: string): FolderNode => {
-      let node = root;
-      let acc = "";
-      for (const seg of path.split("/")) {
-        if (!seg) continue;
-        acc = acc ? acc + "/" + seg : seg;
-        let child = node.children.get(seg);
-        if (!child) {
-          child = { path: acc, name: seg, children: new Map(), hosts: [] };
-          node.children.set(seg, child);
+  // Build a folder tree + ungrouped bucket from a subset of hosts. Empty folders
+  // (knownFolders) are only seeded into the Local section — a freshly-created
+  // empty folder isn't synced until a synced host lands in it.
+  const buildTree = useCallback(
+    (subset: HostRecord[], seedEmptyFolders: boolean) => {
+      const root: FolderNode = {
+        path: "",
+        name: "",
+        children: new Map(),
+        hosts: [],
+      };
+      const ensure = (path: string): FolderNode => {
+        let node = root;
+        let acc = "";
+        for (const seg of path.split("/")) {
+          if (!seg) continue;
+          acc = acc ? acc + "/" + seg : seg;
+          let child = node.children.get(seg);
+          if (!child) {
+            child = { path: acc, name: seg, children: new Map(), hosts: [] };
+            node.children.set(seg, child);
+          }
+          node = child;
         }
-        node = child;
+        return node;
+      };
+      const ungrouped: HostRecord[] = [];
+      for (const h of subset) {
+        if (h.group) ensure(h.group).hosts.push(h);
+        else ungrouped.push(h);
       }
-      return node;
-    };
-    const ungrouped: HostRecord[] = [];
-    for (const h of filtered) {
-      if (h.group) ensure(h.group).hosts.push(h);
-      else ungrouped.push(h);
-    }
-    // Empty folders the user created via "+ Folder" (may be nested paths).
-    for (const f of knownFolders) if (f.trim()) ensure(f);
-    const sortRec = (n: FolderNode) => {
-      n.hosts.sort((a, b) => hostCmp(a, b, sortMode));
-      n.children.forEach(sortRec);
-    };
-    sortRec(root);
-    ungrouped.sort((a, b) => hostCmp(a, b, sortMode));
-    return { root, ungrouped };
-  }, [filtered, knownFolders, sortMode]);
+      // Empty folders the user created via "+ Folder" (may be nested paths).
+      if (seedEmptyFolders) for (const f of knownFolders) if (f.trim()) ensure(f);
+      const sortRec = (n: FolderNode) => {
+        n.hosts.sort((a, b) => hostCmp(a, b, sortMode));
+        n.children.forEach(sortRec);
+      };
+      sortRec(root);
+      ungrouped.sort((a, b) => hostCmp(a, b, sortMode));
+      return { root, ungrouped };
+    },
+    [knownFolders, sortMode],
+  );
 
-  const isEmpty = root.children.size === 0 && ungrouped.length === 0;
+  // Top level splits into two sections: Synced (host.sync === true) and Local
+  // (everything else). Each keeps the full group/sub-group nesting + ordering.
+  const { synced, local } = useMemo(() => {
+    const syncedHosts: HostRecord[] = [];
+    const localHosts: HostRecord[] = [];
+    for (const h of filtered) (h.sync ? syncedHosts : localHosts).push(h);
+    return {
+      synced: buildTree(syncedHosts, false),
+      local: buildTree(localHosts, true),
+    };
+  }, [filtered, buildTree]);
 
-  // Collect every folder path that exists in the tree, recursively. Used by
-  // collapse-all to seed the collapsed set.
+  const isEmpty =
+    synced.root.children.size === 0 &&
+    synced.ungrouped.length === 0 &&
+    local.root.children.size === 0 &&
+    local.ungrouped.length === 0;
+
+  // Collect every folder path that exists in EITHER section, recursively. Used
+  // by collapse-all to seed the collapsed set.
   const allFolderPaths = useMemo(() => {
     const acc = new Set<string>();
     const walk = (n: FolderNode) => {
@@ -250,9 +283,10 @@ export function Sidebar({
         walk(c);
       });
     };
-    walk(root);
+    walk(synced.root);
+    walk(local.root);
     return acc;
-  }, [root]);
+  }, [synced, local]);
 
   // For the toolbar toggle button. "All collapsed" only when EVERY folder
   // path is in collapsedGroups. Otherwise treat as "some open".
@@ -371,8 +405,13 @@ export function Sidebar({
   function onFolderContextMenu(e: React.MouseEvent, path: string) {
     e.preventDefault();
     e.stopPropagation();
-    // Don't allow rename/delete on the synthetic "ungrouped" bucket.
-    if (path === ungroupedLabel) {
+    // Don't allow rename/delete on the synthetic "ungrouped" buckets (one per
+    // section, each prefixed). Only offer collapse.
+    if (
+      path === ungroupedLabel ||
+      path === UNGROUPED_SYNCED ||
+      path === UNGROUPED_LOCAL
+    ) {
       onContextMenu?.(e.clientX, e.clientY, [
         {
           label: t("sidebar.menu_collapse_group"),
@@ -557,7 +596,12 @@ export function Sidebar({
             reload();
           }
         } else if (dragOverGroup !== null) {
-          const folder = dragOverGroup === ungroupedLabel ? null : dragOverGroup;
+          const folder =
+            dragOverGroup === ungroupedLabel ||
+            dragOverGroup === UNGROUPED_SYNCED ||
+            dragOverGroup === UNGROUPED_LOCAL
+              ? null
+              : dragOverGroup;
           if (folder !== (d.host.group ?? null)) {
             await moveHostToFolder(d.host.id, folder);
             reload();
@@ -706,13 +750,51 @@ export function Sidebar({
     );
   };
 
-  // Synthetic top-level bucket for hosts with no folder.
-  const ungroupedNode: FolderNode = {
-    path: ungroupedLabel,
+  // Synthetic top-level bucket for hosts with no folder. One per section; the
+  // synced one gets a distinct collapse-key so folding it doesn't fold the local
+  // one (and vice-versa). Both are recognized as synthetic in the context menu.
+  const makeUngroupedNode = (
+    sectionHosts: HostRecord[],
+    keyPrefix: string,
+  ): FolderNode => ({
+    path: keyPrefix + ungroupedLabel,
     name: ungroupedLabel,
     children: new Map(),
-    hosts: ungrouped,
+    hosts: sectionHosts,
+  });
+
+  // Render one top-level section (Synced / Local): a labelled, visually-distinct
+  // header (hidden by hide=false caller) followed by its folder tree + the
+  // section's ungrouped hosts.
+  const renderSection = (
+    label: string,
+    tree: { root: FolderNode; ungrouped: HostRecord[] },
+    icon: React.ReactNode,
+    ungroupedKeyPrefix: string,
+    accent: boolean,
+  ): React.ReactNode => {
+    const ungroupedNode = makeUngroupedNode(tree.ungrouped, ungroupedKeyPrefix);
+    return (
+      <div className="mb-1">
+        <div
+          className={
+            "px-3 pt-2 pb-1 flex items-center gap-1.5 text-micro uppercase tracking-[0.2em] font-mono select-none border-b border-nx-divider/40 " +
+            (accent ? "text-nx-accent" : "text-nx-muted")
+          }
+        >
+          {icon}
+          <span>{label}</span>
+        </div>
+        {sortedChildren(tree.root).map((node) => renderFolder(node, 0))}
+        {tree.ungrouped.length > 0 && renderFolder(ungroupedNode, 0)}
+      </div>
+    );
   };
+
+  const syncedEmpty =
+    synced.root.children.size === 0 && synced.ungrouped.length === 0;
+  const localEmpty =
+    local.root.children.size === 0 && local.ungrouped.length === 0;
 
   if (collapsed) {
     return (
@@ -861,8 +943,23 @@ export function Sidebar({
           </div>
         )}
 
-        {sortedChildren(root).map((node) => renderFolder(node, 0))}
-        {ungrouped.length > 0 && renderFolder(ungroupedNode, 0)}
+        {/* Top level: Synced then Local. Empty sections hide their header. */}
+        {!syncedEmpty &&
+          renderSection(
+            t("sidebar.section_synced"),
+            synced,
+            <Cloud size={11} className="text-nx-accent shrink-0" />,
+            "__synced__/",
+            true,
+          )}
+        {!localEmpty &&
+          renderSection(
+            t("sidebar.section_local"),
+            local,
+            <HardDrive size={11} className="text-nx-muted shrink-0" />,
+            "__local__/",
+            false,
+          )}
       </div>
 
       {dialog?.kind === "add" && (

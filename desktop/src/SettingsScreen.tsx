@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   Terminal as TerminalIcon,
   Globe,
+  CloudCog,
   Info,
   X,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import { AppearanceSection } from "./settings/AppearanceSection";
 import { UpdatesSection } from "./settings/UpdatesSection";
 import { BehaviorSection } from "./settings/BehaviorSection";
 import { VpnSection } from "./settings/VpnSection";
+import { AccountSection } from "./settings/AccountSection";
 import { AboutSection } from "./settings/AboutSection";
 import { getVersion } from "@tauri-apps/api/app";
 
@@ -37,6 +39,7 @@ const SECTIONS = [
   { id: "updates", key: "updates", Icon: Download },
   { id: "behavior", key: "behavior", Icon: SlidersHorizontal },
   { id: "vpn", key: "vpn", Icon: Globe },
+  { id: "account", key: "account", Icon: CloudCog },
   { id: "about", key: "about", Icon: Info },
 ] as const;
 
@@ -372,6 +375,7 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
                   sidecar. Will come back when we wire VPN through Android's
                   VPN service. */}
               {!isMobile && <VpnSection t={t} />}
+              <AccountSection t={t} />
               <AboutSection t={t} />
 
               {!isMobile && (

@@ -299,6 +299,7 @@ pub fn run() {
             account::account_totp_enroll,
             account::account_totp_verify,
             account::account_sync_now,
+            account::account_record_tombstones,
             updater::check_for_update,
             updater::install_update,
             android_updater::android_install_apk,

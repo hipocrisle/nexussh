@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, Shield, ChevronDown, Folder, Pencil, Plus } from "lucide-react";
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
+import { accountRecordTombstones, accountSyncNow } from "./account";
 import type { PortForward } from "./tunnel";
 import { FolderPicker } from "./FolderPicker";
 import { ForwardEditDialog } from "./ForwardEditDialog";
@@ -309,6 +310,17 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         })(),
       };
       await saveHost(rec);
+      // Propagate sync changes right away so the host appears (or disappears) on
+      // the user's other devices without a manual "sync now".
+      const wasSynced = !!initial?.sync;
+      if (wasSynced && !sync) {
+        // un-flagged a previously-synced host → explicit tombstone (the only way
+        // a deletion propagates), then push.
+        await accountRecordTombstones([id]).catch(() => {});
+        accountSyncNow().catch(() => {});
+      } else if (sync) {
+        accountSyncNow().catch(() => {});
+      }
       onSaved(rec);
     } catch (e) {
       setError(String(e));

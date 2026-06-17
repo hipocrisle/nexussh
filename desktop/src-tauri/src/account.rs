@@ -164,6 +164,27 @@ struct AccountConfig {
     /// (a brand-new device has no notion of "what changed").
     #[serde(default)]
     did_initial_push: bool,
+    /// The account user_id this bookkeeping belongs to. If a login returns a
+    /// DIFFERENT user_id (account re-created / switched), all the rev/tombstone
+    /// state is stale and must be reset — otherwise a stale `last_sync_rev` would
+    /// make the new account's items look "already pulled" and silently skip them.
+    #[serde(default)]
+    account_user_id: Option<String>,
+}
+
+impl AccountConfig {
+    /// Wipe all per-account sync bookkeeping (cursors, rev/updated maps,
+    /// tombstones, flagged set). Called on register and on an account switch so a
+    /// fresh account starts from a clean slate. Keeps server_url/username/token.
+    fn reset_sync_state(&mut self) {
+        self.last_sync_rev = 0;
+        self.last_sync_at = None;
+        self.item_revs.clear();
+        self.updated_at.clear();
+        self.tombstones.clear();
+        self.synced_item_ids.clear();
+        self.did_initial_push = false;
+    }
 }
 
 impl Default for AccountConfig {
@@ -181,6 +202,7 @@ impl Default for AccountConfig {
             tombstones: HashMap::new(),
             synced_item_ids: HashMap::new(),
             did_initial_push: false,
+            account_user_id: None,
         }
     }
 }
@@ -235,6 +257,12 @@ fn now_ms() -> u64 {
 /// The vault key holding the JSON array of ALL host records (synced + local).
 /// This blob is the local source of truth and is NEVER uploaded as an item.
 const HOSTLIST_KEY: &str = "__hostlist__";
+
+/// The vault key under which we stash the (decoupled) account user key after a
+/// successful login. It rides inside the age-encrypted vault, so once the vault
+/// is unlocked the session is re-hydrated without re-entering the SYNC password
+/// (which is independent of this device's vault master password). Never an item.
+const USER_KEY_VAULT_KEY: &str = "__account_user_key__";
 
 /// Item types. `host` carries a single host record (NOT a vault key — it's
 /// sliced out of `__hostlist__`); the secret types carry literal vault keys.
@@ -437,11 +465,58 @@ pub struct AccountStatus {
     pub configured: bool,
 }
 
+/// Re-hydrate the in-memory session from the persisted token + the user key
+/// stashed (encrypted at rest) in the vault. No-op if already logged in, no
+/// token, vault locked, or no stashed key. This is what lets the session survive
+/// an app restart: unlocking the vault is enough, the user never re-types the
+/// sync password. The sync password is INDEPENDENT of the vault master password.
+fn restore_session(
+    app: &AppHandle,
+    state: &State<'_, AccountState>,
+    vault_state: &State<'_, VaultState>,
+) {
+    if state.inner.lock().unwrap().is_some() {
+        return;
+    }
+    let cfg = match load_config(app) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let token = match cfg.token {
+        Some(t) => t,
+        None => return,
+    };
+    if !vault::is_unlocked(vault_state) {
+        return;
+    }
+    let stored = match vault::get_opt(vault_state, USER_KEY_VAULT_KEY) {
+        Some(s) => s,
+        None => return,
+    };
+    let bytes = match B64.decode(stored.trim()) {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    if bytes.len() != 32 {
+        return;
+    }
+    let mut uk = [0u8; 32];
+    uk.copy_from_slice(&bytes);
+    *state.inner.lock().unwrap() = Some(Session {
+        token,
+        user_key: Zeroizing::new(uk),
+    });
+}
+
 #[tauri::command]
 pub async fn account_status(
     app: AppHandle,
     state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
 ) -> Result<AccountStatus> {
+    // Lazily restore a persisted session (token + vault-stashed key) so a restart
+    // with an unlocked vault shows "logged in" without re-entering the password.
+    restore_session(&app, &state, &vault_state);
     let cfg = load_config(&app)?;
     let logged_in = state.inner.lock().unwrap().is_some();
     Ok(AccountStatus {
@@ -481,27 +556,19 @@ pub struct RegisterResult {
     pub recovery_key: String,
 }
 
-/// Register a new account. The password MUST equal the vault master password
-/// (the unified-password design). We require the vault to be unlocked so we fail
-/// loudly if there is no vault yet — otherwise the user could create an account
-/// whose password diverges from a later-created vault. We do NOT (cannot) verify
-/// the two passwords are byte-equal here; that coupling is enforced by the UI
-/// passing the same password it used for the vault.
+/// Register a new account. The `password` is the **sync password** — an account
+/// credential that is INDEPENDENT of this device's vault master password. The
+/// same sync password is used on every device; each device keeps its own local
+/// vault password. (Earlier "unified-password" coupling is gone: it broke as soon
+/// as two devices had different vault passwords — see the 2026-06 data-loss
+/// incident.) No vault is needed to register; login stashes the derived key into
+/// the vault so the session survives restarts.
 #[tauri::command]
 pub async fn account_register(
     app: AppHandle,
-    vault_state: State<'_, VaultState>,
     password: String,
     username: String,
 ) -> Result<RegisterResult> {
-    // Coupling guard: the account password is the vault master password, so the
-    // vault must exist & be unlocked. (See module docs / report for the caveat
-    // that byte-equality can't be checked here.)
-    if !vault::is_unlocked(&vault_state) {
-        return Err(AccountError::Other(
-            "unlock (or create) the vault first — the account uses the same master password".into(),
-        ));
-    }
     let username = username.trim().to_string();
     if username.is_empty() {
         return Err(AccountError::Other("username is empty".into()));
@@ -543,6 +610,10 @@ pub async fn account_register(
     // register; we keep it simple and require an explicit login.)
     let mut cfg = load_config(&app)?;
     cfg.username = Some(username);
+    // Brand-new account → drop any stale sync bookkeeping from a previous account
+    // on this device, and remember whose state this is.
+    cfg.reset_sync_state();
+    cfg.account_user_id = Some(user_id.clone());
     save_config(&app, &cfg)?;
 
     Ok(RegisterResult {
@@ -568,6 +639,7 @@ pub struct LoginResult {
 pub async fn account_login(
     app: AppHandle,
     state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
     password: String,
     username: String,
     totp: Option<String>,
@@ -575,6 +647,12 @@ pub async fn account_login(
     let username = username.trim().to_string();
     if username.is_empty() {
         return Err(AccountError::Other("username is empty".into()));
+    }
+    // The vault must be unlocked: we stash the derived sync key inside it so the
+    // session survives a restart (the sync password is independent of the vault
+    // master password, so the key can't be re-derived from the vault alone).
+    if !vault::is_unlocked(&vault_state) {
+        return Err(AccountError::Vault(vault::VaultError::Locked));
     }
     let cfg = load_config(&app)?;
     let server_url = cfg.server_url.clone();
@@ -654,8 +732,20 @@ pub async fn account_login(
     let lr = ac::login(&password, &account_salt, &kdf_params, wrapped_user_key)?;
     let user_key = lr.user_key;
 
+    // Stash the derived key inside the unlocked vault (encrypted at rest) so the
+    // session re-hydrates on restart from the vault alone — no sync-password
+    // re-entry. See `restore_session`.
+    vault::put_key(&vault_state, USER_KEY_VAULT_KEY, B64.encode(&user_key[..]))?;
+
     // 5. Persist config + hold the session in memory.
     let mut cfg = load_config(&app)?;
+    // Account switch (or a re-created account with the same name) → the local
+    // rev/tombstone bookkeeping is stale; reset so we re-pull the new account's
+    // items from rev 0 instead of skipping them as "already seen".
+    if !user_id.is_empty() && cfg.account_user_id.as_deref() != Some(user_id.as_str()) {
+        cfg.reset_sync_state();
+        cfg.account_user_id = Some(user_id.clone());
+    }
     cfg.username = Some(username);
     cfg.token = Some(token.clone());
     if device_id.is_some() {
@@ -686,10 +776,37 @@ fn device_name() -> String {
 pub async fn account_logout(
     app: AppHandle,
     state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
 ) -> Result<()> {
     *state.inner.lock().unwrap() = None; // drops Session → zeroizes user_key
+    // Drop the stashed key so a later restore can't silently re-login.
+    if vault::is_unlocked(&vault_state) {
+        let _ = vault::delete_key(&vault_state, USER_KEY_VAULT_KEY);
+    }
     let mut cfg = load_config(&app)?;
     cfg.token = None;
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
+/// Record explicit tombstones for hosts the user un-flagged (sync true→false) or
+/// deleted. The frontend MUST call this at the moment of that action (before or
+/// with the local write). These are the ONLY source of deletions pushed to the
+/// server — see the safety note in `build_push_changes`. Recording a tombstone
+/// for a host that was never synced is harmless (the server no-ops the delete).
+#[tauri::command]
+pub async fn account_record_tombstones(app: AppHandle, host_ids: Vec<String>) -> Result<()> {
+    if host_ids.is_empty() {
+        return Ok(());
+    }
+    let mut cfg = load_config(&app)?;
+    let ts = now_ms();
+    for id in host_ids {
+        for k in [host_item_id(&id), host_password_key(&id), known_host_key(&id)] {
+            cfg.tombstones.entry(k.clone()).or_insert(ts);
+            cfg.synced_item_ids.remove(&k);
+        }
+    }
     save_config(&app, &cfg)?;
     Ok(())
 }
@@ -848,6 +965,8 @@ pub async fn account_sync_now(
     state: State<'_, AccountState>,
     vault_state: State<'_, VaultState>,
 ) -> Result<SyncReport> {
+    // Re-hydrate a persisted session first (restart with unlocked vault).
+    restore_session(&app, &state, &vault_state);
     // Preconditions: session (token + user_key) and an unlocked vault.
     let (token, user_key) = {
         let guard = state.inner.lock().unwrap();
@@ -1164,22 +1283,21 @@ fn build_push_changes(
         }
     }
 
-    // --- un-flagged / removed → TOMBSTONES --------------------------------
-    // Anything we synced last time but is not in the flagged set now must be
-    // dropped from the server (and from other devices). Record a tombstone so a
-    // crash mid-push still re-pushes it next run.
-    let ts = now_ms();
-    let previously: Vec<String> = cfg.synced_item_ids.keys().cloned().collect();
-    for old_id in previously {
-        if flagged_now.contains_key(&old_id) {
-            continue;
-        }
-        cfg.tombstones.entry(old_id.clone()).or_insert(ts);
-        cfg.synced_item_ids.remove(&old_id);
-    }
+    // --- DELETIONS are EXPLICIT ONLY -------------------------------------
+    // We deliberately do NOT derive deletions by diffing the previously-synced
+    // set against the currently-flagged set. That heuristic caused total data
+    // loss (2026-06): if a device's local list was empty/undecryptable (vault
+    // reset, wrong/changed password, locked vault), `flagged_now` was empty and
+    // EVERY previously-synced item got tombstoned → the server was wiped → every
+    // other device deleted its copy on the next pull. Mutual annihilation.
+    //
+    // Deletions now come ONLY from explicit tombstones recorded at the moment the
+    // user un-flags or deletes a host (see `account_record_tombstones`). An empty
+    // or again-locked vault therefore can never mass-delete: the worst case is a
+    // deletion failing to propagate, never silent destruction.
 
-    // Emit a push change for every pending tombstone (incl. ones recorded above
-    // and any left over from a previous failed run).
+    // Emit a push change for every pending tombstone (recorded on user un-flag /
+    // delete, plus any left over from a previous failed run).
     for (item_id, ts) in cfg.tombstones.clone() {
         let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
         changes.push(PushChange {

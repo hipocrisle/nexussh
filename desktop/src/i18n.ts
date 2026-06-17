@@ -586,8 +586,8 @@ const ru = {
       confirm_password: "Повторите пароль",
       password_mismatch: "Пароли не совпадают",
       password_ph_confirm: "повторите пароль",
-      unified_password_note: "Это ДОЛЖЕН быть тот же мастер-пароль, что и у локального vault — им шифруются ваши данные синхронизации (E2E). Для регистрации vault должен быть разблокирован.",
-      vault_locked: "Сначала разблокируйте vault, затем повторите.",
+      unified_password_note: "Это ваш ПАРОЛЬ СИНХРОНИЗАЦИИ — отдельный, одинаковый на всех устройствах (НЕ пароль локального vault). Им ваши данные синхронизации шифруются E2E. На каждом устройстве свой пароль vault, а пароль синхры — общий.",
+      vault_locked: "Сначала разблокируйте vault, затем повторите — ключ синхры хранится внутри него.",
       // totp on login
       totp_code: "Код 2FA",
       // recovery key (register)
@@ -635,7 +635,7 @@ const ru = {
       select_none: "Снять все",
       save_sync: "Сохранить выбор",
       no_hosts_at_all: "Пока нет ни одного хоста.",
-      no_marked_notice: "Ни один хост ещё не отмечен для синхронизации — отметьте те, что хотите синхронизировать.",
+      no_marked_notice: "Ни один хост ещё не отмечен для синхронизации — выберите их в разделе «Хосты для синхронизации» выше.",
       mark_hosts: "Выбрать хосты",
       // 2fa enable
       enable_2fa: "Включить 2FA",
@@ -1520,8 +1520,8 @@ const en = {
       confirm_password: "Confirm password",
       password_mismatch: "Passwords don't match",
       password_ph_confirm: "confirm password",
-      unified_password_note: "This MUST be the same master password as your local vault — it's used to encrypt your sync data end-to-end. Registration requires the vault to be unlocked.",
-      vault_locked: "Unlock your vault first, then retry.",
+      unified_password_note: "This is your SYNC password — a separate credential you use on every device (NOT your local vault password). It encrypts your sync data end-to-end. Use the same sync password on all your devices; each device keeps its own vault password.",
+      vault_locked: "Unlock your vault first, then retry — the sync key is stored inside it.",
       // totp on login
       totp_code: "2FA code",
       // recovery key (register)
@@ -1569,7 +1569,7 @@ const en = {
       select_none: "Select none",
       save_sync: "Save selection",
       no_hosts_at_all: "No hosts yet.",
-      no_marked_notice: "No hosts are marked for sync yet — mark the hosts you want to sync.",
+      no_marked_notice: "No hosts are marked for sync yet — choose them in 'Synced hosts' above.",
       mark_hosts: "Choose hosts",
       // 2fa enable
       enable_2fa: "Enable 2FA",

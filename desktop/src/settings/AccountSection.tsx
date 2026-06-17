@@ -1,8 +1,10 @@
-// AccountSection — account-based E2E sync (Phase 1, frontend).
+// AccountSection — account-based E2E sync (frontend).
 //
-// ONE master password serves both the local vault and the account: the password
-// entered here MUST be the same one used to unlock/create the vault. The server
-// only ever sees ciphertext. See ../account.ts for the typed bridge.
+// The SYNC password is its OWN credential, separate from this device's vault
+// master password, and the SAME on every device. Each device keeps its own local
+// vault password. Login requires the vault unlocked (the derived key is stashed
+// inside it so the session survives restarts). The server only ever sees
+// ciphertext. See ../account.ts for the typed bridge.
 //
 // States: logged-out (register / log in) and logged-in (status, sync now, 2FA,
 // log out). Every error is surfaced; in-flight buttons are disabled; password
@@ -510,6 +512,9 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
       // Success — clear secrets from memory and refresh.
       setPassword("");
       setTotp("");
+      // First-login pull: immediately fetch everything already synced on other
+      // devices so the user's hosts appear right away (no manual "sync now").
+      accountSyncNow().catch(() => {});
       onChanged();
     } catch (e) {
       if (String(e).includes(TOTP_REQUIRED_ERROR) && !needTotp) {
@@ -856,7 +861,6 @@ function LoggedIn({
             refreshCounts();
           }}
           markedCount={counts?.marked ?? null}
-          onManage={() => setManageOpen(true)}
         />
       </Row>
 
@@ -891,14 +895,11 @@ function SyncControl({
   t,
   onSynced,
   markedCount,
-  onManage,
 }: {
   t: ThemePalette;
   onSynced: () => void;
   /** How many hosts are flagged for sync (null = unknown/not loaded yet). */
   markedCount: number | null;
-  /** Open the "Manage synced hosts" dialog. */
-  onManage: () => void;
 }) {
   const { t: tr } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -931,12 +932,9 @@ function SyncControl({
           style={{ background: t.bgPanel, borderColor: t.warning + "66", color: t.textSoft }}
         >
           <Info size={14} className="mt-0.5 shrink-0" style={{ color: t.warning }} />
-          <div className="space-y-2">
-            <div>{tr("settings.account.no_marked_notice")}</div>
-            <GhostButton t={t} onClick={onManage} icon={<ListChecks size={12} />}>
-              {tr("settings.account.mark_hosts")}
-            </GhostButton>
-          </div>
+          {/* Selection lives ONCE, in the "Synced hosts" row above. No duplicate
+              "choose hosts" button here. */}
+          <div>{tr("settings.account.no_marked_notice")}</div>
         </div>
       )}
 
@@ -983,15 +981,6 @@ function SyncControl({
             >
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
               <span>{tr("settings.account.conflicts_note")}</span>
-            </div>
-          )}
-
-          {/* Even on success, if nothing was marked, nudge toward selection. */}
-          {nothingMarked && report.pushed === 0 && (
-            <div className="pt-1">
-              <GhostButton t={t} onClick={onManage} icon={<ListChecks size={12} />}>
-                {tr("settings.account.mark_hosts")}
-              </GhostButton>
             </div>
           )}
         </div>

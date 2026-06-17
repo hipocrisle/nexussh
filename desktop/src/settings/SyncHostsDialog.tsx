@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, CloudUpload } from "lucide-react";
 import { listHosts, saveHostsBatch, HostRecord } from "../hosts";
+import { accountRecordTombstones, accountSyncNow } from "../account";
 import { useBackdropClose } from "../useBackdropClose";
 
 interface Props {
@@ -78,14 +79,26 @@ export function SyncHostsDialog({ onClose, onSaved }: Props) {
     setBusy(true);
     setError(null);
     try {
-      // Only write hosts whose flag actually changed.
+      // Only write hosts whose flag actually changed. Collect un-flagged hosts
+      // (sync true→false) so we record explicit deletion tombstones — the ONLY
+      // way a deletion propagates (the engine never infers deletions).
       const changed: HostRecord[] = [];
+      const unsynced: string[] = [];
       for (const h of hosts) {
         const want = sel.has(h.id);
         const have = !!h.sync;
         if (want !== have) changed.push({ ...h, sync: want });
+        if (have && !want) unsynced.push(h.id);
       }
       if (changed.length > 0) await saveHostsBatch(changed);
+      if (unsynced.length > 0) await accountRecordTombstones(unsynced);
+      // Push/pull immediately so the change reaches other devices now. Best
+      // effort: a sync failure (e.g. offline) shouldn't lose the saved flags.
+      try {
+        await accountSyncNow();
+      } catch {
+        /* surfaced elsewhere; flags are already saved locally */
+      }
       onSaved?.();
       onClose();
     } catch (e) {
@@ -147,8 +160,16 @@ export function SyncHostsDialog({ onClose, onSaved }: Props) {
                 </div>
               )}
               {groups.map(([g, list]) => {
-                const ids = list.map((h) => h.id);
-                const groupOn = ids.every((id) => sel.has(id));
+                // Tree cascade: a folder governs its WHOLE subtree (itself + all
+                // nested subfolders), so ticking a parent folder marks every host
+                // beneath it for sync, not just its direct children.
+                const ids = hosts
+                  .filter((h) => {
+                    const hg = h.group || UNGROUPED;
+                    return hg === g || hg.startsWith(g + "/");
+                  })
+                  .map((h) => h.id);
+                const groupOn = ids.length > 0 && ids.every((id) => sel.has(id));
                 return (
                   <div key={g}>
                     <label className="flex items-center gap-2 cursor-pointer py-0.5">

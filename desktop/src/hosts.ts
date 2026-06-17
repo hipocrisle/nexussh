@@ -8,6 +8,7 @@
 import { load, Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
 import { vaultGet, vaultSet, vaultDelete, vaultStatus, vaultKeys } from "./vault";
+import { accountRecordTombstones, accountSyncNow } from "./account";
 import type { PortForward } from "./tunnel";
 
 export interface HostRecord {
@@ -257,9 +258,15 @@ export async function saveHostsBatch(recs: HostRecord[]): Promise<void> {
 
 export async function deleteHost(id: string): Promise<void> {
   const all = await readAll();
+  const victim = all.find((h) => h.id === id);
   const next = all.filter((h) => h.id !== id);
   await writeAll(next);
   notifyHostsChanged();
+  // If it was synced, propagate the deletion (explicit tombstone + push).
+  if (victim?.sync) {
+    await accountRecordTombstones([id]).catch(() => {});
+    accountSyncNow().catch(() => {});
+  }
 }
 
 export async function bumpLastUsed(id: string): Promise<void> {
@@ -321,19 +328,30 @@ export async function deleteFolder(name: string): Promise<void> {
 export async function deleteFolderWithHosts(name: string): Promise<void> {
   const all = await readAll();
   const prefix = name + "/";
-  const next = all.filter(
-    (h) => !(h.group === name || (h.group && h.group.startsWith(prefix))),
-  );
+  const inFolder = (h: HostRecord) =>
+    h.group === name || (h.group !== undefined && h.group.startsWith(prefix));
+  const next = all.filter((h) => !inFolder(h));
+  const syncedIds = all.filter((h) => inFolder(h) && h.sync).map((h) => h.id);
   await writeAll(next);
   removeKnownFolder(name);
   notifyHostsChanged();
+  if (syncedIds.length > 0) {
+    await accountRecordTombstones(syncedIds).catch(() => {});
+    accountSyncNow().catch(() => {});
+  }
 }
 
 /** Wipe EVERY host and every remembered (empty) folder. One write. */
 export async function deleteAllHosts(): Promise<void> {
+  const all = await readAll();
+  const syncedIds = all.filter((h) => h.sync).map((h) => h.id);
   await writeAll([]);
   clearKnownFolders();
   notifyHostsChanged();
+  if (syncedIds.length > 0) {
+    await accountRecordTombstones(syncedIds).catch(() => {});
+    accountSyncNow().catch(() => {});
+  }
 }
 
 /** Move a single host into a folder. Pass null to ungroup. */

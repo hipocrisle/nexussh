@@ -1,9 +1,12 @@
-// Account-based sync — typed Tauri command wrappers (Phase 1, no UI yet).
+// Account-based sync — typed Tauri command wrappers.
 //
-// ONE master password serves both the local vault and the account: the password
-// passed here MUST be the same one used to unlock/create the vault (see the Rust
-// `account.rs` module docs). Crypto happens entirely in Rust via the Phase-0
-// `account_crypto` primitives; the server only ever sees ciphertext + metadata.
+// The SYNC password is its OWN credential, INDEPENDENT of this device's vault
+// master password. The same sync password is used on every device; each device
+// keeps its own local vault password. (The old "one unified password" coupling
+// was removed after it caused data loss when two devices had different vault
+// passwords.) Crypto happens entirely in Rust; the server only ever sees
+// ciphertext + metadata. Login stashes the derived key inside the unlocked vault
+// so the session survives restarts without re-entering the sync password.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -59,8 +62,9 @@ export async function accountSetServer(url: string): Promise<void> {
   await invoke("account_set_server", { url });
 }
 
-/** Register a new account. Requires the vault to be unlocked with the SAME
- *  password. Returns the recovery key to show once. */
+/** Register a new account with a dedicated SYNC password (independent of the
+ *  vault password — use the same sync password on every device). Returns the
+ *  recovery key to show once. */
 export async function accountRegister(
   password: string,
   username: string,
@@ -97,4 +101,13 @@ export async function accountTotpVerify(code: string): Promise<string[]> {
  *  vault unlocked. */
 export async function accountSyncNow(): Promise<SyncReport> {
   return await invoke<SyncReport>("account_sync_now");
+}
+
+/** Record explicit deletion tombstones for hosts the user un-synced or deleted.
+ *  MUST be called whenever a previously-synced host is un-flagged or removed, so
+ *  the deletion propagates. This is the ONLY way deletions reach the server —
+ *  the engine never infers them — so an empty/locked vault can't mass-delete. */
+export async function accountRecordTombstones(hostIds: string[]): Promise<void> {
+  if (hostIds.length === 0) return;
+  await invoke("account_record_tombstones", { hostIds });
 }

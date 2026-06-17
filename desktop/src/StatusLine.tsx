@@ -1,5 +1,5 @@
 // StatusLine — tmux/vim-style bottom strip (22px).
-// Shows: mode · session counts · sync state · utf-8 · ssh-2.0 · clock.
+// Shows: mode · session counts · utf-8 · ssh-2.0 · clock.
 // Adapted to NexuSSH's actual session model (statuses connecting/connected/
 // closed; no per-session cwd yet).
 
@@ -9,7 +9,6 @@ import { useTranslation } from "react-i18next";
 interface Props {
   sessionCount: number;
   connectingCount: number;
-  syncStatus?: "ok" | "pending" | "off";
   /** Focused session, for the per-session segment. */
   activeHost?: string | null;
   activeStatus?: "connecting" | "connected" | "closed" | null;
@@ -20,7 +19,6 @@ interface Props {
 export function StatusLine({
   sessionCount,
   connectingCount,
-  syncStatus = "off",
   activeHost = null,
   activeStatus = null,
   activeVpn = false,
@@ -71,11 +69,6 @@ export function StatusLine({
       )}
 
       <span className="ml-auto flex items-center gap-4">
-        {syncStatus !== "off" && (
-          <span className={syncStatus === "ok" ? "" : "text-nx-warning"}>
-            sync {syncStatus === "ok" ? "▲" : "⟳"}
-          </span>
-        )}
         <span>utf-8</span>
         <span>ssh-2.0</span>
         <span className="tabular-nums">{now.toLocaleTimeString("en-GB")}</span>

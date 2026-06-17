@@ -10,21 +10,27 @@
 
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { QRCodeSVG } from "qrcode.react";
 import {
   Loader2,
   RefreshCw,
   LogOut,
   Copy,
   Check,
+  CheckCircle2,
   ShieldCheck,
   ShieldPlus,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  ListChecks,
+  Info,
 } from "lucide-react";
 import { ThemePalette } from "./themes";
 import { Section, Row, TextField } from "./primitives";
+import { SyncHostsDialog } from "./SyncHostsDialog";
 import { writeClipboard } from "../clipboard";
+import { listHosts } from "../hosts";
 import {
   accountStatus,
   accountSetServer,
@@ -561,6 +567,80 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
   );
 }
 
+// Unmistakable post-register success state. Shows "Account created" + the
+// recovery key (emergency kit) prominently with a strong save-it-once warning.
+// "I've saved it" logs the user straight into the logged-in view.
+function RegisterSuccess({
+  t,
+  recoveryKey,
+  username,
+  password,
+  onDone,
+}: {
+  t: ThemePalette;
+  recoveryKey: string;
+  username: string;
+  password: string;
+  onDone: () => void;
+}) {
+  const { t: tr } = useTranslation();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function acknowledge() {
+    setBusy(true);
+    setError(null);
+    try {
+      // Land the user logged-in. accountRegister already derived the keys, but
+      // an explicit login guarantees the logged-in status regardless of backend
+      // semantics. If it fails, still proceed — refresh will show actual state.
+      try {
+        await accountLogin(password, username);
+      } catch {
+        /* already-logged-in / no-op backends are fine; refresh reflects truth */
+      }
+      onDone();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div
+        className="rounded border p-4 flex items-center gap-3"
+        style={{
+          background: t.bgPanel,
+          borderColor: t.accent,
+          boxShadow: `0 0 16px ${t.accent}22`,
+        }}
+      >
+        <CheckCircle2 size={22} style={{ color: t.accent }} className="shrink-0" />
+        <div>
+          <div className="font-mono text-sm" style={{ color: t.accent }}>
+            {tr("settings.account.register_success_title")}
+          </div>
+          <div className="font-mono text-[11px] mt-0.5" style={{ color: t.textSoft }}>
+            {tr("settings.account.register_success_sub", { username })}
+          </div>
+        </div>
+      </div>
+
+      <OneTimeSecretPanel
+        t={t}
+        title={tr("settings.account.recovery_title")}
+        warning={tr("settings.account.recovery_warning")}
+        body={recoveryKey}
+        confirmLabel={busy ? tr("settings.account.finishing") : tr("settings.account.recovery_confirm")}
+        onConfirm={acknowledge}
+      />
+      {error && <ErrorLine t={t} msg={error} />}
+    </div>
+  );
+}
+
 function RegisterForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void }) {
   const { t: tr } = useTranslation();
   const [username, setUsername] = useState("");
@@ -579,10 +659,13 @@ function RegisterForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void
     setError(null);
     try {
       const res = await accountRegister(password, username.trim());
-      setPassword("");
-      setConfirm("");
+      // Registration already derived the keys — the user is effectively logged
+      // in. Show the recovery key first; we keep the password in state ONLY to
+      // land the user in the logged-in view on acknowledge, then clear it.
       setRecoveryKey(res.recovery_key);
     } catch (e) {
+      // Do NOT blank the form on failure — keep what they typed so they can fix
+      // it. Clear only the recovery state.
       if (isVaultLockedError(e)) {
         setError(tr("settings.account.vault_locked"));
       } else {
@@ -593,15 +676,19 @@ function RegisterForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void
     }
   }
 
+  // After register: an unmistakable success panel with the recovery key shown
+  // once. Acknowledging logs the user straight in (so they don't drop back to
+  // an empty register form), then scrubs the password from memory.
   if (recoveryKey) {
     return (
-      <OneTimeSecretPanel
+      <RegisterSuccess
         t={t}
-        title={tr("settings.account.recovery_title")}
-        warning={tr("settings.account.recovery_warning")}
-        body={recoveryKey}
-        confirmLabel={tr("settings.account.recovery_confirm")}
-        onConfirm={() => {
+        recoveryKey={recoveryKey}
+        username={username.trim()}
+        password={password}
+        onDone={() => {
+          setPassword("");
+          setConfirm("");
           setRecoveryKey(null);
           onChanged();
         }}
@@ -675,6 +762,25 @@ function LoggedIn({
   onChanged: () => void;
 }) {
   const { t: tr } = useTranslation();
+  const [manageOpen, setManageOpen] = useState(false);
+  // Count of hosts flagged for sync + total, so the UI can explain "0 marked".
+  const [counts, setCounts] = useState<{ marked: number; total: number } | null>(
+    null,
+  );
+
+  async function refreshCounts() {
+    try {
+      const hs = await listHosts();
+      setCounts({ marked: hs.filter((h) => h.sync).length, total: hs.length });
+    } catch {
+      setCounts(null);
+    }
+  }
+
+  useEffect(() => {
+    refreshCounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const lastSync = status.last_sync_at
     ? new Date(status.last_sync_at).toLocaleString()
@@ -682,6 +788,12 @@ function LoggedIn({
 
   return (
     <div className="space-y-6">
+      {manageOpen && (
+        <SyncHostsDialog
+          onClose={() => setManageOpen(false)}
+          onSaved={refreshCounts}
+        />
+      )}
       <Row label={tr("settings.account.account")} hint={tr("settings.account.account_hint")} t={t}>
         <div
           className="rounded border p-4 font-mono text-xs space-y-2 max-w-md"
@@ -712,8 +824,40 @@ function LoggedIn({
         </div>
       </Row>
 
+      <Row
+        label={tr("settings.account.synced_hosts")}
+        hint={tr("settings.account.synced_hosts_hint")}
+        t={t}
+      >
+        <div className="space-y-2">
+          <GhostButton
+            t={t}
+            onClick={() => setManageOpen(true)}
+            icon={<ListChecks size={14} />}
+          >
+            {tr("settings.account.manage_synced_hosts")}
+          </GhostButton>
+          {counts && (
+            <div className="font-mono text-[11px]" style={{ color: t.textMuted }}>
+              {tr("settings.account.sync_count", {
+                selected: counts.marked,
+                total: counts.total,
+              })}
+            </div>
+          )}
+        </div>
+      </Row>
+
       <Row label={tr("settings.account.sync")} hint={tr("settings.account.sync_hint")} t={t}>
-        <SyncControl t={t} onSynced={onChanged} />
+        <SyncControl
+          t={t}
+          onSynced={() => {
+            onChanged();
+            refreshCounts();
+          }}
+          markedCount={counts?.marked ?? null}
+          onManage={() => setManageOpen(true)}
+        />
       </Row>
 
       <Row label={tr("settings.account.two_factor")} hint={tr("settings.account.two_factor_hint")} t={t}>
@@ -727,7 +871,35 @@ function LoggedIn({
   );
 }
 
-function SyncControl({ t, onSynced }: { t: ThemePalette; onSynced: () => void }) {
+// Human summary of a sync run, e.g. "Pushed 3, pulled 1." or "Nothing to do."
+function syncSummary(
+  r: SyncReport,
+  tr: (k: string, o?: Record<string, unknown>) => string,
+): string {
+  const parts: string[] = [];
+  if (r.pushed > 0) parts.push(tr("settings.account.sum_pushed", { n: r.pushed }));
+  if (r.pulled > 0) parts.push(tr("settings.account.sum_pulled", { n: r.pulled }));
+  if (r.deleted_locally > 0)
+    parts.push(tr("settings.account.sum_deleted", { n: r.deleted_locally }));
+  if (parts.length === 0) return tr("settings.account.sum_noop");
+  // Capitalize the joined sentence.
+  const s = parts.join(", ");
+  return s.charAt(0).toUpperCase() + s.slice(1) + ".";
+}
+
+function SyncControl({
+  t,
+  onSynced,
+  markedCount,
+  onManage,
+}: {
+  t: ThemePalette;
+  onSynced: () => void;
+  /** How many hosts are flagged for sync (null = unknown/not loaded yet). */
+  markedCount: number | null;
+  /** Open the "Manage synced hosts" dialog. */
+  onManage: () => void;
+}) {
   const { t: tr } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [report, setReport] = useState<SyncReport | null>(null);
@@ -747,39 +919,84 @@ function SyncControl({ t, onSynced }: { t: ThemePalette; onSynced: () => void })
     }
   }
 
+  // When zero hosts are flagged, a silent "0/0/0" is confusing — explain it and
+  // route the user to the host-selection manager.
+  const nothingMarked = markedCount === 0;
+
   return (
     <div className="space-y-3">
-      <PrimaryButton t={t} onClick={run} busy={busy} icon={<RefreshCw size={14} />}>
-        {busy ? tr("settings.account.syncing") : tr("settings.account.sync_now")}
-      </PrimaryButton>
-      {report && (
+      {nothingMarked && (
         <div
-          className="rounded border p-3 font-mono text-xs space-y-1 max-w-md"
-          style={{ background: t.bgPanel, borderColor: t.border }}
+          className="rounded border p-3 font-mono text-[11px] leading-relaxed flex items-start gap-2 max-w-md"
+          style={{ background: t.bgPanel, borderColor: t.warning + "66", color: t.textSoft }}
         >
-          <div className="flex items-center gap-2 mb-1" style={{ color: t.accent }}>
-            <Check size={12} /> {tr("settings.account.sync_done")}
-          </div>
-          <div className="flex justify-between">
-            <span style={{ color: t.textMuted }}>{tr("settings.account.pulled")}</span>
-            <span style={{ color: t.textPrimary }}>{report.pulled}</span>
-          </div>
-          <div className="flex justify-between">
-            <span style={{ color: t.textMuted }}>{tr("settings.account.pushed")}</span>
-            <span style={{ color: t.textPrimary }}>{report.pushed}</span>
-          </div>
-          <div className="flex justify-between">
-            <span style={{ color: t.textMuted }}>{tr("settings.account.deleted_locally")}</span>
-            <span style={{ color: t.textPrimary }}>{report.deleted_locally}</span>
-          </div>
-          <div className="flex justify-between">
-            <span style={{ color: t.textMuted }}>{tr("settings.account.conflicts")}</span>
-            <span style={{ color: report.conflicts > 0 ? t.warning : t.textPrimary }}>
-              {report.conflicts}
-            </span>
+          <Info size={14} className="mt-0.5 shrink-0" style={{ color: t.warning }} />
+          <div className="space-y-2">
+            <div>{tr("settings.account.no_marked_notice")}</div>
+            <GhostButton t={t} onClick={onManage} icon={<ListChecks size={12} />}>
+              {tr("settings.account.mark_hosts")}
+            </GhostButton>
           </div>
         </div>
       )}
+
+      <PrimaryButton t={t} onClick={run} busy={busy} icon={<RefreshCw size={14} />}>
+        {busy ? tr("settings.account.syncing") : tr("settings.account.sync_now")}
+      </PrimaryButton>
+
+      {report && (
+        <div
+          className="rounded border p-3 font-mono text-xs space-y-2 max-w-md"
+          style={{ background: t.bgPanel, borderColor: t.border }}
+        >
+          <div className="flex items-center gap-2" style={{ color: t.accent }}>
+            <Check size={12} /> {tr("settings.account.sync_done")}
+          </div>
+          <div style={{ color: t.textPrimary }}>{syncSummary(report, tr)}</div>
+
+          {/* Detail breakdown */}
+          <div className="space-y-1 pt-1 border-t" style={{ borderColor: t.border }}>
+            <div className="flex justify-between">
+              <span style={{ color: t.textMuted }}>{tr("settings.account.pulled")}</span>
+              <span style={{ color: t.textPrimary }}>{report.pulled}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: t.textMuted }}>{tr("settings.account.pushed")}</span>
+              <span style={{ color: t.textPrimary }}>{report.pushed}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: t.textMuted }}>{tr("settings.account.deleted_locally")}</span>
+              <span style={{ color: t.textPrimary }}>{report.deleted_locally}</span>
+            </div>
+            <div className="flex justify-between">
+              <span style={{ color: t.textMuted }}>{tr("settings.account.conflicts")}</span>
+              <span style={{ color: report.conflicts > 0 ? t.warning : t.textPrimary }}>
+                {report.conflicts}
+              </span>
+            </div>
+          </div>
+
+          {report.conflicts > 0 && (
+            <div
+              className="flex items-start gap-1.5 pt-1 text-[11px]"
+              style={{ color: t.warning }}
+            >
+              <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+              <span>{tr("settings.account.conflicts_note")}</span>
+            </div>
+          )}
+
+          {/* Even on success, if nothing was marked, nudge toward selection. */}
+          {nothingMarked && report.pushed === 0 && (
+            <div className="pt-1">
+              <GhostButton t={t} onClick={onManage} icon={<ListChecks size={12} />}>
+                {tr("settings.account.mark_hosts")}
+              </GhostButton>
+            </div>
+          )}
+        </div>
+      )}
+
       {error && <ErrorLine t={t} msg={error} />}
     </div>
   );
@@ -868,23 +1085,42 @@ function TwoFactorControl({
     );
   }
 
-  // Enrollment in progress: no QR lib bundled, so we present the secret +
-  // otpauth URL as copyable text with instructions (see report).
+  // Enrollment in progress: scannable QR (qrcode.react) + numbered steps, with
+  // the manual secret as a copyable fallback.
   return (
-    <div className="space-y-3 max-w-md">
-      <div className="font-mono text-[11px] leading-relaxed" style={{ color: t.textMuted }}>
-        {tr("settings.account.totp_instructions")}
+    <div className="space-y-4 max-w-md">
+      {/* Step 1 — scan */}
+      <div className="space-y-2">
+        <div className="font-mono text-[11px] leading-relaxed" style={{ color: t.textSoft }}>
+          <span style={{ color: t.accent }}>1.</span> {tr("settings.account.totp_step1")}
+        </div>
+        <div
+          className="inline-block rounded p-3"
+          style={{ background: "#ffffff", border: `1px solid ${t.border}` }}
+        >
+          <QRCodeSVG value={enroll.otpauth_url} size={168} level="M" marginSize={1} />
+        </div>
+        <div className="font-mono text-[11px]" style={{ color: t.textMuted }}>
+          {tr("settings.account.totp_manual_fallback")}
+        </div>
+        <CopyField t={t} label={tr("settings.account.totp_secret")} value={enroll.secret} />
       </div>
-      <CopyField t={t} label={tr("settings.account.totp_secret")} value={enroll.secret} />
-      <CopyField t={t} label={tr("settings.account.totp_url")} value={enroll.otpauth_url} />
-      <LabeledInput
-        t={t}
-        label={tr("settings.account.totp_code")}
-        value={code}
-        onChange={setCode}
-        placeholder="000000"
-        autoFocus
-      />
+
+      {/* Step 2 — enter code */}
+      <div className="space-y-2">
+        <div className="font-mono text-[11px] leading-relaxed" style={{ color: t.textSoft }}>
+          <span style={{ color: t.accent }}>2.</span> {tr("settings.account.totp_step2")}
+        </div>
+        <LabeledInput
+          t={t}
+          label={tr("settings.account.totp_code")}
+          value={code}
+          onChange={setCode}
+          placeholder="000000"
+          autoFocus
+        />
+      </div>
+
       <div className="flex items-center gap-2">
         <PrimaryButton t={t} onClick={verify} busy={busy} disabled={!code.trim()}>
           {tr("settings.account.totp_verify")}

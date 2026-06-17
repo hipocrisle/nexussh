@@ -4,7 +4,6 @@ import {
   Lock,
   Unlock,
   KeyRound,
-  RefreshCw,
   Settings as SettingsIcon,
   HelpCircle,
   History as HistoryIcon,
@@ -22,9 +21,6 @@ import { LanguageSwitcher } from "./LanguageSwitcher";
 // until first use.
 const VaultPanel = lazy(() =>
   import("./VaultPanel").then((m) => ({ default: m.VaultPanel })),
-);
-const SyncPanel = lazy(() =>
-  import("./SyncPanel").then((m) => ({ default: m.SyncPanel })),
 );
 const SFTPPanel = lazy(() =>
   import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
@@ -81,7 +77,6 @@ import {
   migratePlaintextToVault,
 } from "./secretsMigration";
 import { VaultLockScreen } from "./VaultLockScreen";
-import { SyncStatus, syncStatus } from "./sync";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -629,8 +624,6 @@ function App() {
   // First-run vault nudge — a one-time, dismissible banner offering to set up
   // the vault. Shown only once no vault exists yet (decided after vaultStatus).
   const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
-  const [sync, setSync] = useState<SyncStatus | null>(null);
-  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   // SFTP browser state is PER-TAB: keyed by the focused session id, so a
   // collapsed/open browser belongs to one tab's session and never bleeds onto
   // other tabs. `collapsed` keeps the panel MOUNTED (cwd / selection / in-flight
@@ -958,7 +951,6 @@ function App() {
     createHostOpen,
     settingsOpen,
     shortcutsOpen,
-    syncPanelOpen: false as boolean,
     vaultPanelOpen: false as boolean,
     sftpOpen: false as boolean,
     closers: {} as Record<string, () => void>,
@@ -986,7 +978,6 @@ function App() {
       createHostOpen ||
       settingsOpen ||
       shortcutsOpen ||
-      syncPanelOpen ||
       vaultPanelOpen ||
       !!updatePanel ||
       !!sftpEntry;
@@ -1003,13 +994,11 @@ function App() {
     createHostOpen,
     settingsOpen,
     shortcutsOpen,
-    syncPanelOpen,
     vaultPanelOpen,
     updatePanel,
     sftpEntry,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
-  backRef.current.syncPanelOpen = syncPanelOpen;
   backRef.current.vaultPanelOpen = vaultPanelOpen;
   (backRef.current as { updatePanelOpen?: boolean }).updatePanelOpen =
     !!updatePanel;
@@ -1029,7 +1018,6 @@ function App() {
       else if (b.editHost) setEditHost(null);
       else if (b.createHostOpen) setCreateHostOpen(false);
       else if (b.pickerOpen) setPickerOpen(false);
-      else if (b.syncPanelOpen) setSyncPanelOpen(false);
       else if (b.vaultPanelOpen) setVaultPanelOpen(false);
       else if (b.mobileDrawerOpen) setMobileDrawerOpen(false);
     };
@@ -1595,7 +1583,6 @@ function App() {
   // detect plaintext passwords that need migrating into the vault.
   const [migrationPending, setMigrationPending] = useState(false);
   useEffect(() => {
-    syncStatus().then(setSync).catch(() => {});
     // Delete leftover session recordings (plaintext SSH output) from old
     // versions — silent, one-shot, no-op once gone.
     invoke<number>("purge_legacy_sessions").catch(() => {});
@@ -3151,12 +3138,6 @@ function App() {
           onDrawer={() => setMobileDrawerOpen((v) => !v)}
           items={[
             {
-              label: "sync",
-              onClick: () => setSyncPanelOpen(true),
-              warn: sync?.configured && !sync?.unlocked,
-              active: sync?.unlocked,
-            },
-            {
               label: vault?.configured ? "vault" : t("vault.header_enable"),
               onClick: () => {
                 if (!vault?.configured) markVaultPromptSeen();
@@ -3259,15 +3240,6 @@ function App() {
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">
-          <HeaderButton
-            icon={<RefreshCw size={12} />}
-            onClick={() => setSyncPanelOpen(true)}
-            title={t("sync.open_panel")}
-            active={sync?.unlocked}
-            warn={sync?.configured && !sync?.unlocked}
-          >
-            sync
-          </HeaderButton>
           <HeaderButton
             icon={
               vault?.unlocked ? (
@@ -3511,7 +3483,6 @@ function App() {
           connectingCount={
             allSessions.filter((s) => s.status === "connecting").length
           }
-          syncStatus={sync?.unlocked ? "ok" : sync?.configured ? "pending" : "off"}
           activeHost={
             focusedSession
               ? `${focusedSession.host.user}@${focusedSession.host.host}`
@@ -3546,12 +3517,6 @@ function App() {
               setVaultPanelOpen(false);
               lockApp();
             }}
-          />
-        )}
-        {syncPanelOpen && (
-          <SyncPanel
-            onClose={() => setSyncPanelOpen(false)}
-            onChange={setSync}
           />
         )}
         {sftpEntry && activeId && (

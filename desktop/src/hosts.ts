@@ -7,7 +7,6 @@
 
 import { load, Store } from "@tauri-apps/plugin-store";
 import { invoke } from "@tauri-apps/api/core";
-import { syncStatus, syncPush } from "./sync";
 import { vaultGet, vaultSet, vaultDelete, vaultStatus, vaultKeys } from "./vault";
 import type { PortForward } from "./tunnel";
 
@@ -181,17 +180,6 @@ export async function listHosts(): Promise<HostRecord[]> {
   return await readAll();
 }
 
-async function maybePushSync() {
-  try {
-    const s = await syncStatus();
-    if (s.configured && s.unlocked) {
-      await syncPush();
-    }
-  } catch {
-    /* silent — sync errors should not block local CRUD */
-  }
-}
-
 /** Fire an event so subscribers (Sidebar, TabPicker, …) re-read after any
  *  host-list mutation. Two channels:
  *   - a same-window DOM CustomEvent (instant, no IPC), and
@@ -246,7 +234,6 @@ export async function saveHost(rec: HostRecord): Promise<void> {
   else all.push(rec);
   await writeAll(all);
   notifyHostsChanged();
-  maybePushSync();
 }
 
 /** Insert/update MANY hosts with a SINGLE read + write + sync push. Used by bulk
@@ -266,7 +253,6 @@ export async function saveHostsBatch(recs: HostRecord[]): Promise<void> {
   }
   await writeAll(all);
   notifyHostsChanged();
-  maybePushSync();
 }
 
 export async function deleteHost(id: string): Promise<void> {
@@ -274,7 +260,6 @@ export async function deleteHost(id: string): Promise<void> {
   const next = all.filter((h) => h.id !== id);
   await writeAll(next);
   notifyHostsChanged();
-  maybePushSync();
 }
 
 export async function bumpLastUsed(id: string): Promise<void> {
@@ -342,7 +327,6 @@ export async function deleteFolderWithHosts(name: string): Promise<void> {
   await writeAll(next);
   removeKnownFolder(name);
   notifyHostsChanged();
-  maybePushSync();
 }
 
 /** Wipe EVERY host and every remembered (empty) folder. One write. */
@@ -350,7 +334,6 @@ export async function deleteAllHosts(): Promise<void> {
   await writeAll([]);
   clearKnownFolders();
   notifyHostsChanged();
-  maybePushSync();
 }
 
 /** Move a single host into a folder. Pass null to ungroup. */
@@ -381,7 +364,6 @@ export async function reorderHosts(
   });
   await writeAll(all);
   notifyHostsChanged();
-  maybePushSync();
 }
 
 // --- Empty folders ---------------------------------------------------------

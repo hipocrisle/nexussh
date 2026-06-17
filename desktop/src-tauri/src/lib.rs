@@ -12,7 +12,6 @@ mod sftp;
 mod ssh;
 mod ssh_config;
 mod sshlog;
-mod sync;
 mod tunnel;
 mod updater;
 mod vault;
@@ -217,7 +216,6 @@ pub fn run() {
         .manage(Arc::new(sftp::CancelRegistry::new()))
         .manage(Arc::new(tunnel::TunnelManager::new()))
         .manage(vault::VaultState::default())
-        .manage(sync::SyncState::default())
         .manage(account::AccountState::default())
         .manage(history::HistoryState::new())
         .setup(|app| {
@@ -293,12 +291,6 @@ pub fn run() {
             cleanup::purge_legacy_sessions,
             bundle::bundle_export,
             bundle::bundle_import,
-            sync::sync_set_config,
-            sync::sync_status,
-            sync::sync_unlock,
-            sync::sync_lock,
-            sync::sync_push,
-            sync::sync_pull,
             account::account_register,
             account::account_login,
             account::account_logout,

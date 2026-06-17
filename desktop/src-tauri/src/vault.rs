@@ -447,6 +447,39 @@ pub fn put(state: &VaultState, key: &str, value: String) -> Result<(), VaultErro
     persist(u)
 }
 
+/// True when the vault is currently unlocked (DEK held in memory). Used by the
+/// account-sync layer to gate operations that read/write secrets.
+pub fn is_unlocked(state: &VaultState) -> bool {
+    state.inner.lock().unwrap().is_some()
+}
+
+/// Insert/overwrite a value and persist (account-sync alias for [`put`], named
+/// for symmetry with [`get_opt`]/[`delete_key`]). Errors if the vault is locked.
+pub fn put_key(state: &VaultState, key: &str, value: String) -> Result<(), VaultError> {
+    put(state, key, value)
+}
+
+/// Delete a key and persist. No-op (Ok) if the key is absent. Errors only if the
+/// vault is locked. Used by the account-sync layer to apply remote tombstones.
+pub fn delete_key(state: &VaultState, key: &str) -> Result<(), VaultError> {
+    let mut guard = state.inner.lock().unwrap();
+    let u = guard.as_mut().ok_or(VaultError::Locked)?;
+    if u.secrets.remove(key).is_some() {
+        persist(u)?;
+    }
+    Ok(())
+}
+
+/// Snapshot of all vault keys (sorted), for the account-sync push pass. Errors if
+/// the vault is locked.
+pub fn list_keys(state: &VaultState) -> Result<Vec<String>, VaultError> {
+    let guard = state.inner.lock().unwrap();
+    let u = guard.as_ref().ok_or(VaultError::Locked)?;
+    let mut keys: Vec<String> = u.secrets.keys().cloned().collect();
+    keys.sort();
+    Ok(keys)
+}
+
 /// Export the unlocked vault's data key as its age secret string. Used ONLY by
 /// the biometric enroll flow to hand the key to the Android Keystore for
 /// hardware-backed, fingerprint-gated wrapping. Errors if locked.

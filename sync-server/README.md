@@ -8,8 +8,9 @@ binary with SQLite storage.
 keys, or any item plaintext. The account identifier is the **username**.
 
 Phase 0 implements accounts, authentication, TOTP 2FA, sessions, and the full
-DB schema. The per-item encrypted store (the `items` table) is created now but
-its endpoints land in Phase 1.
+DB schema. **Phase 1** adds the per-item encrypted store endpoints
+(`GET`/`POST /v1/items`): delta pull, batch push with optimistic concurrency on
+`rev`, and tombstones. See **Item store (Phase 1)** below.
 
 ## Build & run
 
@@ -90,8 +91,91 @@ Authenticated (`Authorization: Bearer <token>`):
 | `POST /v1/totp/enroll`  | `{}`         | `200 {"secret","otpauth_url"}` (stores secret, `totp_enabled` stays 0) |
 | `POST /v1/totp/verify`  | `{code}`     | `200 {"totp_enabled":true,"recovery_codes":[...10...]}`        |
 | `POST /v1/totp/disable` | `{code}`     | `200 {"totp_enabled":false}` (accepts a TOTP code or a recovery code) |
+| `GET  /v1/items`        | query `?since=<rev>` | `200 {"items":[...],"latest_rev":<rev>}` — delta pull (see below) |
+| `POST /v1/items`        | `{changes:[...]}`    | `200 {"results":[...],"latest_rev":<rev>}` — batch push w/ CAS · `400`/`413` on bad/oversize input |
 
 Missing/invalid/expired tokens on authed routes → `401`.
+
+## Item store (Phase 1)
+
+The encrypted item store keeps each item as an opaque, client-encrypted
+`ciphertext` blob plus a strictly monotonic per-user revision (`rev`). The
+server never decrypts; `rev` lets devices pull only what they have not seen.
+
+### Revisions
+
+Every accepted write (insert, update, or tombstone) is stamped with the **next**
+value of a per-user counter (`user_rev`). `rev` is therefore strictly increasing
+across **all** of a user's items, not per-item. The counter is bumped inside the
+same SQLite transaction as the write, via an `UPSERT ... RETURNING`, so
+concurrent pushes are serialized and can never be handed the same `rev`.
+
+### `GET /v1/items?since=<rev>`
+
+Delta pull. Returns every item with `rev > since`, ordered by `rev` ascending.
+`since=0` (the default) is a full pull. **Tombstones are included** (so other
+devices learn of deletions); a tombstone has `deleted: true` and `ciphertext: ""`.
+
+```json
+{
+  "items": [
+    { "item_id": "h1", "type": "host", "ciphertext": "<b64>",
+      "rev": 7, "updated_at": 1717000000000, "deleted": false },
+    { "item_id": "h2", "type": "host", "ciphertext": "",
+      "rev": 9, "updated_at": 1717000050000, "deleted": true }
+  ],
+  "latest_rev": 9
+}
+```
+
+A page is capped at **1000 items**. `latest_rev` is the user's current
+high-water mark (not just this page's max), so if a page is truncated the client
+re-pulls with `since` = the highest `rev` it actually received until it catches
+up to `latest_rev`.
+
+### `POST /v1/items` (batch push with optimistic concurrency)
+
+```json
+{
+  "changes": [
+    { "item_id": "h1", "type": "host", "ciphertext": "<b64>",
+      "updated_at": 1717000000000, "deleted": false, "base_rev": 0 }
+  ]
+}
+```
+
+`base_rev` is the `rev` the client last saw for that item (`0` for a new item).
+Each change is resolved against the stored row (all changes apply atomically in
+one per-user transaction):
+
+- **new** — item does not exist and `base_rev == 0` → insert with a freshly
+  bumped `rev` → `{ "item_id", "rev", "status": "ok" }`.
+- **update** — stored `rev == base_rev` → update ciphertext/updated_at/deleted
+  with a freshly bumped `rev` → `{ "item_id", "rev", "status": "ok" }`.
+- **conflict** — stored `rev != base_rev` (or the item exists but the client
+  sent `base_rev == 0`): the change is **not written**; the server's
+  authoritative copy is echoed back so the client can resolve
+  (last-writer-wins by `updated_at`) and retry:
+
+  ```json
+  { "item_id": "h1", "status": "conflict",
+    "server": { "item_id", "type", "ciphertext", "rev", "updated_at", "deleted" } }
+  ```
+
+Response:
+
+```json
+{ "results": [ /* one per change, in order */ ], "latest_rev": <new max rev> }
+```
+
+**Deletion is a push with `deleted: true`** (empty ciphertext). The row is kept
+as a tombstone with a bumped `rev` so other devices pull the deletion. There is
+no separate delete endpoint. (Purging old tombstones is a future option.)
+
+**Validation:** `type` must be one of the known item types
+(`host`, `host-password`, `known_host`, `ssh-key`, `setting`, `folder`);
+decoded `ciphertext` ≤ **1 MiB/item**; ≤ **500 changes/batch**. Violations are
+rejected (`400` bad input, `413` oversize) **before** anything is written.
 
 ### Sessions
 
@@ -197,9 +281,17 @@ CREATE TABLE user_rev (
   recovery code both succeed; reused recovery code fails
 - authed routes reject missing/garbage tokens
 - health check
+- item store: full pull empty; push new → pull-since returns them with revs;
+  update with correct `base_rev` bumps the rev; stale `base_rev` → conflict that
+  echoes the server version (no write); tombstone push appears in pull-since with
+  `deleted:true`; rev strictly increases across pushes; pull/push without a token
+  → `401`; oversize ciphertext / oversize batch / unknown type / non-base64
+  ciphertext are rejected
 
-## Phase 1 (next)
+## Phase 1 (done)
 
-Implement `items` endpoints: pull-since-rev (delta), push-with-CAS on `rev`
-(using `user_rev` as the monotonic source), and tombstones (`deleted`). The
-schema above is already in place.
+`items` endpoints implemented: pull-since-rev delta (`GET /v1/items?since=`),
+batch push-with-CAS on `rev` using `user_rev` as the monotonic source
+(`POST /v1/items`), and tombstones (delete = push with `deleted:true`). See the
+**Item store (Phase 1)** section above for the full request/response shapes and
+conflict/rev semantics.

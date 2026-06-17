@@ -52,7 +52,7 @@ aes-gcm = "0.10.3"
 argon2 = "0.5.3"
 base64 = "0.22.1"
 tokio-socks = "0.5.2"
-ureq = "2.12"
+ureq = { version = "2.12", features = ["json"] }
 sha2 = "0.10"
 
 # --- Account-sync (Phase 0) client-side E2E crypto (account_crypto.rs) ---

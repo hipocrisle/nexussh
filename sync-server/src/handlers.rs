@@ -35,7 +35,7 @@ fn now() -> i64 {
 pub struct ApiError(StatusCode, serde_json::Value);
 
 impl ApiError {
-    fn new(code: StatusCode, msg: &str) -> Self {
+    pub fn new(code: StatusCode, msg: &str) -> Self {
         ApiError(code, json!({ "error": msg }))
     }
 }
@@ -48,7 +48,7 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-fn db_err<E: std::fmt::Display>(e: E) -> ApiError {
+pub fn db_err<E: std::fmt::Display>(e: E) -> ApiError {
     tracing::error!("db error: {}", e);
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }

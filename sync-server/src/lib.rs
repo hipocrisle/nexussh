@@ -8,6 +8,7 @@
 pub mod crypto;
 pub mod db;
 pub mod handlers;
+pub mod items;
 pub mod ratelimit;
 
 use axum::{
@@ -33,6 +34,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/totp/enroll", post(handlers::totp_enroll))
         .route("/v1/totp/verify", post(handlers::totp_verify))
         .route("/v1/totp/disable", post(handlers::totp_disable))
+        .route("/v1/items", get(items::pull_items).post(items::push_items))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::require_auth,

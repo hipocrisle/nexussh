@@ -206,3 +206,228 @@ async fn health_ok() {
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["status"], "ok");
 }
+
+// ---------------------------------------------------------------------------
+// Phase-1 item store: delta pull + push with CAS/conflict + tombstones.
+// ---------------------------------------------------------------------------
+
+/// Register a user and return a valid session token.
+async fn token_for(state: &AppState, username: &str) -> String {
+    let (st, _) = call(state, "POST", "/v1/register", None,
+        register_body(username, &format!("AUTH_{username}"))).await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (st, login) = call(state, "POST", "/v1/login", None,
+        json!({"username": username, "auth_hash": format!("AUTH_{username}")})).await;
+    assert_eq!(st, StatusCode::OK);
+    login["token"].as_str().unwrap().to_string()
+}
+
+/// base64("ct:<tag>") so each ciphertext is a distinct opaque blob.
+fn ct(tag: &str) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(format!("ct:{tag}").as_bytes())
+}
+
+#[tokio::test]
+async fn items_full_pull_empty() {
+    let state = test_state();
+    let token = token_for(&state, "ivy").await;
+
+    let (st, body) = call(&state, "GET", "/v1/items?since=0", Some(&token), Value::Null).await;
+    assert_eq!(st, StatusCode::OK, "body: {body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 0);
+    assert_eq!(body["latest_rev"], 0);
+}
+
+#[tokio::test]
+async fn items_push_new_then_pull_since() {
+    let state = test_state();
+    let token = token_for(&state, "jack").await;
+
+    // Two brand-new items (base_rev = 0).
+    let (st, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [
+            {"item_id":"h1","type":"host","ciphertext": ct("h1"),"updated_at":100,"deleted":false,"base_rev":0},
+            {"item_id":"h2","type":"host","ciphertext": ct("h2"),"updated_at":101,"deleted":false,"base_rev":0}
+        ]
+    })).await;
+    assert_eq!(st, StatusCode::OK, "push body: {body}");
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "ok");
+    assert_eq!(results[1]["status"], "ok");
+    let r1 = results[0]["rev"].as_i64().unwrap();
+    let r2 = results[1]["rev"].as_i64().unwrap();
+    assert!(r2 > r1, "revs must be strictly increasing: {r1} then {r2}");
+    assert_eq!(body["latest_rev"], r2);
+
+    // Full pull returns both.
+    let (st, body) = call(&state, "GET", "/v1/items?since=0", Some(&token), Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["item_id"], "h1");
+    assert_eq!(items[0]["ciphertext"], ct("h1"));
+    assert_eq!(items[0]["deleted"], false);
+    assert_eq!(items[0]["rev"], r1);
+    assert_eq!(items[1]["rev"], r2);
+
+    // Delta pull since r1 returns only h2.
+    let (st, body) = call(&state, "GET", &format!("/v1/items?since={r1}"), Some(&token), Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["item_id"], "h2");
+}
+
+#[tokio::test]
+async fn items_update_with_correct_base_rev_bumps() {
+    let state = test_state();
+    let token = token_for(&state, "kim").await;
+
+    let (_, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v1"),"updated_at":100,"deleted":false,"base_rev":0}]
+    })).await;
+    let rev1 = body["results"][0]["rev"].as_i64().unwrap();
+
+    // Update with the rev we just saw → ok, rev bumps.
+    let (st, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v2"),"updated_at":200,"deleted":false,"base_rev":rev1}]
+    })).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["results"][0]["status"], "ok");
+    let rev2 = body["results"][0]["rev"].as_i64().unwrap();
+    assert!(rev2 > rev1, "update must bump rev: {rev1} -> {rev2}");
+
+    // Pull shows the updated ciphertext at the new rev.
+    let (_, body) = call(&state, "GET", "/v1/items?since=0", Some(&token), Value::Null).await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["ciphertext"], ct("v2"));
+    assert_eq!(items[0]["rev"], rev2);
+}
+
+#[tokio::test]
+async fn items_stale_base_rev_conflicts_and_returns_server() {
+    let state = test_state();
+    let token = token_for(&state, "leo").await;
+
+    let (_, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v1"),"updated_at":100,"deleted":false,"base_rev":0}]
+    })).await;
+    let rev1 = body["results"][0]["rev"].as_i64().unwrap();
+
+    // First update (correct base_rev) → ok, moves server ahead.
+    let (_, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v2"),"updated_at":200,"deleted":false,"base_rev":rev1}]
+    })).await;
+    let rev2 = body["results"][0]["rev"].as_i64().unwrap();
+
+    // Second client still thinks base_rev == rev1 → CONFLICT, no write, server echoed.
+    let (st, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v3"),"updated_at":150,"deleted":false,"base_rev":rev1}]
+    })).await;
+    assert_eq!(st, StatusCode::OK);
+    let res = &body["results"][0];
+    assert_eq!(res["status"], "conflict");
+    assert!(res["rev"].is_null());
+    let server = &res["server"];
+    assert_eq!(server["rev"], rev2);
+    assert_eq!(server["ciphertext"], ct("v2"));
+    assert_eq!(server["updated_at"], 200);
+
+    // No write happened: latest_rev unchanged from rev2.
+    assert_eq!(body["latest_rev"], rev2);
+}
+
+#[tokio::test]
+async fn items_tombstone_appears_in_pull() {
+    let state = test_state();
+    let token = token_for(&state, "mia").await;
+
+    let (_, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext": ct("v1"),"updated_at":100,"deleted":false,"base_rev":0}]
+    })).await;
+    let rev1 = body["results"][0]["rev"].as_i64().unwrap();
+
+    // Delete = push with deleted:true (empty ciphertext).
+    let (st, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"h1","type":"host","ciphertext":"","updated_at":300,"deleted":true,"base_rev":rev1}]
+    })).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["results"][0]["status"], "ok");
+    let rev2 = body["results"][0]["rev"].as_i64().unwrap();
+    assert!(rev2 > rev1);
+
+    // Tombstone is included in pull-since with deleted=true and empty ciphertext.
+    let (_, body) = call(&state, "GET", &format!("/v1/items?since={rev1}"), Some(&token), Value::Null).await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["item_id"], "h1");
+    assert_eq!(items[0]["deleted"], true);
+    assert_eq!(items[0]["ciphertext"], "");
+    assert_eq!(items[0]["rev"], rev2);
+}
+
+#[tokio::test]
+async fn items_rev_strictly_increases_across_pushes() {
+    let state = test_state();
+    let token = token_for(&state, "ned").await;
+
+    let mut last = 0i64;
+    for i in 0..5 {
+        let (st, body) = call(&state, "POST", "/v1/items", Some(&token), json!({
+            "changes": [{"item_id": format!("h{i}"),"type":"host","ciphertext": ct(&format!("v{i}")),"updated_at": 100 + i,"deleted":false,"base_rev":0}]
+        })).await;
+        assert_eq!(st, StatusCode::OK);
+        let rev = body["results"][0]["rev"].as_i64().unwrap();
+        assert!(rev > last, "rev must strictly increase: {last} -> {rev}");
+        last = rev;
+        assert_eq!(body["latest_rev"], rev);
+    }
+}
+
+#[tokio::test]
+async fn items_require_auth() {
+    let state = test_state();
+    // No token → 401 on both pull and push.
+    let (st, _) = call(&state, "GET", "/v1/items?since=0", None, Value::Null).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, _) = call(&state, "POST", "/v1/items", None, json!({"changes": []})).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn items_oversize_and_bad_input_rejected() {
+    let state = test_state();
+    let token = token_for(&state, "ona").await;
+
+    // Oversize ciphertext (> 1 MiB decoded) → 413.
+    use base64::Engine as _;
+    let big = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 1024 * 1024 + 1]);
+    let (st, _) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"big","type":"host","ciphertext": big,"updated_at":1,"deleted":false,"base_rev":0}]
+    })).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Too many changes in a batch → 413.
+    let mut changes = Vec::new();
+    for i in 0..501 {
+        changes.push(json!({"item_id": format!("h{i}"),"type":"host","ciphertext": ct("x"),"updated_at":1,"deleted":false,"base_rev":0}));
+    }
+    let (st, _) = call(&state, "POST", "/v1/items", Some(&token), json!({"changes": changes})).await;
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Unknown type → 400.
+    let (st, _) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"x","type":"bogus","ciphertext": ct("x"),"updated_at":1,"deleted":false,"base_rev":0}]
+    })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // Non-base64 ciphertext → 400.
+    let (st, _) = call(&state, "POST", "/v1/items", Some(&token), json!({
+        "changes": [{"item_id":"x","type":"host","ciphertext":"!!!not base64!!!","updated_at":1,"deleted":false,"base_rev":0}]
+    })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}

@@ -1,3 +1,4 @@
+mod account;
 mod account_crypto;
 mod android_keepalive;
 mod android_updater;
@@ -217,6 +218,7 @@ pub fn run() {
         .manage(Arc::new(tunnel::TunnelManager::new()))
         .manage(vault::VaultState::default())
         .manage(sync::SyncState::default())
+        .manage(account::AccountState::default())
         .manage(history::HistoryState::new())
         .setup(|app| {
             // Detect the compositor ONCE here — `.setup()` runs on the main GTK
@@ -297,6 +299,14 @@ pub fn run() {
             sync::sync_lock,
             sync::sync_push,
             sync::sync_pull,
+            account::account_register,
+            account::account_login,
+            account::account_logout,
+            account::account_status,
+            account::account_set_server,
+            account::account_totp_enroll,
+            account::account_totp_verify,
+            account::account_sync_now,
             updater::check_for_update,
             updater::install_update,
             android_updater::android_install_apk,

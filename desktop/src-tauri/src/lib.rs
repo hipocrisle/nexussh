@@ -301,6 +301,7 @@ pub fn run() {
             account::account_set_server,
             account::account_totp_enroll,
             account::account_totp_verify,
+            account::account_totp_disable,
             account::account_sync_now,
             account::account_record_tombstones,
             updater::check_for_update,

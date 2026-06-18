@@ -135,6 +135,11 @@ export async function accountTotpVerify(code: string): Promise<string[]> {
   return await invoke<string[]>("account_totp_verify", { code });
 }
 
+/** Disable TOTP 2FA — needs a current authenticator (or recovery) code. */
+export async function accountTotpDisable(code: string): Promise<void> {
+  await invoke("account_totp_disable", { code });
+}
+
 /** Run a full sync now (pull-then-push, last-writer-wins). Requires logged in +
  *  vault unlocked. */
 export async function accountSyncNow(): Promise<SyncReport> {

@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   ShieldCheck,
   ShieldPlus,
+  ShieldOff,
   AlertTriangle,
   ChevronDown,
   ChevronRight,
@@ -46,6 +47,7 @@ import {
   accountDelete,
   accountTotpEnroll,
   accountTotpVerify,
+  accountTotpDisable,
   accountSyncNow,
   TOTP_REQUIRED_ERROR,
   type AccountStatus,
@@ -467,6 +469,7 @@ function LabeledInput({
   type = "text",
   placeholder,
   autoFocus,
+  onEnter,
 }: {
   t: ThemePalette;
   label: string;
@@ -475,6 +478,7 @@ function LabeledInput({
   type?: string;
   placeholder?: string;
   autoFocus?: boolean;
+  onEnter?: () => void;
 }) {
   return (
     <div>
@@ -489,6 +493,12 @@ function LabeledInput({
         type={type}
         autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && onEnter) {
+            e.preventDefault();
+            onEnter();
+          }
+        }}
         placeholder={placeholder}
         className="w-full px-3 py-2 rounded outline-none border text-sm font-mono"
         style={{ background: t.bgPanel, borderColor: t.border, color: t.textPrimary }}
@@ -553,6 +563,7 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
         label={tr("settings.account.username")}
         value={username}
         onChange={setUsername}
+        onEnter={submit}
         placeholder={tr("settings.account.username_ph")}
         autoFocus
       />
@@ -561,6 +572,7 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
         label={tr("settings.account.password")}
         value={password}
         onChange={setPassword}
+        onEnter={submit}
         type="password"
         placeholder={tr("settings.account.password_ph")}
       />
@@ -570,6 +582,7 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
           label={tr("settings.account.totp_code")}
           value={totp}
           onChange={setTotp}
+          onEnter={submit}
           placeholder="000000"
           autoFocus
         />
@@ -1202,6 +1215,23 @@ function TwoFactorControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [disabling, setDisabling] = useState(false);
+
+  async function disable() {
+    if (!code.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await accountTotpDisable(code.trim());
+      setCode("");
+      setDisabling(false);
+      onChanged();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function begin() {
     setBusy(true);
@@ -1250,11 +1280,44 @@ function TwoFactorControl({
 
   if (enabled) {
     return (
-      <div
-        className="font-mono text-xs inline-flex items-center gap-2 px-3 py-2 rounded border"
-        style={{ background: t.bgPanel, borderColor: t.accent + "66", color: t.accent }}
-      >
-        <ShieldCheck size={14} /> {tr("settings.account.two_factor_on")}
+      <div className="space-y-2">
+        <div
+          className="font-mono text-xs inline-flex items-center gap-2 px-3 py-2 rounded border"
+          style={{ background: t.bgPanel, borderColor: t.accent + "66", color: t.accent }}
+        >
+          <ShieldCheck size={14} /> {tr("settings.account.two_factor_on")}
+        </div>
+        {!disabling ? (
+          <div>
+            <GhostButton t={t} onClick={() => { setDisabling(true); setError(null); }} icon={<ShieldOff size={14} />}>
+              {tr("settings.account.disable_2fa")}
+            </GhostButton>
+          </div>
+        ) : (
+          <div className="space-y-2 max-w-md">
+            <div className="font-mono text-[11px]" style={{ color: t.textMuted }}>
+              {tr("settings.account.disable_2fa_hint")}
+            </div>
+            <LabeledInput
+              t={t}
+              label={tr("settings.account.totp_code")}
+              value={code}
+              onChange={setCode}
+              onEnter={disable}
+              placeholder="000000"
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <PrimaryButton t={t} onClick={disable} busy={busy} disabled={!code.trim()}>
+                {tr("settings.account.disable_2fa")}
+              </PrimaryButton>
+              <GhostButton t={t} onClick={() => { setDisabling(false); setCode(""); setError(null); }}>
+                {tr("settings.account.cancel")}
+              </GhostButton>
+            </div>
+          </div>
+        )}
+        {error && <ErrorLine t={t} msg={error} />}
       </div>
     );
   }

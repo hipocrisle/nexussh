@@ -642,6 +642,8 @@ const ru = {
       mark_hosts: "Выбрать хосты",
       // 2fa enable
       enable_2fa: "Включить 2FA",
+      disable_2fa: "Отключить 2FA",
+      disable_2fa_hint: "Введите текущий код из приложения (или код восстановления), чтобы отключить 2FA.",
       totp_step1: "Откройте приложение-аутентификатор (Google Authenticator, Aegis и т.п.) и отсканируйте этот QR-код.",
       totp_manual_fallback: "Не можете отсканировать? Введите секрет вручную:",
       totp_step2: "Введите 6-значный код из приложения.",
@@ -1598,6 +1600,8 @@ const en = {
       mark_hosts: "Choose hosts",
       // 2fa enable
       enable_2fa: "Enable 2FA",
+      disable_2fa: "Disable 2FA",
+      disable_2fa_hint: "Enter a current authenticator code (or a recovery code) to turn 2FA off.",
       totp_step1: "Open your authenticator app (Google Authenticator, Aegis, …) and scan this QR code.",
       totp_manual_fallback: "Can't scan? Enter the secret manually:",
       totp_step2: "Enter the 6-digit code from the app.",

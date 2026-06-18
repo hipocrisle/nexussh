@@ -1114,6 +1114,27 @@ pub async fn account_totp_verify(
     Ok(codes)
 }
 
+/// Disable TOTP 2FA. Requires a current authenticator code (or a recovery code)
+/// to confirm — the server verifies it before clearing the secret.
+#[tauri::command]
+pub async fn account_totp_disable(
+    app: AppHandle,
+    state: State<'_, AccountState>,
+    code: String,
+) -> Result<()> {
+    let (token, server_url) = session_token(&app, &state)?;
+    let body = serde_json::json!({ "code": code.trim() });
+    tokio::task::spawn_blocking(move || {
+        http_post_json(&server_url, "/v1/totp/disable", Some(&token), &body)
+    })
+    .await
+    .map_err(|e| AccountError::Other(e.to_string()))??;
+    let mut cfg = load_config(&app)?;
+    cfg.totp_enabled = false;
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
 /// Fetch the live bearer token + server URL, or error if not logged in.
 fn session_token(app: &AppHandle, state: &State<'_, AccountState>) -> Result<(String, String)> {
     let token = {

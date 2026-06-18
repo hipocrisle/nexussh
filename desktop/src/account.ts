@@ -9,6 +9,7 @@
 // so the session survives restarts without re-entering the sync password.
 
 import { invoke } from "@tauri-apps/api/core";
+import { notifyHostsChanged } from "./hosts";
 
 /** Snapshot of account + sync state (no secrets). */
 export interface AccountStatus {
@@ -79,11 +80,17 @@ export async function accountLogin(
   username: string,
   totp?: string,
 ): Promise<LoginResult> {
-  return await invoke<LoginResult>("account_login", { password, username, totp });
+  const res = await invoke<LoginResult>("account_login", { password, username, totp });
+  // Login flips the cloud-off marker and a first sync may follow — refresh tree.
+  notifyHostsChanged();
+  return res;
 }
 
 export async function accountLogout(): Promise<void> {
   await invoke("account_logout");
+  // Hosts stay (no deletion); the sidebar re-reads to show the "not syncing"
+  // marker on the Cloud section instead of looking like nothing changed.
+  notifyHostsChanged();
 }
 
 /** Begin TOTP enrollment — returns the shared secret + otpauth:// URL for a QR
@@ -100,7 +107,12 @@ export async function accountTotpVerify(code: string): Promise<string[]> {
 /** Run a full sync now (pull-then-push, last-writer-wins). Requires logged in +
  *  vault unlocked. */
 export async function accountSyncNow(): Promise<SyncReport> {
-  return await invoke<SyncReport>("account_sync_now");
+  const report = await invoke<SyncReport>("account_sync_now");
+  // Sync may have pulled new hosts / applied tombstones into the Rust store.
+  // Nudge the UI to re-read so the tree updates WITHOUT a client restart
+  // (fixes: synced node only appeared after restart).
+  notifyHostsChanged();
+  return report;
 }
 
 /** Record explicit deletion tombstones for hosts the user un-synced or deleted.

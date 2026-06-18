@@ -192,7 +192,7 @@ const HOSTS_CHANGED_EVENT = "nexussh:hosts-changed";
 const HAS_TAURI =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-function notifyHostsChanged() {
+export function notifyHostsChanged() {
   window.dispatchEvent(new CustomEvent(HOSTS_CHANGED_EVENT));
   if (HAS_TAURI) {
     import("@tauri-apps/api/event")

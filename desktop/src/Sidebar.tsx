@@ -48,6 +48,7 @@ import {
   onHostsChanged,
 } from "./hosts";
 import { HostDialog } from "./HostDialog";
+import { accountStatus } from "./account";
 import { MenuItem } from "./ContextMenu";
 import { askPrompt } from "./dialogs";
 import { FolderPicker } from "./FolderPicker";
@@ -174,7 +175,19 @@ export function Sidebar({
     localStorage.setItem(SORT_MODE_LS, next);
   }
 
-  const reload = useCallback(async () => setHosts(await listHosts()), []);
+  // Cloud section keeps showing synced hosts even when signed out (no data
+  // loss); we just flag that they're not actually syncing right now.
+  const [cloudOff, setCloudOff] = useState(false);
+
+  const reload = useCallback(async () => {
+    setHosts(await listHosts());
+    try {
+      const st = await accountStatus();
+      setCloudOff(st.configured && !st.logged_in);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     reload();
@@ -772,6 +785,7 @@ export function Sidebar({
     icon: React.ReactNode,
     ungroupedKeyPrefix: string,
     accent: boolean,
+    badge?: string,
   ): React.ReactNode => {
     const ungroupedNode = makeUngroupedNode(tree.ungrouped, ungroupedKeyPrefix);
     return (
@@ -784,6 +798,14 @@ export function Sidebar({
         >
           {icon}
           <span>{label}</span>
+          {badge && (
+            <span
+              className="ml-1.5 normal-case tracking-normal text-nx-muted/80 lowercase"
+              title={badge}
+            >
+              · {badge}
+            </span>
+          )}
         </div>
         {sortedChildren(tree.root).map((node) => renderFolder(node, 0))}
         {tree.ungrouped.length > 0 && renderFolder(ungroupedNode, 0)}
@@ -951,6 +973,7 @@ export function Sidebar({
             <Cloud size={11} className="text-nx-accent shrink-0" />,
             "__synced__/",
             true,
+            cloudOff ? t("sidebar.section_cloud_off") : undefined,
           )}
         {!localEmpty &&
           renderSection(

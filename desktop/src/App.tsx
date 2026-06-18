@@ -628,6 +628,8 @@ function App() {
   const [vaultChecked, setVaultChecked] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  // Which settings section to deep-link to on open (sync modal → "account").
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // First-run vault nudge — a one-time, dismissible banner offering to set up
   // the vault. Shown only once no vault exists yet (decided after vaultStatus).
   const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
@@ -3353,7 +3355,10 @@ function App() {
           />
           <HeaderButton
             icon={<SettingsIcon size={12} />}
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              setSettingsSection(undefined);
+              setSettingsOpen(true);
+            }}
             title={t("settings.open") + " (Ctrl ,)"}
           />
           <div className="ml-1">
@@ -3553,6 +3558,7 @@ function App() {
             onClose={() => setSyncPanelOpen(false)}
             onOpenSettings={() => {
               setSyncPanelOpen(false);
+              setSettingsSection("account");
               setSettingsOpen(true);
             }}
           />
@@ -3732,8 +3738,12 @@ function App() {
         <div className="fixed inset-0 z-40">
           <Suspense fallback={null}>
             <SettingsScreen
-              onClose={() => setSettingsOpen(false)}
+              onClose={() => {
+                setSettingsOpen(false);
+                setSettingsSection(undefined);
+              }}
               sessionCount={allSessions.length}
+              initialSection={settingsSection}
             />
           </Suspense>
         </div>

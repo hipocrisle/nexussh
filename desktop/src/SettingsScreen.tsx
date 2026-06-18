@@ -32,6 +32,8 @@ import { getVersion } from "@tauri-apps/api/app";
 interface Props {
   onClose: () => void;
   sessionCount?: number;
+  /** Section id to scroll to on open (e.g. "account"). Default: top. */
+  initialSection?: string;
 }
 
 const SECTIONS = [
@@ -43,13 +45,22 @@ const SECTIONS = [
   { id: "about", key: "about", Icon: Info },
 ] as const;
 
-export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
+export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Props) {
   const { t: tr } = useTranslation();
   const [settings, set] = useSettings();
   const isMobile = useIsMobile();
-  const [active, setActive] = useState<string>("appearance");
+  const [active, setActive] = useState<string>(initialSection ?? "appearance");
   const [version, setVersion] = useState<string>("");
   const scrollRef = useRef<HTMLElement | null>(null);
+
+  // Deep-link to a section on open (e.g. from the sync modal → account). Wait a
+  // frame so the sections are laid out before we measure offsetTop.
+  useEffect(() => {
+    if (!initialSection) return;
+    const id = requestAnimationFrame(() => jump(initialSection));
+    return () => cancelAnimationFrame(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));

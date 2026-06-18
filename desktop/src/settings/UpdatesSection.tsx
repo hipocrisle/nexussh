@@ -40,11 +40,11 @@ export function UpdatesSection({ s, set, t }: Props) {
     }
   }, []);
 
-  async function check() {
+  async function check(allowDowngrade = false) {
     setError(null);
     setStatus("checking");
     try {
-      const r = await checkForUpdate();
+      const r = await checkForUpdate(allowDowngrade);
       markChecked();
       setLastChecked(new Date().toLocaleTimeString());
       if (r) {
@@ -70,7 +70,8 @@ export function UpdatesSection({ s, set, t }: Props) {
     if (c === s.channel) return;
     set({ channel: c });
     if (status === "checking" || status === "installing") return;
-    void check();
+    // Channel switch → allow a downgrade (e.g. beta→stable lands on an older num).
+    void check(true);
   }
 
   async function install() {
@@ -194,7 +195,7 @@ export function UpdatesSection({ s, set, t }: Props) {
         <div className="space-y-3">
           <button
             type="button"
-            onClick={status === "available" ? install : check}
+            onClick={status === "available" ? install : () => check()}
             disabled={status === "checking" || status === "installing"}
             className="font-mono text-sm px-4 py-2 rounded inline-flex items-center gap-2 transition-colors disabled:opacity-60"
             style={{

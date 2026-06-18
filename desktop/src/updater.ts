@@ -42,7 +42,7 @@ function currentChannel(): "stable" | "beta" {
   return "stable";
 }
 
-export async function checkForUpdate(): Promise<UpdateInfo | null> {
+export async function checkForUpdate(allowDowngrade = false): Promise<UpdateInfo | null> {
   if (isAndroid()) {
     const a = await invoke<AndroidUpdateInfo | null>("android_check_update");
     if (!a) return null;
@@ -69,7 +69,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await new Promise((res) => setTimeout(res, 1500));
     try {
-      r = await invoke<UpdateInfo | null>("check_for_update", { channel: ch });
+      r = await invoke<UpdateInfo | null>("check_for_update", { channel: ch, allowDowngrade });
       lastErr = undefined;
       break;
     } catch (e) {

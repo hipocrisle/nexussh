@@ -100,13 +100,35 @@ pub struct UpdateInfo {
 pub async fn check_for_update(
     app: AppHandle,
     channel: Option<String>,
+    // True ONLY when the check is triggered by an explicit channel switch — then
+    // an older remote (e.g. beta→stable) is a legit "update". For ordinary checks
+    // (auto / manual button, same channel) downgrades are suppressed so a stale
+    // self-host fallback feed can't prompt a rollback to an older version.
+    allow_downgrade: Option<bool>,
 ) -> Result<Option<UpdateInfo>, UpdateError> {
     let updater = build_updater(&app, channel.as_deref())?;
     let update = updater
         .check()
         .await
         .map_err(|e| UpdateError::Plugin(e.to_string()))?;
-    Ok(update.map(|u| UpdateInfo {
+    let Some(u) = update else { return Ok(None) };
+
+    // Downgrade-guard: the comparator above accepts ANY remote (so channel
+    // switches work), so here we drop remote <= current unless downgrades were
+    // explicitly allowed. Semver-aware (beta.13 > beta.12). If either version is
+    // unparseable we don't block — fall through and let the frontend decide.
+    if !allow_downgrade.unwrap_or(false) {
+        if let (Ok(remote), Ok(cur)) = (
+            semver::Version::parse(&u.version),
+            semver::Version::parse(&u.current_version),
+        ) {
+            if remote <= cur {
+                return Ok(None);
+            }
+        }
+    }
+
+    Ok(Some(UpdateInfo {
         version: u.version.clone(),
         current_version: u.current_version.clone(),
         date: u.date.map(|d| d.to_string()),

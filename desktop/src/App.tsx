@@ -22,6 +22,9 @@ import { LanguageSwitcher } from "./LanguageSwitcher";
 const VaultPanel = lazy(() =>
   import("./VaultPanel").then((m) => ({ default: m.VaultPanel })),
 );
+const SyncPanel = lazy(() =>
+  import("./SyncPanel").then((m) => ({ default: m.SyncPanel })),
+);
 const SFTPPanel = lazy(() =>
   import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
 );
@@ -624,6 +627,7 @@ function App() {
   // never reconnects saved-password hosts before the vault unlocks.
   const [vaultChecked, setVaultChecked] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
+  const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   // First-run vault nudge — a one-time, dismissible banner offering to set up
   // the vault. Shown only once no vault exists yet (decided after vaultStatus).
   const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
@@ -3255,6 +3259,16 @@ function App() {
         )}
 
         <div className="ml-auto flex items-center gap-1 text-meta">
+          {syncState !== "none" && (
+            <HeaderButton
+              icon={syncState === "on" ? <Cloud size={12} /> : <CloudOff size={12} />}
+              onClick={() => setSyncPanelOpen(true)}
+              title={t(syncState === "on" ? "header.sync_on" : "header.sync_off")}
+              active={syncState === "on"}
+            >
+              {t("sync.header")}
+            </HeaderButton>
+          )}
           <HeaderButton
             icon={
               vault?.unlocked ? (
@@ -3317,7 +3331,7 @@ function App() {
                 ? t("history.open_panel")
                 : t("history.enable_hint")
             }
-            tint={settings.historyEnabled ? "var(--nx-accent2)" : undefined}
+            active={settings.historyEnabled}
           >
             {t("history.button")}
           </HeaderButton>
@@ -3337,14 +3351,6 @@ function App() {
             onClick={() => setShortcutsOpen(true)}
             title={t("shortcuts.open_title") + " (?)"}
           />
-          {syncState !== "none" && (
-            <HeaderButton
-              icon={syncState === "on" ? <Cloud size={12} /> : <CloudOff size={12} />}
-              onClick={() => setSettingsOpen(true)}
-              title={t(syncState === "on" ? "header.sync_on" : "header.sync_off")}
-              tint={syncState === "on" ? "var(--nx-accent)" : undefined}
-            />
-          )}
           <HeaderButton
             icon={<SettingsIcon size={12} />}
             onClick={() => setSettingsOpen(true)}
@@ -3539,6 +3545,15 @@ function App() {
             onLock={() => {
               setVaultPanelOpen(false);
               lockApp();
+            }}
+          />
+        )}
+        {syncPanelOpen && (
+          <SyncPanel
+            onClose={() => setSyncPanelOpen(false)}
+            onOpenSettings={() => {
+              setSyncPanelOpen(false);
+              setSettingsOpen(true);
             }}
           />
         )}

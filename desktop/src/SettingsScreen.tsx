@@ -12,12 +12,9 @@ import {
   Terminal as TerminalIcon,
   Globe,
   CloudCog,
-  Cloud,
-  CloudOff,
   Info,
   X,
 } from "lucide-react";
-import { accountStatus } from "./account";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { useIsMobile } from "./useIsMobile";
 import { useSettings } from "./settings/settings-store";
@@ -52,18 +49,10 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
   const isMobile = useIsMobile();
   const [active, setActive] = useState<string>("appearance");
   const [version, setVersion] = useState<string>("");
-  // Sync status for the header indicator: connected (logged in) vs configured-
-  // but-signed-out vs no account at all.
-  const [syncState, setSyncState] = useState<"on" | "off" | "none">("none");
   const scrollRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("0.0.0"));
-    accountStatus()
-      .then((s) =>
-        setSyncState(s.logged_in ? "on" : s.configured ? "off" : "none"),
-      )
-      .catch(() => setSyncState("none"));
   }, []);
 
   // Esc to close
@@ -199,19 +188,6 @@ export function SettingsScreen({ onClose, sessionCount = 0 }: Props) {
               className="ml-auto flex items-center gap-3 text-xs"
               style={{ color: t.textMuted }}
             >
-              {syncState !== "none" && (
-                <>
-                  <span
-                    className="flex items-center gap-1.5"
-                    style={{ color: syncState === "on" ? t.accent : t.textMuted }}
-                    title={tr(syncState === "on" ? "settings.app.sync_on" : "settings.app.sync_off")}
-                  >
-                    {syncState === "on" ? <Cloud size={11} /> : <CloudOff size={11} />}{" "}
-                    {tr(syncState === "on" ? "settings.app.sync_on" : "settings.app.sync_off")}
-                  </span>
-                  <span style={{ color: t.border }}>|</span>
-                </>
-              )}
               <span className="flex items-center gap-1.5">
                 <TerminalIcon size={11} />{" "}
                 {tr("settings.app.sessions", { n: sessionCount })}

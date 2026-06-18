@@ -510,6 +510,8 @@ const ru = {
     app: {
       brand_tagline: "матричный терминал с акцентом на историю",
       sessions: "сессий: {{n}}",
+      sync_on: "синк",
+      sync_off: "не синк.",
       back: "к терминалу",
       configuration: "конфигурация",
       settings: "настройки",
@@ -1464,6 +1466,8 @@ const en = {
     app: {
       brand_tagline: "matrix terminal, history-first",
       sessions: "{{n}} sessions",
+      sync_on: "sync",
+      sync_off: "not synced",
       back: "back to terminal",
       configuration: "configuration",
       settings: "settings",

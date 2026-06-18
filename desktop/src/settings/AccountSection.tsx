@@ -578,14 +578,16 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
         {tr("settings.account.login")}
       </PrimaryButton>
       {error && <ErrorLine t={t} msg={error} />}
-      <button
-        type="button"
-        onClick={() => setRecovering(true)}
-        className="text-[11px] font-mono underline-offset-2 hover:underline"
-        style={{ color: t.textMuted }}
-      >
-        {tr("settings.account.forgot_password")}
-      </button>
+      <div className="pt-2">
+        <button
+          type="button"
+          onClick={() => setRecovering(true)}
+          className="text-[11px] font-mono underline-offset-2 hover:underline"
+          style={{ color: t.textMuted }}
+        >
+          {tr("settings.account.forgot_password")}
+        </button>
+      </div>
     </form>
   );
 }

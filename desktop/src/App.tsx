@@ -62,7 +62,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
-import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts } from "./hosts";
+import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
 import { tunnelOpen, tunnelList, TunnelInfo, PortForward } from "./tunnel";
 import {
   VaultStatus,
@@ -109,7 +109,10 @@ import {
   X as CloseIcon,
   Terminal as TerminalIcon,
   FolderOpen,
+  Cloud,
+  CloudOff,
 } from "lucide-react";
+import { accountStatus } from "./account";
 import "./App.css";
 
 // Height of the per-pane mini-toolbar (PaneHeader.tsx). Rendered only when the
@@ -824,6 +827,18 @@ function App() {
     dir: "row" | "col";
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Header sync indicator: "on" = signed in, "off" = account configured but
+  // signed out, "none" = no account (hide). Re-checked on login/logout (those
+  // emit hosts-changed).
+  const [syncState, setSyncState] = useState<"on" | "off" | "none">("none");
+  useEffect(() => {
+    const check = () =>
+      accountStatus()
+        .then((s) => setSyncState(s.logged_in ? "on" : s.configured ? "off" : "none"))
+        .catch(() => setSyncState("none"));
+    check();
+    return onHostsChanged(check);
+  }, []);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Active tunnel count → drives the header "tunnels" button highlight.
   // Polled (cheap in-process call) so it reflects tunnels closed from the panel.
@@ -3322,6 +3337,14 @@ function App() {
             onClick={() => setShortcutsOpen(true)}
             title={t("shortcuts.open_title") + " (?)"}
           />
+          {syncState !== "none" && (
+            <HeaderButton
+              icon={syncState === "on" ? <Cloud size={12} /> : <CloudOff size={12} />}
+              onClick={() => setSettingsOpen(true)}
+              title={t(syncState === "on" ? "header.sync_on" : "header.sync_off")}
+              tint={syncState === "on" ? "var(--nx-accent)" : undefined}
+            />
+          )}
           <HeaderButton
             icon={<SettingsIcon size={12} />}
             onClick={() => setSettingsOpen(true)}

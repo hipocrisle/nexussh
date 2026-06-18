@@ -160,6 +160,10 @@ const ru = {
     forward_edit_title: "проброс",
     forward_autostart_label: "Автостарт при подключении",
   },
+  header: {
+    sync_on: "Облачный синк подключён — открыть настройки",
+    sync_off: "Облачный синк: вход не выполнен — открыть настройки",
+  },
   terminal: {
     select_host: "выберите хост слева, чтобы подключиться",
     select_host_mobile: "нажми ☰ и выбери хост",
@@ -1117,6 +1121,10 @@ const en = {
     forward_new_title: "new forward",
     forward_edit_title: "forward",
     forward_autostart_label: "Auto-start on connect",
+  },
+  header: {
+    sync_on: "Cloud sync connected — open settings",
+    sync_off: "Cloud sync: signed out — open settings",
   },
   terminal: {
     select_host: "select a host on the left to connect",

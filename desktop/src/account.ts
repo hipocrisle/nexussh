@@ -86,6 +86,37 @@ export async function accountLogin(
   return res;
 }
 
+/** Change the sync password (knows the current one). TOTP required if enabled. */
+export async function accountChangePassword(
+  currentPassword: string,
+  newPassword: string,
+  totp?: string,
+): Promise<void> {
+  await invoke("account_change_password", { currentPassword, newPassword, totp });
+  notifyHostsChanged();
+}
+
+/** Recover access with the emergency-kit recovery key, setting a new password. */
+export async function accountRecover(
+  username: string,
+  recoveryKey: string,
+  newPassword: string,
+): Promise<LoginResult> {
+  const res = await invoke<LoginResult>("account_recover", {
+    username,
+    recoveryKey,
+    newPassword,
+  });
+  notifyHostsChanged();
+  return res;
+}
+
+/** Delete the account from the server entirely (irreversible). Local hosts stay. */
+export async function accountDelete(): Promise<void> {
+  await invoke("account_delete");
+  notifyHostsChanged();
+}
+
 export async function accountLogout(): Promise<void> {
   await invoke("account_logout");
   // Hosts stay (no deletion); the sidebar re-reads to show the "not syncing"

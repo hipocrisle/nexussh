@@ -27,6 +27,8 @@ import {
   ChevronRight,
   ListChecks,
   Info,
+  KeyRound,
+  Trash2,
 } from "lucide-react";
 import { ThemePalette } from "./themes";
 import { Section, Row, TextField } from "./primitives";
@@ -39,6 +41,9 @@ import {
   accountRegister,
   accountLogin,
   accountLogout,
+  accountChangePassword,
+  accountRecover,
+  accountDelete,
   accountTotpEnroll,
   accountTotpVerify,
   accountSyncNow,
@@ -502,6 +507,11 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
   const [needTotp, setNeedTotp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+
+  if (recovering) {
+    return <RecoverForm t={t} initialUsername={username} onChanged={onChanged} onCancel={() => setRecovering(false)} />;
+  }
 
   async function submit() {
     if (!username.trim() || !password) return;
@@ -568,7 +578,73 @@ function LoginForm({ t, onChanged }: { t: ThemePalette; onChanged: () => void })
         {tr("settings.account.login")}
       </PrimaryButton>
       {error && <ErrorLine t={t} msg={error} />}
+      <button
+        type="button"
+        onClick={() => setRecovering(true)}
+        className="text-[11px] font-mono underline-offset-2 hover:underline"
+        style={{ color: t.textMuted }}
+      >
+        {tr("settings.account.forgot_password")}
+      </button>
     </form>
+  );
+}
+
+// Recover access with the emergency-kit recovery key, setting a new password.
+function RecoverForm({
+  t,
+  initialUsername,
+  onChanged,
+  onCancel,
+}: {
+  t: ThemePalette;
+  initialUsername: string;
+  onChanged: () => void;
+  onCancel: () => void;
+}) {
+  const { t: tr } = useTranslation();
+  const [username, setUsername] = useState(initialUsername);
+  const [key, setKey] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setError(null);
+    if (next !== confirm) {
+      setError(tr("settings.account.pw_mismatch"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await accountRecover(username.trim(), key.trim(), next);
+      accountSyncNow().catch(() => {});
+      onChanged();
+    } catch (e) {
+      setError(isVaultLockedError(e) ? tr("settings.account.vault_locked") : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="font-mono text-xs" style={{ color: t.textMuted }}>
+        {tr("settings.account.recover_hint")}
+      </div>
+      <LabeledInput t={t} label={tr("settings.account.username")} value={username} onChange={setUsername} />
+      <LabeledInput t={t} label={tr("settings.account.recovery_key")} value={key} onChange={setKey} placeholder="xxxx-xxxx-…" />
+      <LabeledInput t={t} type="password" label={tr("settings.account.new_password")} value={next} onChange={setNext} />
+      <LabeledInput t={t} type="password" label={tr("settings.account.confirm_password")} value={confirm} onChange={setConfirm} />
+      {error && <ErrorLine t={t} msg={error} />}
+      <div className="flex gap-2">
+        <PrimaryButton t={t} onClick={submit} busy={busy} disabled={!username.trim() || !key.trim() || !next}>
+          {tr("settings.account.recover_btn")}
+        </PrimaryButton>
+        <GhostButton t={t} onClick={onCancel}>{tr("settings.account.cancel")}</GhostButton>
+      </div>
+    </div>
   );
 }
 
@@ -868,9 +944,127 @@ function LoggedIn({
         <TwoFactorControl t={t} enabled={status.totp_enabled} onChanged={onChanged} />
       </Row>
 
+      <Row label={tr("settings.account.password")} hint={tr("settings.account.password_hint")} t={t}>
+        <ChangePasswordControl t={t} totpEnabled={status.totp_enabled} />
+      </Row>
+
       <Row label={tr("settings.account.session")} hint={tr("settings.account.logout_hint")} t={t}>
         <LogoutControl t={t} onChanged={onChanged} />
       </Row>
+
+      <Row label={tr("settings.account.danger")} hint={tr("settings.account.danger_hint")} t={t}>
+        <DeleteAccountControl t={t} onChanged={onChanged} />
+      </Row>
+    </div>
+  );
+}
+
+// Change the sync password (logged in, knows the current one).
+function ChangePasswordControl({ t, totpEnabled }: { t: ThemePalette; totpEnabled: boolean }) {
+  const { t: tr } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [totp, setTotp] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  async function submit() {
+    setError(null);
+    if (next !== confirm) {
+      setError(tr("settings.account.pw_mismatch"));
+      return;
+    }
+    setBusy(true);
+    try {
+      await accountChangePassword(cur, next, totpEnabled ? totp.trim() : undefined);
+      setDone(true);
+      setOpen(false);
+      setCur(""); setNext(""); setConfirm(""); setTotp("");
+    } catch (e) {
+      setError(isVaultLockedError(e) ? tr("settings.account.vault_locked") : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="space-y-2">
+        <GhostButton t={t} onClick={() => { setOpen(true); setDone(false); }} icon={<KeyRound size={14} />}>
+          {tr("settings.account.change_password")}
+        </GhostButton>
+        {done && (
+          <div className="font-mono text-[11px]" style={{ color: t.accent }}>
+            {tr("settings.account.pw_changed")}
+          </div>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2 max-w-md">
+      <LabeledInput t={t} type="password" label={tr("settings.account.current_password")} value={cur} onChange={setCur} />
+      <LabeledInput t={t} type="password" label={tr("settings.account.new_password")} value={next} onChange={setNext} />
+      <LabeledInput t={t} type="password" label={tr("settings.account.confirm_password")} value={confirm} onChange={setConfirm} />
+      {totpEnabled && (
+        <LabeledInput t={t} label={tr("settings.account.totp_code")} value={totp} onChange={setTotp} />
+      )}
+      {error && <ErrorLine t={t} msg={error} />}
+      <div className="flex gap-2">
+        <PrimaryButton t={t} onClick={submit} busy={busy} disabled={!cur || !next}>
+          {tr("settings.account.save")}
+        </PrimaryButton>
+        <GhostButton t={t} onClick={() => setOpen(false)}>{tr("settings.account.cancel")}</GhostButton>
+      </div>
+    </div>
+  );
+}
+
+// Delete the whole account from the server (irreversible). Local hosts kept.
+function DeleteAccountControl({ t, onChanged }: { t: ThemePalette; onChanged: () => void }) {
+  const { t: tr } = useTranslation();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function del() {
+    setBusy(true);
+    setError(null);
+    try {
+      await accountDelete();
+      onChanged();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!confirming) {
+    return (
+      <GhostButton t={t} onClick={() => setConfirming(true)} icon={<Trash2 size={14} />}>
+        {tr("settings.account.delete_account")}
+      </GhostButton>
+    );
+  }
+  return (
+    <div className="space-y-2 max-w-md">
+      <div
+        className="rounded border p-3 font-mono text-[11px] leading-relaxed"
+        style={{ background: t.bgPanel, borderColor: "#b91c1c", color: t.textPrimary }}
+      >
+        {tr("settings.account.delete_warn")}
+      </div>
+      {error && <ErrorLine t={t} msg={error} />}
+      <div className="flex gap-2">
+        <GhostButton t={t} onClick={del} busy={busy} icon={<Trash2 size={14} />}>
+          {tr("settings.account.delete_confirm")}
+        </GhostButton>
+        <GhostButton t={t} onClick={() => setConfirming(false)}>{tr("settings.account.cancel")}</GhostButton>
+      </div>
     </div>
   );
 }

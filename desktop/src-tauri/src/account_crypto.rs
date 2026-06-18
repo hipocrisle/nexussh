@@ -370,6 +370,10 @@ pub struct RegistrationPayload {
     pub wrapped_user_key: String,
     /// User key wrapped under the recovery key (base64).
     pub recovery_wrapped_user_key: String,
+    /// Login verifier derived from the RECOVERY key (base64) — mirror of
+    /// `auth_hash`, computed as `auth_hash(recovery_key, account_salt)`. Lets the
+    /// server authenticate a no-password recovery-login.
+    pub recovery_auth_hash: String,
 }
 
 /// Result of [`prepare_registration`]: the server payload plus the secrets the
@@ -411,6 +415,9 @@ pub fn prepare_registration_with_params(
 
     let wrapped_user_key = wrap_user_key(&user_key, &wk)?;
     let recovery_wrapped_user_key = wrap_user_key(&user_key, &recovery_key)?;
+    // Verifier for the recovery key: same construction as the password auth_hash,
+    // but the recovery key plays the role of the master key.
+    let recovery_ah = auth_hash(&recovery_key, &account_salt)?;
 
     let payload = RegistrationPayload {
         account_salt: B64.encode(account_salt),
@@ -418,6 +425,7 @@ pub fn prepare_registration_with_params(
         auth_hash: B64.encode(ah),
         wrapped_user_key: B64.encode(&wrapped_user_key),
         recovery_wrapped_user_key: B64.encode(&recovery_wrapped_user_key),
+        recovery_auth_hash: B64.encode(recovery_ah),
     };
 
     Ok(Registration {
@@ -479,6 +487,50 @@ pub fn recover_user_key(
         .decode(recovery_wrapped_user_key_b64)
         .map_err(|e| CryptoError::Base64(e.to_string()))?;
     unwrap_user_key(&wrapped, &recovery_key)
+}
+
+/// Compute the recovery-login verifier from the emergency-kit string + the
+/// account salt — mirror of the password `auth_hash`, used to authenticate a
+/// no-password recovery-login.
+pub fn recovery_auth_hash_from_kit(kit: &str, account_salt_b64: &str) -> Result<String> {
+    let recovery_key = parse_recovery_key(kit)?;
+    let account_salt = B64
+        .decode(account_salt_b64)
+        .map_err(|e| CryptoError::Base64(e.to_string()))?;
+    Ok(B64.encode(auth_hash(&recovery_key, &account_salt)?))
+}
+
+/// Result of [`rekey_password`]: the new password verifier + the user key
+/// re-wrapped under the new password. The account salt is intentionally REUSED
+/// (not rotated) so the recovery-key verifier — which is salted with it — stays
+/// valid without needing the recovery key during a password change.
+pub struct ReKey {
+    pub auth_hash: String,
+    pub wrapped_user_key: String,
+}
+
+/// Re-wrap an already-unwrapped `user_key` under a NEW password, keeping the
+/// existing account salt + KDF params. Used by both change-password (have the
+/// user key from the live session) and recovery-finish (have it from the
+/// recovery-key unwrap).
+pub fn rekey_password(
+    user_key: &[u8; KEY_LEN],
+    new_password: &str,
+    account_salt_b64: &str,
+    kdf_params_json: &str,
+) -> Result<ReKey> {
+    let account_salt = B64
+        .decode(account_salt_b64)
+        .map_err(|e| CryptoError::Base64(e.to_string()))?;
+    let params = KdfParams::from_str(kdf_params_json)?;
+    let master_key = derive_master_key(new_password, &account_salt, &params)?;
+    let ah = auth_hash(&master_key, &account_salt)?;
+    let wk = wrap_key(&master_key)?;
+    let wrapped = wrap_user_key(user_key, &wk)?;
+    Ok(ReKey {
+        auth_hash: B64.encode(ah),
+        wrapped_user_key: B64.encode(&wrapped),
+    })
 }
 
 // ===========================================================================

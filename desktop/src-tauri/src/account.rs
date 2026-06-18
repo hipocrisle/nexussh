@@ -457,6 +457,30 @@ fn http_get_json(base_url: &str, path: &str, token: &str) -> Result<serde_json::
     }
 }
 
+/// JSON DELETE helper (used for `DELETE /v1/account`).
+fn http_delete(base_url: &str, path: &str, token: &str) -> Result<serde_json::Value> {
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    match ureq::delete(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .set("User-Agent", "NexuSSH")
+        .set("Authorization", &format!("Bearer {token}"))
+        .call()
+    {
+        Ok(resp) => {
+            let txt = resp.into_string().map_err(|e| AccountError::Http(e.to_string()))?;
+            if txt.is_empty() {
+                return Ok(serde_json::Value::Null);
+            }
+            Ok(serde_json::from_str(&txt)?)
+        }
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Err(AccountError::Server { status: code, body })
+        }
+        Err(e) => Err(AccountError::Http(e.to_string())),
+    }
+}
+
 // ===========================================================================
 // Status
 // ===========================================================================
@@ -598,6 +622,7 @@ pub async fn account_register(
         "kdf_params": payload.kdf_params,
         "wrapped_user_key": payload.wrapped_user_key,
         "recovery_wrapped_user_key": payload.recovery_wrapped_user_key,
+        "recovery_auth_hash": payload.recovery_auth_hash,
     });
 
     let url = server_url.clone();
@@ -793,6 +818,212 @@ pub async fn account_logout(
     }
     let mut cfg = load_config(&app)?;
     cfg.token = None;
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
+// ===========================================================================
+// Change password / recover with key / delete account
+// ===========================================================================
+
+/// Fetch account_salt + kdf_params for a username (public prelogin).
+async fn prelogin(server_url: &str, username: &str) -> Result<(String, String)> {
+    let body = serde_json::json!({ "username": username });
+    let url = server_url.to_string();
+    let pre = tokio::task::spawn_blocking(move || http_post_json(&url, "/v1/prelogin", None, &body))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+    let salt = pre
+        .get("account_salt")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AccountError::Other("prelogin missing account_salt".into()))?
+        .to_string();
+    let kdf = match pre.get("kdf_params") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => return Err(AccountError::Other("prelogin missing kdf_params".into())),
+    };
+    Ok((salt, kdf))
+}
+
+/// Change the sync password: verify the current password (a real /login, which
+/// also satisfies TOTP if enabled), re-wrap the user key under the new password,
+/// and push the rotated verifier+blob to the server. The user key is unchanged,
+/// so all encrypted data stays readable.
+#[tauri::command]
+pub async fn account_change_password(
+    app: AppHandle,
+    state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
+    current_password: String,
+    new_password: String,
+    totp: Option<String>,
+) -> Result<()> {
+    if new_password.is_empty() {
+        return Err(AccountError::Other("new password is empty".into()));
+    }
+    if !vault::is_unlocked(&vault_state) {
+        return Err(AccountError::Vault(vault::VaultError::Locked));
+    }
+    let cfg = load_config(&app)?;
+    let server_url = cfg.server_url.clone();
+    let username = cfg
+        .username
+        .clone()
+        .ok_or_else(|| AccountError::Other("not logged in".into()))?;
+
+    let (salt, kdf) = prelogin(&server_url, &username).await?;
+    let salt_bytes = B64.decode(&salt)?;
+    let params = ac::KdfParams::from_str(&kdf)?;
+    let master = ac::derive_master_key(&current_password, &salt_bytes, &params)?;
+    let auth_hash_b64 = B64.encode(ac::auth_hash(&master, &salt_bytes)?);
+
+    let mut login_body = serde_json::json!({
+        "username": username.clone(),
+        "auth_hash": auth_hash_b64,
+        "device_name": device_name(),
+    });
+    if let Some(code) = totp.as_ref().filter(|c| !c.trim().is_empty()) {
+        login_body["totp"] = serde_json::json!(code.trim());
+    }
+    let url = server_url.clone();
+    let login = tokio::task::spawn_blocking(move || http_post_json(&url, "/v1/login", None, &login_body))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+    let token = login
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AccountError::Other("login response missing token".into()))?
+        .to_string();
+    let wrapped = login
+        .get("wrapped_user_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AccountError::Other("login missing wrapped_user_key".into()))?;
+    // Unwrap with the CURRENT password (verifies it), then re-wrap under the new.
+    let lr = ac::login(&current_password, &salt, &kdf, wrapped)?;
+    let rk = ac::rekey_password(&lr.user_key, &new_password, &salt, &kdf)?;
+
+    let body = serde_json::json!({
+        "auth_hash": rk.auth_hash,
+        "wrapped_user_key": rk.wrapped_user_key,
+    });
+    let url = server_url.clone();
+    let tok = token.clone();
+    tokio::task::spawn_blocking(move || http_post_json(&url, "/v1/credentials", Some(&tok), &body))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+
+    // Keep the session live (same user key, fresh token).
+    vault::put_key(&vault_state, USER_KEY_VAULT_KEY, B64.encode(&lr.user_key[..]))?;
+    let mut cfg = load_config(&app)?;
+    cfg.token = Some(token.clone());
+    save_config(&app, &cfg)?;
+    *state.inner.lock().unwrap() = Some(Session { token, user_key: lr.user_key });
+    Ok(())
+}
+
+/// Recover access with the emergency-kit recovery key when the password is
+/// forgotten: prove the recovery key (recovery-login), unwrap the user key, set
+/// a NEW password, and re-key the account. No data loss — the user key is the
+/// same one that encrypts every item.
+#[tauri::command]
+pub async fn account_recover(
+    app: AppHandle,
+    state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
+    username: String,
+    recovery_key: String,
+    new_password: String,
+) -> Result<LoginResult> {
+    let username = username.trim().to_string();
+    if username.is_empty() || new_password.is_empty() {
+        return Err(AccountError::Other("username/password empty".into()));
+    }
+    if !vault::is_unlocked(&vault_state) {
+        return Err(AccountError::Vault(vault::VaultError::Locked));
+    }
+    let cfg = load_config(&app)?;
+    let server_url = cfg.server_url.clone();
+
+    let (salt, kdf) = prelogin(&server_url, &username).await?;
+    let r_ah = ac::recovery_auth_hash_from_kit(&recovery_key, &salt)?;
+    let body = serde_json::json!({
+        "username": username.clone(),
+        "recovery_auth_hash": r_ah,
+        "device_name": device_name(),
+    });
+    let url = server_url.clone();
+    let rl = tokio::task::spawn_blocking(move || http_post_json(&url, "/v1/recovery-login", None, &body))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+    let token = rl
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AccountError::Other("recovery-login missing token".into()))?
+        .to_string();
+    let user_id = rl.get("user_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let recovery_wrapped = rl
+        .get("recovery_wrapped_user_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AccountError::Other("recovery-login missing recovery key blob".into()))?;
+
+    // Unwrap the user key with the recovery key, then set the new password.
+    let user_key = ac::recover_user_key(&recovery_key, recovery_wrapped)?;
+    let rk = ac::rekey_password(&user_key, &new_password, &salt, &kdf)?;
+    let cred = serde_json::json!({
+        "auth_hash": rk.auth_hash,
+        "wrapped_user_key": rk.wrapped_user_key,
+    });
+    let url = server_url.clone();
+    let tok = token.clone();
+    tokio::task::spawn_blocking(move || http_post_json(&url, "/v1/credentials", Some(&tok), &cred))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+
+    // Establish the session (recovery token works until the user re-logs in).
+    vault::put_key(&vault_state, USER_KEY_VAULT_KEY, B64.encode(&user_key[..]))?;
+    let mut cfg = load_config(&app)?;
+    if !user_id.is_empty() && cfg.account_user_id.as_deref() != Some(user_id.as_str()) {
+        cfg.reset_sync_state();
+        cfg.account_user_id = Some(user_id.clone());
+    }
+    cfg.username = Some(username);
+    cfg.token = Some(token.clone());
+    save_config(&app, &cfg)?;
+    *state.inner.lock().unwrap() = Some(Session { token, user_key });
+    Ok(LoginResult { user_id, totp_enabled: false })
+}
+
+/// Delete the account from the server entirely (irreversible). Local hosts are
+/// KEPT — only this device's sync bookkeeping/session is cleared, so the hosts
+/// stay on-device (shown as "not syncing"). Requires a live session.
+#[tauri::command]
+pub async fn account_delete(
+    app: AppHandle,
+    state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
+) -> Result<()> {
+    let cfg = load_config(&app)?;
+    let server_url = cfg.server_url.clone();
+    let token = cfg
+        .token
+        .clone()
+        .ok_or_else(|| AccountError::Other("not logged in".into()))?;
+    let url = server_url.clone();
+    tokio::task::spawn_blocking(move || http_delete(&url, "/v1/account", &token))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+
+    // Server account gone → clear local session + sync bookkeeping, KEEP hosts.
+    *state.inner.lock().unwrap() = None;
+    if vault::is_unlocked(&vault_state) {
+        let _ = vault::delete_key(&vault_state, USER_KEY_VAULT_KEY);
+    }
+    let mut cfg = load_config(&app)?;
+    cfg.token = None;
+    cfg.username = None;
+    cfg.account_user_id = None;
+    cfg.reset_sync_state();
     save_config(&app, &cfg)?;
     Ok(())
 }

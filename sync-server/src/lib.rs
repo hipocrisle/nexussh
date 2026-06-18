@@ -13,7 +13,7 @@ pub mod ratelimit;
 
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -35,6 +35,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/totp/verify", post(handlers::totp_verify))
         .route("/v1/totp/disable", post(handlers::totp_disable))
         .route("/v1/items", get(items::pull_items).post(items::push_items))
+        .route("/v1/credentials", post(handlers::update_credentials))
+        .route("/v1/account", delete(handlers::delete_account))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::require_auth,
@@ -46,6 +48,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/register", post(handlers::register))
         .route("/v1/prelogin", post(handlers::prelogin))
         .route("/v1/login", post(handlers::login))
+        .route("/v1/recovery-login", post(handlers::recovery_login))
         .merge(authed)
         .with_state(state)
 }

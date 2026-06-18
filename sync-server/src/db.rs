@@ -45,6 +45,10 @@ impl Db {
                 kdf_params                TEXT NOT NULL,
                 wrapped_user_key          TEXT NOT NULL,
                 recovery_wrapped_user_key TEXT,
+                -- argon2 PHC verifier for the recovery key (mirror of server_hash
+                -- for the password). Lets a no-password "recovery login" prove
+                -- possession of the recovery key. NULL for pre-recovery accounts.
+                recovery_hash             TEXT,
                 totp_secret               TEXT,
                 totp_enabled              INTEGER NOT NULL DEFAULT 0,
                 created_at                INTEGER NOT NULL
@@ -97,6 +101,13 @@ impl Db {
             CREATE INDEX IF NOT EXISTS idx_items_user_rev  ON items(user_id, rev);
             "#,
         )?;
+        // Migration for DBs created before recovery_hash existed. ALTER TABLE ADD
+        // COLUMN errors if the column is already there → ignore that specific case.
+        match conn.execute("ALTER TABLE users ADD COLUMN recovery_hash TEXT", []) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("duplicate column") => {}
+            Err(e) => return Err(e),
+        }
         Ok(())
     }
 }

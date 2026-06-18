@@ -146,6 +146,10 @@ pub struct RegisterReq {
     pub kdf_params: String,
     pub wrapped_user_key: String,
     pub recovery_wrapped_user_key: Option<String>,
+    /// Client KDF output derived from the RECOVERY key (mirror of `auth_hash`).
+    /// Stored as an argon2 verifier so a no-password recovery-login can prove
+    /// possession of the recovery key. Optional for back-compat.
+    pub recovery_auth_hash: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -171,15 +175,23 @@ pub async fn register(
     // Wrap the client auth_hash with a fresh random salt (server never stores it raw).
     let server_hash = crypto::hash_auth(&req.auth_hash)
         .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "hash error"))?;
+    // Same for the recovery-key auth hash, if the client provided one.
+    let recovery_hash = match req.recovery_auth_hash.as_deref().filter(|h| !h.is_empty()) {
+        Some(h) => Some(
+            crypto::hash_auth(h)
+                .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "hash error"))?,
+        ),
+        None => None,
+    };
     let user_id = crypto::new_uuid();
 
     let conn = state.db.conn.lock().unwrap();
     let res = conn.execute(
         "INSERT INTO users
             (id, username, server_hash, account_salt, kdf_params,
-             wrapped_user_key, recovery_wrapped_user_key, totp_secret,
-             totp_enabled, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, ?8)",
+             wrapped_user_key, recovery_wrapped_user_key, recovery_hash,
+             totp_secret, totp_enabled, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9)",
         rusqlite::params![
             user_id,
             username,
@@ -188,6 +200,7 @@ pub async fn register(
             req.kdf_params,
             req.wrapped_user_key,
             req.recovery_wrapped_user_key,
+            recovery_hash,
             now(),
         ],
     );
@@ -632,4 +645,169 @@ pub async fn totp_disable(
     }
 
     Ok(Json(json!({ "totp_enabled": false })))
+}
+
+// ---------------------------------------------------------------------------
+// Recovery-key login: prove possession of the recovery key (no password),
+// get a session + the recovery-wrapped user key so the client can unwrap the
+// user_key and then set a NEW password via /v1/credentials.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct RecoveryLoginReq {
+    pub username: String,
+    pub recovery_auth_hash: String,
+    pub device_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RecoveryLoginResp {
+    pub token: String,
+    pub user_id: String,
+    pub account_salt: String,
+    pub kdf_params: String,
+    pub recovery_wrapped_user_key: String,
+}
+
+pub async fn recovery_login(
+    State(state): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(req): Json<RecoveryLoginReq>,
+) -> ApiResult<impl IntoResponse> {
+    let username = req.username.trim().to_string();
+    let rl_key = format!("recovery|{}|{}", username, addr.ip());
+    if !state.ratelimit.check(&rl_key) {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limited"));
+    }
+
+    // Load recovery material. Same generic 401 whether the user is absent or has
+    // no recovery key configured — no enumeration / no "recovery unavailable" hint.
+    let row: Option<(String, String, String, Option<String>, Option<String>)> = {
+        let conn = state.db.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, account_salt, kdf_params, recovery_hash, recovery_wrapped_user_key
+             FROM users WHERE username = ?1",
+            [&username],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(db_err)?
+    };
+    let Some((user_id, account_salt, kdf_params, Some(recovery_hash), Some(recovery_wrapped))) = row
+    else {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "invalid recovery key"));
+    };
+    if !crypto::verify_auth(&req.recovery_auth_hash, &recovery_hash) {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "invalid recovery key"));
+    }
+
+    // Issue a session (mirrors login).
+    let device_name = req.device_name.unwrap_or_else(|| "recovery".to_string());
+    let token = crypto::random_token(32);
+    let ts = now();
+    {
+        let conn = state.db.conn.lock().unwrap();
+        let device_id = crypto::new_uuid();
+        conn.execute(
+            "INSERT INTO devices (id, user_id, name, created_at, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            rusqlite::params![device_id, user_id, device_name, ts],
+        )
+        .map_err(db_err)?;
+        conn.execute(
+            "INSERT INTO sessions (token, user_id, device_id, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![token, user_id, device_id, ts, ts + SESSION_TTL_SECS],
+        )
+        .map_err(db_err)?;
+    }
+
+    Ok(Json(RecoveryLoginResp {
+        token,
+        user_id,
+        account_salt,
+        kdf_params,
+        recovery_wrapped_user_key: recovery_wrapped,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Update credentials (authenticated): re-key the account. Used by BOTH change-
+// password (logged in normally) and recovery-finish (logged in via recovery).
+// Rotates the password verifier + wrapped user key; optionally the recovery key.
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct CredentialsReq {
+    pub auth_hash: String,
+    pub wrapped_user_key: String,
+    pub recovery_auth_hash: Option<String>,
+    pub recovery_wrapped_user_key: Option<String>,
+}
+
+pub async fn update_credentials(
+    State(state): State<AppState>,
+    user: axum::Extension<AuthUser>,
+    Json(req): Json<CredentialsReq>,
+) -> ApiResult<impl IntoResponse> {
+    if req.auth_hash.is_empty() || req.wrapped_user_key.is_empty() {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "missing fields"));
+    }
+    let server_hash = crypto::hash_auth(&req.auth_hash)
+        .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "hash error"))?;
+    let recovery_hash = match req.recovery_auth_hash.as_deref().filter(|h| !h.is_empty()) {
+        Some(h) => Some(
+            crypto::hash_auth(h)
+                .map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "hash error"))?,
+        ),
+        None => None,
+    };
+
+    let conn = state.db.conn.lock().unwrap();
+    if recovery_hash.is_some() {
+        conn.execute(
+            "UPDATE users SET server_hash=?1, wrapped_user_key=?2,
+                 recovery_hash=?3, recovery_wrapped_user_key=?4 WHERE id=?5",
+            rusqlite::params![
+                server_hash,
+                req.wrapped_user_key,
+                recovery_hash,
+                req.recovery_wrapped_user_key,
+                user.user_id,
+            ],
+        )
+        .map_err(db_err)?;
+    } else {
+        conn.execute(
+            "UPDATE users SET server_hash=?1, wrapped_user_key=?2 WHERE id=?3",
+            rusqlite::params![server_hash, req.wrapped_user_key, user.user_id],
+        )
+        .map_err(db_err)?;
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------------------
+// Delete account (authenticated): wipe the user and ALL their data from the
+// server. Irreversible. Local hosts on the client are untouched (the client
+// only clears its own sync bookkeeping).
+// ---------------------------------------------------------------------------
+
+pub async fn delete_account(
+    State(state): State<AppState>,
+    user: axum::Extension<AuthUser>,
+) -> ApiResult<impl IntoResponse> {
+    let conn = state.db.conn.lock().unwrap();
+    let uid = &user.user_id;
+    for sql in [
+        "DELETE FROM items WHERE user_id = ?1",
+        "DELETE FROM user_rev WHERE user_id = ?1",
+        "DELETE FROM sessions WHERE user_id = ?1",
+        "DELETE FROM devices WHERE user_id = ?1",
+        "DELETE FROM recovery_codes WHERE user_id = ?1",
+        "DELETE FROM users WHERE id = ?1",
+    ] {
+        conn.execute(sql, rusqlite::params![uid]).map_err(db_err)?;
+    }
+    Ok(Json(json!({ "ok": true })))
 }

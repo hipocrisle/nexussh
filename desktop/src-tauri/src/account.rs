@@ -370,6 +370,14 @@ fn record_updated_at(rec: &serde_json::Map<String, serde_json::Value>) -> u64 {
     rec.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
+/// True when the server's highest rev is BELOW our last-synced cursor — i.e. the
+/// server lost data (DB wiped or restored from an older backup). We use this to
+/// force a full re-push of locally-flagged hosts on the next sync. Only meaningful
+/// once we've synced at least once (`since > 0`).
+fn server_regressed(since: u64, server_latest_rev: u64) -> bool {
+    since > 0 && server_latest_rev < since
+}
+
 /// Produce the host RECORD payload we actually upload: the record JSON with any
 /// purely-device-local fields stripped. Today only `vpnProfileId` qualifies — it
 /// references a VPN profile kept in this device's localStorage (`nexussh.vpnProfiles`)
@@ -999,6 +1007,17 @@ pub async fn account_sync_now(
     .await
     .map_err(|e| AccountError::Other(e.to_string()))??;
     let pull: PullResponse = serde_json::from_value(pull_raw)?;
+
+    // SELF-HEAL: if the server's max rev is BELOW our cursor, the server lost data
+    // (DB wiped / restored from an older backup). Our flagged hosts still live
+    // locally — reset the sync bookkeeping so this same run re-pushes ALL of them
+    // (the `!did_initial_push` path) instead of silently skipping them as
+    // "unchanged". No data loss: reset clears cursors/revs only, never the host
+    // list. This is what makes a plain "Sync now" restore the cloud after a wipe,
+    // so no separate "re-upload everything" button is needed.
+    if server_regressed(since, pull.latest_rev) {
+        cfg.reset_sync_state();
+    }
 
     // Load the local host list ONCE; merge incoming `host.<id>` records into this
     // in-memory Vec (preserving every local host), then write it back ONCE after
@@ -1753,6 +1772,15 @@ mod tests {
         assert!(obj.contains_key("forwards"));
         // sync forced true so the pulled record stays flagged
         assert_eq!(obj.get("sync"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn detects_server_rev_regression() {
+        assert!(server_regressed(100, 0), "server wiped (rev 0) below our cursor");
+        assert!(server_regressed(100, 50), "server restored from older backup");
+        assert!(!server_regressed(100, 100), "in step → no regression");
+        assert!(!server_regressed(100, 150), "server ahead → normal");
+        assert!(!server_regressed(0, 0), "never synced → not a regression");
     }
 
     #[test]

@@ -90,14 +90,114 @@ fn maybe_b64_decode(text: &str) -> String {
     text.to_string()
 }
 
-/// Parse a whole subscription body (base64 or plain) into nodes.
+/// Parse a whole subscription body (base64 / plain share-links / XRAY-JSON) into
+/// nodes. Servers that target Happ hand out an XRAY-JSON array (a list of full
+/// xray configs, each with `remarks` + a vless `proxy` outbound) instead of
+/// vless:// lines — our own server does this for cascade/auto-select users. We
+/// bundle xray, so those configs ARE usable: lift the vless outbound out of each.
 pub fn parse_subscription(text: &str) -> Vec<VpnNode> {
     let body = maybe_b64_decode(text);
+    let t = body.trim_start();
+    if t.starts_with('[') || t.starts_with('{') {
+        let nodes = parse_xray_json_nodes(&body);
+        if !nodes.is_empty() {
+            return nodes;
+        }
+    }
     body.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .filter_map(parse_share_link)
         .collect()
+}
+
+/// XRAY-JSON subscription: a JSON array of xray configs (or a single object).
+fn parse_xray_json_nodes(body: &str) -> Vec<VpnNode> {
+    let v: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(_) => return vec![],
+    };
+    match v {
+        Value::Array(arr) => arr.iter().filter_map(node_from_xray_config).collect(),
+        Value::Object(_) => node_from_xray_config(&v).into_iter().collect(),
+        _ => vec![],
+    }
+}
+
+fn jstr(v: &Value, k: &str) -> String {
+    v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+/// Lift a VpnNode out of one xray config: take its `remarks` as the tag and the
+/// first vless outbound that has a vnext target (prefer the one tagged "proxy").
+/// Configs whose proxy is a balancer (e.g. an "auto-select" entry) have no single
+/// vnext outbound here — we take the first concrete vless outbound, or skip.
+fn node_from_xray_config(cfg: &Value) -> Option<VpnNode> {
+    let remarks = jstr(cfg, "remarks");
+    let obs = cfg.get("outbounds")?.as_array()?;
+    let is_vless_vnext = |o: &&Value| {
+        o.get("protocol").and_then(|p| p.as_str()) == Some("vless")
+            && o.pointer("/settings/vnext/0").is_some()
+    };
+    let ob = obs
+        .iter()
+        .find(|o| o.get("tag").and_then(|t| t.as_str()) == Some("proxy") && is_vless_vnext(o))
+        .or_else(|| obs.iter().find(is_vless_vnext))?;
+
+    let vnext = ob.pointer("/settings/vnext/0")?;
+    let address = vnext.get("address")?.as_str()?.to_string();
+    let port = vnext.get("port")?.as_u64()? as u16;
+    let user = vnext.pointer("/users/0")?;
+    let uuid = user.get("id")?.as_str()?.to_string();
+    let flow = user.get("flow").and_then(|x| x.as_str()).unwrap_or("").to_string();
+
+    let empty = json!({});
+    let ss = ob.get("streamSettings").unwrap_or(&empty);
+    let network = ss.get("network").and_then(|x| x.as_str()).unwrap_or("tcp").to_string();
+    let security = ss.get("security").and_then(|x| x.as_str()).unwrap_or("none").to_string();
+
+    let (mut sni, mut fp, mut pbk, mut sid, mut spx, mut alpn) = (
+        String::new(), String::new(), String::new(), String::new(), String::new(), String::new(),
+    );
+    if let Some(r) = ss.get("realitySettings") {
+        sni = jstr(r, "serverName");
+        fp = jstr(r, "fingerprint");
+        pbk = jstr(r, "publicKey");
+        sid = jstr(r, "shortId");
+        spx = jstr(r, "spiderX");
+    } else if let Some(tl) = ss.get("tlsSettings") {
+        sni = jstr(tl, "serverName");
+        fp = jstr(tl, "fingerprint");
+        if let Some(a) = tl.get("alpn").and_then(|x| x.as_array()) {
+            alpn = a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(",");
+        }
+    }
+    let (mut path, mut host) = (String::new(), String::new());
+    if let Some(ws) = ss.get("wsSettings") {
+        path = jstr(ws, "path");
+        host = ws.pointer("/headers/Host").and_then(|x| x.as_str()).unwrap_or("").to_string();
+    } else if let Some(g) = ss.get("grpcSettings") {
+        path = jstr(g, "serviceName");
+    }
+
+    Some(VpnNode {
+        tag: if remarks.is_empty() { address.clone() } else { remarks },
+        protocol: "vless".into(),
+        address,
+        port,
+        uuid,
+        security,
+        flow,
+        network,
+        sni,
+        fingerprint: fp,
+        public_key: pbk,
+        short_id: sid,
+        spider_x: spx,
+        path,
+        host_header: host,
+        alpn,
+    })
 }
 
 /// Parse a single share-link. Dispatch point for future protocols.
@@ -459,5 +559,44 @@ mod tests {
     fn skips_unsupported_schemes() {
         assert!(parse_share_link("vmess://eyJ2IjoiMiJ9").is_none());
         assert!(parse_share_link("garbage").is_none());
+    }
+}
+
+#[cfg(test)]
+mod xray_json_tests {
+    use super::*;
+
+    #[test]
+    fn parses_xray_json_array() {
+        let body = r#"[
+          {"remarks":"🇫🇷 Франция · Vless","outbounds":[
+            {"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"81.177.166.155","port":443,"users":[{"id":"abc","encryption":"none"}]}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":"chat.hipogas.org","fingerprint":"chrome"},"wsSettings":{"path":"/9e3fb428e21f7336","headers":{}}}},
+            {"tag":"direct","protocol":"freedom"},{"tag":"block","protocol":"blackhole"}]},
+          {"remarks":"🌍 АВТОВЫБОР","outbounds":[
+            {"tag":"proxy-1","protocol":"vless","settings":{"vnext":[{"address":"81.177.166.155","port":443,"users":[{"id":"def","encryption":"none"}]}]},"streamSettings":{"network":"ws","security":"tls","tlsSettings":{"serverName":"chat.hipogas.org"},"wsSettings":{"path":"/p"}}},
+            {"tag":"direct","protocol":"freedom"}]}
+        ]"#;
+        let nodes = parse_subscription(body);
+        assert_eq!(nodes.len(), 2, "should lift one node per config");
+        assert_eq!(nodes[0].tag, "🇫🇷 Франция · Vless");
+        assert_eq!(nodes[0].address, "81.177.166.155");
+        assert_eq!(nodes[0].port, 443);
+        assert_eq!(nodes[0].uuid, "abc");
+        assert_eq!(nodes[0].network, "ws");
+        assert_eq!(nodes[0].security, "tls");
+        assert_eq!(nodes[0].sni, "chat.hipogas.org");
+        assert_eq!(nodes[0].path, "/9e3fb428e21f7336");
+        // auto-select: no "proxy" tag → first vless outbound (proxy-1)
+        assert_eq!(nodes[1].tag, "🌍 АВТОВЫБОР");
+        assert_eq!(nodes[1].uuid, "def");
+    }
+
+    #[test]
+    fn vless_lines_still_work() {
+        let body = "vless://uuid-1@1.2.3.4:443?security=reality&type=tcp&sni=x.com&pbk=KEY&sid=ab#Node1";
+        let nodes = parse_subscription(body);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].uuid, "uuid-1");
+        assert_eq!(nodes[0].security, "reality");
     }
 }

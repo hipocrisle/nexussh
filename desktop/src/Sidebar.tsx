@@ -49,6 +49,7 @@ import {
   onHostsChanged,
 } from "./hosts";
 import { HostDialog } from "./HostDialog";
+import { useIsMobile } from "./useIsMobile";
 import { accountStatus } from "./account";
 import { MenuItem } from "./ContextMenu";
 import { askPrompt } from "./dialogs";
@@ -156,6 +157,7 @@ export function Sidebar({
   fill = false,
 }: Props) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [filter, setFilter] = useState("");
   const [dialog, setDialog] = useState<
@@ -698,25 +700,34 @@ export function Sidebar({
             : {}),
         }}
         className={
-          "nx-row group grid grid-cols-[16px_1fr_auto] gap-2 items-center pr-3 py-1.5 cursor-pointer select-none " +
+          "nx-row group grid items-center cursor-pointer select-none " +
+          (isMobile
+            ? "grid-cols-[24px_1fr_auto] gap-3 pr-4 py-3 "
+            : "grid-cols-[16px_1fr_auto] gap-2 pr-3 py-1.5 ") +
           (draggingHost?.id === h.id ? "opacity-50" : "")
         }
       >
         <Server
-          size={12}
+          size={isMobile ? 18 : 12}
           className={isSelected ? "text-nx-accent shrink-0" : "text-nx-muted shrink-0"}
         />
         <div className="min-w-0">
           <div
             className={
-              "font-mono text-lead truncate " +
+              "font-mono truncate " +
+              (isMobile ? "text-base leading-tight " : "text-lead ") +
               (isSelected ? "text-nx-accent" : "text-nx-text")
             }
           >
             {h.name}
             {isActiveTab && <span className="nx-caret ml-1" />}
           </div>
-          <div className="font-mono text-meta text-nx-muted truncate">
+          <div
+            className={
+              "font-mono text-nx-muted truncate " +
+              (isMobile ? "text-sm" : "text-meta")
+            }
+          >
             {h.host}:{h.port}
           </div>
         </div>
@@ -739,18 +750,24 @@ export function Sidebar({
           onContextMenu={(e) => onFolderContextMenu(e, node.path)}
           style={{ paddingLeft: folderPad(depth) }}
           className={
-            "w-full pr-3 py-1.5 flex items-center gap-2 text-meta uppercase tracking-[0.16em] font-mono " +
+            "w-full flex items-center gap-2 uppercase tracking-[0.16em] font-mono " +
+            (isMobile ? "pr-4 py-3 text-sm " : "pr-3 py-1.5 text-meta ") +
             "text-nx-soft hover:text-nx-text transition-colors duration-[80ms] " +
             (dragOverGroup === node.path ? "bg-nx-elevated shadow-glow-sm" : "")
           }
         >
           {isCollapsed ? (
-            <ChevronRight size={12} className="text-nx-muted shrink-0" />
+            <ChevronRight size={isMobile ? 20 : 12} className="text-nx-muted shrink-0" />
           ) : (
-            <ChevronDown size={12} className="text-nx-accent shrink-0" />
+            <ChevronDown size={isMobile ? 20 : 12} className="text-nx-accent shrink-0" />
           )}
           <span className="truncate">// {node.name}</span>
-          <span className="ml-auto text-micro tabular-nums px-1.5 min-w-[18px] text-center rounded-full border border-nx-border bg-nx-elevated text-nx-muted">
+          <span
+            className={
+              "ml-auto tabular-nums text-center rounded-full border border-nx-border bg-nx-elevated text-nx-muted " +
+              (isMobile ? "text-meta px-2 min-w-[22px]" : "text-micro px-1.5 min-w-[18px]")
+            }
+          >
             {countHosts(node)}
           </span>
         </button>
@@ -793,7 +810,8 @@ export function Sidebar({
       <div className="mb-1">
         <div
           className={
-            "px-3 pt-2 pb-1 flex items-center gap-1.5 text-micro uppercase tracking-[0.2em] font-mono select-none border-b border-nx-divider/40 " +
+            "flex items-center gap-1.5 uppercase tracking-[0.2em] font-mono select-none border-b border-nx-divider/40 " +
+            (isMobile ? "px-4 pt-3 pb-2 text-meta " : "px-3 pt-2 pb-1 text-micro ") +
             (accent ? "text-nx-accent" : "text-nx-muted")
           }
         >
@@ -872,12 +890,15 @@ export function Sidebar({
       }
     >
       <div className="p-3 border-b border-[var(--nx-border)] flex gap-2 items-center">
-        <Search size={14} className="text-[var(--nx-text-muted)]" />
+        <Search size={isMobile ? 18 : 14} className="text-[var(--nx-text-muted)]" />
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder={t("sidebar.filter_placeholder")}
-          className="flex-1 min-w-0 bg-transparent text-[var(--nx-text-primary)] placeholder-[var(--nx-text-muted)] font-mono text-sm focus:outline-none"
+          className={
+            "flex-1 min-w-0 bg-transparent text-[var(--nx-text-primary)] placeholder-[var(--nx-text-muted)] font-mono focus:outline-none " +
+            (isMobile ? "text-base py-1" : "text-sm")
+          }
         />
         <button
           onClick={cycleSortMode}
@@ -885,11 +906,11 @@ export function Sidebar({
           className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
         >
           {sortMode === "alpha" ? (
-            <ArrowDownAZ size={16} />
+            <ArrowDownAZ size={isMobile ? 20 : 16} />
           ) : sortMode === "manual" ? (
-            <GripVertical size={16} />
+            <GripVertical size={isMobile ? 20 : 16} />
           ) : (
-            <Clock size={16} />
+            <Clock size={isMobile ? 20 : 16} />
           )}
         </button>
         {allFolderPaths.size > 0 && (
@@ -903,9 +924,9 @@ export function Sidebar({
             className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
           >
             {allCollapsed ? (
-              <UnfoldVertical size={16} />
+              <UnfoldVertical size={isMobile ? 20 : 16} />
             ) : (
-              <FoldVertical size={16} />
+              <FoldVertical size={isMobile ? 20 : 16} />
             )}
           </button>
         )}
@@ -914,15 +935,19 @@ export function Sidebar({
           title={t("sidebar.add_host")}
           className="text-[var(--nx-accent)] hover:text-[var(--nx-accent)] shrink-0"
         >
-          <Plus size={16} />
+          <Plus size={isMobile ? 20 : 16} />
         </button>
-        <button
-          onClick={onToggleCollapsed}
-          title={t("sidebar.collapse")}
-          className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
-        >
-          <PanelLeftClose size={16} />
-        </button>
+        {/* Sidebar-collapse is a desktop affordance — on mobile the list is a
+         *  full-screen tab, nothing to collapse into. */}
+        {!isMobile && (
+          <button
+            onClick={onToggleCollapsed}
+            title={t("sidebar.collapse")}
+            className="text-[var(--nx-text-muted)] hover:text-[var(--nx-text-soft)] shrink-0"
+          >
+            <PanelLeftClose size={16} />
+          </button>
+        )}
       </div>
 
       <div

@@ -1006,17 +1006,27 @@ pub async fn account_sync_now(
     })
     .await
     .map_err(|e| AccountError::Other(e.to_string()))??;
-    let pull: PullResponse = serde_json::from_value(pull_raw)?;
+    let mut pull: PullResponse = serde_json::from_value(pull_raw)?;
 
     // SELF-HEAL: if the server's max rev is BELOW our cursor, the server lost data
-    // (DB wiped / restored from an older backup). Our flagged hosts still live
-    // locally — reset the sync bookkeeping so this same run re-pushes ALL of them
-    // (the `!did_initial_push` path) instead of silently skipping them as
-    // "unchanged". No data loss: reset clears cursors/revs only, never the host
+    // (DB wiped / restored from an older backup). Reset the sync bookkeeping so
+    // this same run re-pushes ALL locally-flagged hosts (the `!did_initial_push`
+    // path) AND re-pull from scratch (since=0) so a device that needs to DOWNLOAD
+    // the restored items gets them THIS run too — otherwise the end-of-run cursor
+    // (= pull.latest_rev) would skip past them and the device stays empty until a
+    // second sync. No data loss: reset clears cursors/revs only, never the host
     // list. This is what makes a plain "Sync now" restore the cloud after a wipe,
     // so no separate "re-upload everything" button is needed.
     if server_regressed(since, pull.latest_rev) {
         cfg.reset_sync_state();
+        let url = server_url.clone();
+        let tok = token.clone();
+        let raw0 = tokio::task::spawn_blocking(move || {
+            http_get_json(&url, "/v1/items?since=0", &tok)
+        })
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+        pull = serde_json::from_value(raw0)?;
     }
 
     // Load the local host list ONCE; merge incoming `host.<id>` records into this

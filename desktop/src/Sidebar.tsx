@@ -29,6 +29,7 @@ import {
   UnfoldVertical,
   Network,
   Cloud,
+  CloudOff,
   HardDrive,
 } from "lucide-react";
 import {
@@ -800,10 +801,10 @@ export function Sidebar({
           <span>{label}</span>
           {badge && (
             <span
-              className="ml-1.5 normal-case tracking-normal text-nx-muted/80 lowercase"
+              className="ml-auto pl-2 normal-case tracking-normal text-[10px] font-normal text-[var(--nx-text-muted)] whitespace-nowrap"
               title={badge}
             >
-              · {badge}
+              {badge}
             </span>
           )}
         </div>
@@ -970,9 +971,13 @@ export function Sidebar({
           renderSection(
             t("sidebar.section_synced"),
             synced,
-            <Cloud size={11} className="text-nx-accent shrink-0" />,
+            cloudOff ? (
+              <CloudOff size={11} className="text-nx-muted shrink-0" />
+            ) : (
+              <Cloud size={11} className="text-nx-accent shrink-0" />
+            ),
             "__synced__/",
-            true,
+            !cloudOff, // signed out → whole section header goes muted/grey
             cloudOff ? t("sidebar.section_cloud_off") : undefined,
           )}
         {!localEmpty &&

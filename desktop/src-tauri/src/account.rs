@@ -1239,13 +1239,22 @@ fn build_push_changes(
         flagged_now.insert(item_id.clone(), 1);
         let payload = record_for_upload(rec);
         let bytes = serde_json::to_vec(&payload)?;
-        let updated_at = *cfg.updated_at.entry(item_id.clone()).or_insert_with(now_ms);
+        let tracked = *cfg.updated_at.entry(item_id.clone()).or_insert_with(now_ms);
+        // A local EDIT bumps the record's own `updatedAt` (epoch-ms). Use it as the
+        // content timestamp so edits to an ALREADY-synced host (e.g. adding a
+        // port-forward) are detected and pushed — and win LWW on other devices.
+        // Without this, edits never re-upload (and pull clobbers them). Falls back
+        // to the tracked per-item time for records saved before updatedAt existed.
+        let updated_at = record_updated_at(rec).max(tracked);
         let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
         // First-ever push, never-acked, or locally newer than the last sync.
         let changed = !cfg.did_initial_push
             || base_rev == 0
             || updated_at > cfg.last_sync_at.unwrap_or(0);
         if changed {
+            // Keep local_updated aligned with what we're uploading so the next
+            // pull's LWW compares against the right timestamp.
+            cfg.updated_at.insert(item_id.clone(), updated_at);
             let ct = ac::encrypt_item(&bytes, user_key)?;
             changes.push(PushChange {
                 item_id: item_id.clone(),
@@ -1744,6 +1753,34 @@ mod tests {
         assert!(obj.contains_key("forwards"));
         // sync forced true so the pulled record stays flagged
         assert_eq!(obj.get("sync"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    #[test]
+    fn updated_at_read_and_rides_upload() {
+        let mut r = rec("a", true);
+        r.insert("updatedAt".into(), serde_json::json!(1700000000123u64));
+        assert_eq!(record_updated_at(&r), 1700000000123);
+        // must survive into the uploaded payload so other devices can LWW on it
+        let out = record_for_upload(&r);
+        assert_eq!(out.get("updatedAt").and_then(|v| v.as_u64()), Some(1700000000123));
+    }
+
+    #[test]
+    fn local_edit_not_clobbered_by_stale_remote() {
+        // Mirror the pull LWW decision (account_sync_now line ~1067): a locally
+        // edited host (fresh updatedAt) must out-rank a stale remote copy, so a
+        // port-forward added locally is NOT overwritten on the next sync.
+        let mut local = rec("a", true);
+        local.insert("updatedAt".into(), serde_json::json!(2000u64));
+        local.insert("forwards".into(), serde_json::json!([{"id":"f1"}]));
+        let local_updated_cfg = 1000u64; // last-synced cursor for this item
+
+        let stale_remote_ts = 1500u64;
+        let local_ts = record_updated_at(&local).max(local_updated_cfg);
+        assert!(!(stale_remote_ts >= local_ts), "stale remote must NOT apply");
+
+        let newer_remote_ts = 3000u64;
+        assert!(newer_remote_ts >= local_ts, "genuinely newer remote applies");
     }
 
     // --- PULL merge: upsert synced host, preserve local hosts ---------------

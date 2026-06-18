@@ -25,6 +25,12 @@ export interface HostRecord {
   group?: string;
   /** ISO timestamp of last successful connection — for sorting */
   lastUsedAt?: string;
+  /** Epoch-ms of the last content EDIT (set by saveHost). Drives account-sync
+   *  change-detection + last-writer-wins: an edit to an already-synced host
+   *  (e.g. adding a port-forward) must out-rank a stale remote copy, else the
+   *  edit is dropped on push and clobbered on pull. NOT bumped by bumpLastUsed
+   *  (a mere connect must not make this device "win" over another's real edit). */
+  updatedAt?: number;
   /** Manual position within its folder (set by drag-reorder). Only consulted in
    *  the "manual" sidebar sort mode; lower comes first. */
   order?: number;
@@ -230,9 +236,11 @@ export function refreshHosts() {
 
 export async function saveHost(rec: HostRecord): Promise<void> {
   const all = await readAll();
-  const idx = all.findIndex((h) => h.id === rec.id);
-  if (idx >= 0) all[idx] = rec;
-  else all.push(rec);
+  // Stamp the edit time so account-sync detects this change and it wins LWW.
+  const stamped = { ...rec, updatedAt: Date.now() };
+  const idx = all.findIndex((h) => h.id === stamped.id);
+  if (idx >= 0) all[idx] = stamped;
+  else all.push(stamped);
   await writeAll(all);
   notifyHostsChanged();
 }
@@ -243,13 +251,15 @@ export async function saveHost(rec: HostRecord): Promise<void> {
 export async function saveHostsBatch(recs: HostRecord[]): Promise<void> {
   if (recs.length === 0) return;
   const all = await readAll();
+  const now = Date.now();
   const byId = new Map(all.map((h, i) => [h.id, i]));
   for (const rec of recs) {
-    const idx = byId.get(rec.id);
-    if (idx !== undefined) all[idx] = rec;
+    const stamped = { ...rec, updatedAt: now };
+    const idx = byId.get(stamped.id);
+    if (idx !== undefined) all[idx] = stamped;
     else {
-      byId.set(rec.id, all.length);
-      all.push(rec);
+      byId.set(stamped.id, all.length);
+      all.push(stamped);
     }
   }
   await writeAll(all);

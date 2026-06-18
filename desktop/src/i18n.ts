@@ -182,7 +182,7 @@ const ru = {
   },
   terminal: {
     select_host: "выберите хост слева, чтобы подключиться",
-    select_host_mobile: "нажми ☰ и выбери хост",
+    select_host_mobile: "перейди на вкладку «Хосты» и выбери ноду",
     connecting_to: "подключение к {{user}}@{{host}}:{{port}}...",
     session_closed: "сессия закрыта: {{reason}}",
     enter_reconnect: "Enter — переподключиться",
@@ -193,6 +193,17 @@ const ru = {
     retry: "Повторить",
     dormant_hint: "Нажмите, чтобы подключиться",
     dormant_connect: "Подключиться",
+  },
+  mobile: {
+    tab: {
+      hosts: "Хосты",
+      sessions: "Сессии",
+      files: "Файлы",
+      settings: "Настройки",
+    },
+    no_sessions: "Нет открытых сессий",
+    no_sessions_hint: "Выбери ноду на вкладке «Хосты», чтобы подключиться",
+    go_hosts: "К хостам",
   },
   vault: {
     title: "vault",
@@ -1160,7 +1171,7 @@ const en = {
   },
   terminal: {
     select_host: "select a host on the left to connect",
-    select_host_mobile: "tap ☰ and pick a host",
+    select_host_mobile: "go to the Hosts tab and pick a node",
     connecting_to: "connecting to {{user}}@{{host}}:{{port}}...",
     session_closed: "session closed: {{reason}}",
     enter_reconnect: "Enter to reconnect",
@@ -1171,6 +1182,17 @@ const en = {
     retry: "Retry",
     dormant_hint: "Click to connect",
     dormant_connect: "Connect",
+  },
+  mobile: {
+    tab: {
+      hosts: "Hosts",
+      sessions: "Sessions",
+      files: "Files",
+      settings: "Settings",
+    },
+    no_sessions: "No open sessions",
+    no_sessions_hint: "Pick a node on the Hosts tab to connect",
+    go_hosts: "Go to Hosts",
   },
   vault: {
     title: "vault",

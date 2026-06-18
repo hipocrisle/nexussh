@@ -6,7 +6,7 @@
 // Vault/Help/Language/WindowControls bar) on phones. All those actions live
 // in the ⋮ overflow menu instead.
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ReactNode } from "react";
 import { Menu as MenuIcon, MoreVertical } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -22,9 +22,11 @@ interface Props {
   subtitle?: string;
   onDrawer: () => void;
   items: OverflowItem[];
+  /** Inline action buttons (e.g. the sync cloud) shown left of the ⋮ menu. */
+  actions?: ReactNode;
 }
 
-export function MobileTopBar({ title, subtitle, onDrawer, items }: Props) {
+export function MobileTopBar({ title, subtitle, onDrawer, items, actions }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -67,6 +69,7 @@ export function MobileTopBar({ title, subtitle, onDrawer, items }: Props) {
             </div>
           )}
         </div>
+        {actions}
         {items.length > 0 && (
           <div className="relative" ref={menuRef}>
             <button

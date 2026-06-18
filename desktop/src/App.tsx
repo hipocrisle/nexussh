@@ -63,6 +63,7 @@ import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
 import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
+import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
@@ -882,6 +883,13 @@ function App() {
   // SmartKeyBar above the on-screen keyboard. Toggled via media query.
   const isMobile = useIsMobile();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  // Mobile bottom-nav: which of the four destinations is showing. "hosts" is the
+  // home. "settings" isn't stored here — tapping it opens the SettingsScreen
+  // overlay; "files" (SFTP) lands in a later beta (kept out of the bar until it
+  // works). Hosts ⇄ Sessions are the two persistent content views.
+  const [mobileTab, setMobileTab] = useState<MobileTab>("hosts");
+  // Files (SFTP) tab not shipped to the bar yet — see no-stub rule.
+  const FILES_TAB_ENABLED = false;
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Transient tab-switch flash (Ctrl+Tab): tab id to pulse on. Cleared by
   // CSS animation completion via this state being reset after the animation.
@@ -894,7 +902,10 @@ function App() {
   // When the viewport flips between mobile and desktop, make sure the drawer
   // doesn't get stuck open across the transition.
   useEffect(() => {
-    if (!isMobile) setMobileDrawerOpen(false);
+    if (!isMobile) {
+      setMobileDrawerOpen(false);
+      setMobileTab("hosts");
+    }
   }, [isMobile]);
   const [selectedHost, setSelectedHost] = useState<HostRecord | null>(null);
   const [editHost, setEditHost] = useState<HostRecord | null>(null);
@@ -974,10 +985,12 @@ function App() {
     shortcutsOpen,
     vaultPanelOpen: false as boolean,
     sftpOpen: false as boolean,
+    mobileTab: "hosts" as MobileTab,
     closers: {} as Record<string, () => void>,
   });
   // Keep refs current.
   backRef.current.isMobile = isMobile;
+  backRef.current.mobileTab = mobileTab;
   backRef.current.mobileDrawerOpen = mobileDrawerOpen;
   backRef.current.pickerOpen = pickerOpen;
   backRef.current.editHost = editHost;
@@ -1001,7 +1014,8 @@ function App() {
       shortcutsOpen ||
       vaultPanelOpen ||
       !!updatePanel ||
-      !!sftpEntry;
+      !!sftpEntry ||
+      mobileTab !== "hosts";
     if (anyOpen) {
       if (history.state?.nxOverlay !== true) {
         history.pushState({ nxOverlay: true }, "");
@@ -1018,6 +1032,7 @@ function App() {
     vaultPanelOpen,
     updatePanel,
     sftpEntry,
+    mobileTab,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
   backRef.current.vaultPanelOpen = vaultPanelOpen;
@@ -1041,6 +1056,9 @@ function App() {
       else if (b.pickerOpen) setPickerOpen(false);
       else if (b.vaultPanelOpen) setVaultPanelOpen(false);
       else if (b.mobileDrawerOpen) setMobileDrawerOpen(false);
+      // Bottom-nav: back from any non-home tab returns to Hosts before the
+      // press is allowed to collapse the activity.
+      else if (b.mobileTab !== "hosts") setMobileTab("hosts");
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
@@ -1826,6 +1844,23 @@ function App() {
   // Open the Tunnels panel listing all active tunnels (header entry point).
   function openTunnelsPanel() {
     setTunnelsPanel({ open: true, newTunnel: null });
+  }
+
+  // Mobile bottom-nav dispatch. Settings opens the full SettingsScreen overlay
+  // (not a persistent content view); Files is gated until its SFTP browser
+  // ships. Switching away from Settings closes it first.
+  function selectMobileTab(tab: MobileTab) {
+    if (tab === "settings") {
+      setSettingsSection(undefined);
+      setSettingsOpen(true);
+      return;
+    }
+    if (tab === "files") {
+      if (!FILES_TAB_ENABLED) return; // not shown in the bar yet
+      return;
+    }
+    if (settingsOpen) setSettingsOpen(false);
+    setMobileTab(tab);
   }
 
   // Open the Tunnels panel with a host as context (context-menu entry). Resolves
@@ -2791,27 +2826,25 @@ function App() {
   function renderActiveLayoutArea(): React.ReactNode {
     const ws = activeWorkspace;
     if (!ws) {
-      // Mobile home: with no open session, the main area IS the host list
-      // (instead of an empty placeholder behind the ☰ drawer).
+      // Mobile Sessions tab with nothing open: an empty state pointing back to
+      // the Hosts tab (the host list now lives in its own bottom-nav tab, not
+      // here behind the old ☰ drawer).
       if (isMobile) {
         return (
-          <div className="flex-1 min-w-0 flex overflow-hidden">
-            <Sidebar
-              fill
-              onConnect={openHost}
-              onSftp={openSftp}
-              onTunnel={openTunnelFor}
-              onSelect={setSelectedHost}
-              activeHostId={activeSession?.id ?? null}
-              openHostIds={openHostIds}
-              selectedId={selectedHost?.id ?? null}
-              collapsed={false}
-              onToggleCollapsed={() => {}}
-              onContextMenu={(x, y, items, title) =>
-                setMenu({ x, y, items, title })
-              }
-              clickMode={settings.clickMode}
-            />
+          <div className="flex-1 min-w-0 relative overflow-hidden flex flex-col items-center justify-center gap-4 px-8 text-center">
+            <div className="font-mono text-nx-muted text-sm">
+              {t("mobile.no_sessions")}
+            </div>
+            <div className="font-mono text-nx-soft text-meta">
+              {t("mobile.no_sessions_hint")}
+            </div>
+            <button
+              type="button"
+              onClick={() => setMobileTab("hosts")}
+              className="mt-1 font-mono text-sm px-5 py-2.5 rounded border border-nx-accent text-nx-accent active:bg-nx-elevated"
+            >
+              {t("mobile.go_hosts")}
+            </button>
           </div>
         );
       }
@@ -3150,13 +3183,35 @@ function App() {
 
       {isMobile ? (
         <MobileTopBar
-          title={activeSession?.name ?? `NexuSSH v${version}`}
+          title={
+            mobileTab === "sessions" && activeSession
+              ? activeSession.name
+              : `NexuSSH v${version}`
+          }
           subtitle={
-            activeSession
+            mobileTab === "sessions" && activeSession
               ? `${activeSession.user}@${activeSession.host}`
               : undefined
           }
-          onDrawer={() => setMobileDrawerOpen((v) => !v)}
+          onDrawer={() => setMobileTab("hosts")}
+          actions={
+            mobileTab === "hosts" ? (
+              <button
+                type="button"
+                onClick={() => setSyncPanelOpen(true)}
+                aria-label={t(
+                  syncState === "on" ? "header.sync_on" : "header.sync_off",
+                )}
+                className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated"
+              >
+                {syncState === "on" ? (
+                  <Cloud size={20} className="text-nx-accent" />
+                ) : (
+                  <CloudOff size={20} className="text-nx-muted" />
+                )}
+              </button>
+            ) : undefined
+          }
           items={[
             {
               label: vault?.configured ? "vault" : t("vault.header_enable"),
@@ -3429,46 +3484,33 @@ function App() {
             )}
           </>
         )}
-        {isMobile && mobileDrawerOpen && (
-          <>
-            <div
-              className="fixed inset-0 z-30 bg-black/50"
-              onClick={() => setMobileDrawerOpen(false)}
-            />
-            <aside
-              className="fixed left-0 bottom-0 z-40 w-[82vw] max-w-[320px] bg-nx-bg shadow-2xl"
-              style={{ top: "calc(56px + env(safe-area-inset-top))" }}
-              onClick={(e) => e.stopPropagation()}
-            >
+        <div className="flex-1 min-w-0 flex flex-col relative">
+          {/* Mobile Hosts tab: the host list as a full-screen overlay ON TOP of
+           *  the (still-mounted) terminal layer — so switching to Hosts and back
+           *  never remounts an xterm. z-40 covers the workspace TabBar + rain. */}
+          {isMobile && mobileTab === "hosts" && (
+            <div className="absolute inset-0 z-40 flex flex-col bg-nx-bg">
               <Sidebar
+                fill
                 onConnect={(h) => {
-                  setMobileDrawerOpen(false);
                   openHost(h);
+                  setMobileTab("sessions");
                 }}
-                onSftp={(h) => {
-                  setMobileDrawerOpen(false);
-                  openSftp(h);
-                }}
-                onTunnel={(h) => {
-                  setMobileDrawerOpen(false);
-                  openTunnelFor(h);
-                }}
+                onSftp={openSftp}
+                onTunnel={openTunnelFor}
                 onSelect={setSelectedHost}
                 activeHostId={activeSession?.id ?? null}
                 openHostIds={openHostIds}
                 selectedId={selectedHost?.id ?? null}
                 collapsed={false}
-                onToggleCollapsed={() => setMobileDrawerOpen(false)}
-                width={320}
+                onToggleCollapsed={() => {}}
                 onContextMenu={(x, y, items, title) =>
                   setMenu({ x, y, items, title })
                 }
                 clickMode={settings.clickMode}
               />
-            </aside>
-          </>
-        )}
-        <div className="flex-1 min-w-0 flex flex-col">
+            </div>
+          )}
           <TabBar
             pulseId={switchPulseId}
             tabs={workspaces.map((w) => {
@@ -3510,6 +3552,23 @@ function App() {
           )}
         </div>
       </div>
+
+      {/* Mobile bottom navigation. Hidden while a live terminal is full-screen
+       *  (Sessions tab + a connected, focused session) so the terminal and
+       *  SmartKeyBar own the viewport; ☰ / the Sessions tab bring it back. */}
+      {isMobile &&
+        !(
+          mobileTab === "sessions" &&
+          !!focusedSession &&
+          focusedSession.status === "connected"
+        ) && (
+          <MobileTabBar
+            active={settingsOpen ? "settings" : mobileTab}
+            onSelect={selectMobileTab}
+            sessionCount={allSessions.length}
+            filesEnabled={FILES_TAB_ENABLED}
+          />
+        )}
 
       {!isMobile && (
         <StatusLine
@@ -3720,7 +3779,7 @@ function App() {
           onConnect={() => {
             const h = selectedHost;
             setSelectedHost(null);
-            setMobileDrawerOpen(false); // close the drawer so the terminal shows
+            if (isMobile) setMobileTab("sessions"); // jump to the terminal
             openHost(h);
           }}
           onEdit={() => {

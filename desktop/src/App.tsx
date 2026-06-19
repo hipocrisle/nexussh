@@ -1015,6 +1015,10 @@ function App() {
       vaultPanelOpen ||
       !!updatePanel ||
       !!sftpEntry ||
+      syncPanelOpen ||
+      !!tunnelsPanel?.open ||
+      historyPanelOpen ||
+      !!selectedHost ||
       mobileTab !== "hosts";
     if (anyOpen) {
       if (history.state?.nxOverlay !== true) {
@@ -1032,6 +1036,10 @@ function App() {
     vaultPanelOpen,
     updatePanel,
     sftpEntry,
+    syncPanelOpen,
+    tunnelsPanel,
+    historyPanelOpen,
+    selectedHost,
     mobileTab,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
@@ -1039,16 +1047,31 @@ function App() {
   (backRef.current as { updatePanelOpen?: boolean }).updatePanelOpen =
     !!updatePanel;
   (backRef.current as { sftpOpen?: boolean }).sftpOpen = !!sftpEntry;
+  (backRef.current as { syncPanelOpen?: boolean }).syncPanelOpen = syncPanelOpen;
+  (backRef.current as { tunnelsPanelOpen?: boolean }).tunnelsPanelOpen =
+    !!tunnelsPanel?.open;
+  (backRef.current as { historyPanelOpen?: boolean }).historyPanelOpen =
+    historyPanelOpen;
+  (backRef.current as { selectedHostOpen?: boolean }).selectedHostOpen =
+    !!selectedHost;
   useEffect(() => {
     if (!isMobile) return;
     const onPop = () => {
       const b = backRef.current as typeof backRef.current & {
         updatePanelOpen?: boolean;
         sftpOpen?: boolean;
+        syncPanelOpen?: boolean;
+        tunnelsPanelOpen?: boolean;
+        historyPanelOpen?: boolean;
+        selectedHostOpen?: boolean;
       };
       // Drill-down order: deepest/newest first.
       if (b.sftpOpen) closeSftp();
       else if (b.updatePanelOpen) setUpdatePanel(null);
+      else if (b.syncPanelOpen) setSyncPanelOpen(false);
+      else if (b.tunnelsPanelOpen) setTunnelsPanel(null);
+      else if (b.historyPanelOpen) setHistoryPanelOpen(false);
+      else if (b.selectedHostOpen) setSelectedHost(null);
       else if (b.settingsOpen) setSettingsOpen(false);
       else if (b.shortcutsOpen) setShortcutsOpen(false);
       else if (b.editHost) setEditHost(null);

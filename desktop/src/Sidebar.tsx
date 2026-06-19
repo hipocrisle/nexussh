@@ -165,6 +165,42 @@ export function Sidebar({
   >(null);
   // Folder picker for "Move to folder…" — opened with a host.
   const [movingHost, setMovingHost] = useState<HostRecord | null>(null);
+
+  // Mobile back-gesture for the Sidebar's OWN overlays (add/edit host dialog,
+  // folder picker). These live in Sidebar state, so App's central back-handler
+  // can't see them — without this, Android back falls through and collapses the
+  // app mid-edit. Push a synthetic history entry while an overlay is open; the
+  // back press pops it (closing the overlay) instead of leaving the activity.
+  const sidebarBackPushed = useRef(false);
+  useEffect(() => {
+    if (!isMobile) return;
+    const anyOpen = !!dialog || !!movingHost;
+    if (anyOpen && !sidebarBackPushed.current) {
+      sidebarBackPushed.current = true;
+      history.pushState({ nxSidebar: true }, "");
+    } else if (!anyOpen && sidebarBackPushed.current) {
+      // Programmatic close (Save/Cancel) — consume our synthetic entry so the
+      // next back press isn't silently eaten.
+      sidebarBackPushed.current = false;
+      if ((history.state as { nxSidebar?: boolean })?.nxSidebar === true) {
+        history.back();
+      }
+    }
+  }, [isMobile, dialog, movingHost]);
+  useEffect(() => {
+    if (!isMobile) return;
+    const onPop = () => {
+      if (!dialog && !movingHost) return; // nothing of ours to close
+      // The browser already popped our entry; mark it consumed, then close the
+      // newest overlay first (each setter no-ops if already closed).
+      sidebarBackPushed.current = false;
+      setMovingHost((m) => (m ? null : m));
+      setDialog((d) => (d ? null : d));
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [isMobile, dialog, movingHost]);
+
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     readCollapsedGroups(),
   );

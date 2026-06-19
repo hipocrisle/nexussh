@@ -228,6 +228,14 @@ export function TerminalView({
     let dragSelection = "";
     let dragging = false;
     const selDisposable = term.onSelectionChange(() => {
+      // Only stash the selection while the USER is actively drag-selecting in
+      // THIS terminal. The search addon's findNext() selects the matched text
+      // to highlight it, which also fires onSelectionChange — without this gate
+      // that match (≈ the search query) poisons dragSelection, and a later copy
+      // whose live getSelection() came back empty (raced by a TUI redraw, see
+      // below) falls back to it and pastes the SEARCH TEXT instead of what was
+      // selected. That's the intermittent "clipboard gets the find query" bug.
+      if (!dragging) return;
       const s = term.getSelection();
       if (s) dragSelection = s;
     });

@@ -217,47 +217,45 @@ export function TerminalView({
       capture: true,
     });
 
-    // Touch scroll (mobile): a vertical swipe scrolls. In the main buffer we
-    // scroll the xterm viewport; in alt-screen (Claude Code, less, vim, htop —
-    // no scrollback) we translate the swipe into Up/Down arrow keys so the TUI
-    // scrolls naturally, instead of forcing the user to peck the SmartKeyBar
-    // arrows. Respects application-cursor-keys mode so the app gets the right
-    // sequence. A tap (no real movement) is left alone so focus / cursor still
-    // work.
+    // ── Mobile touch ─────────────────────────────────────────────────────
+    // xterm scrolls the MAIN buffer on touch itself (Viewport.handleTouchStart),
+    // so we leave that alone. In ALT-screen (Claude Code/less/vim — app mouse
+    // mode, where xterm skips its touch-scroll) we turn a swipe into Up/Down
+    // arrows so the TUI scrolls.
+    //
+    // SELECTION (main buffer): HOLD ~400ms, then DRAG, RELEASE shows the menu.
+    // We drive xterm's OWN selection by synthesizing mouse events — verified
+    // against xterm 5.5.0: SelectionService.handleMouseDown is bound to
+    // term.element (root) and picks the action from event.detail (1=start,
+    // 2=word, 3=line), then adds mousemove/mouseup on the ownerDocument. So:
+    // mousedown → term.element with detail:1; mousemove/up → document. Listeners
+    // are CAPTURE phase so they also fire over the text region.
     let touchActive = false;
-    let lastTouchY = 0;
-    let lastX = 0;
-    let lastY = 0;
-    let startX = 0;
-    let startY = 0;
-    let touchAccum = 0;
-    const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-
-    // Mobile selection: HOLD a finger still (~400ms) → DRAG to select → RELEASE
-    // shows the menu. We drive xterm's OWN selection by synthesizing mouse events
-    // from the touch (mousedown→mousemove→mouseup) — so all the cell math, word
-    // snapping, highlight and getSelection() are xterm's, not ours. A plain
-    // swipe (move before the hold fires) scrolls instead.
     let selecting = false;
     let pressTimer = 0;
-    const screenEl = () =>
-      containerRef.current?.querySelector(".xterm-screen") as HTMLElement | null;
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let lastTouchY = 0;
+    let touchAccum = 0;
+    const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
     const synthMouse = (
       type: "mousedown" | "mousemove" | "mouseup",
       x: number,
       y: number,
-      target: EventTarget | null,
-      bubbles: boolean,
+      target: EventTarget | null | undefined,
     ) => {
       target?.dispatchEvent(
         new MouseEvent(type, {
-          bubbles,
+          bubbles: true,
           cancelable: true,
           view: window,
           clientX: x,
           clientY: y,
           button: 0,
           buttons: type === "mouseup" ? 0 : 1,
+          detail: type === "mousedown" ? 1 : 0,
         }),
       );
     };
@@ -271,21 +269,19 @@ export function TerminalView({
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      const t0 = ev.touches[0];
-      lastTouchY = t0.clientY;
-      startX = t0.clientX;
-      startY = t0.clientY;
-      lastX = t0.clientX;
-      lastY = t0.clientY;
-      touchAccum = 0;
       selecting = false;
+      const t0 = ev.touches[0];
+      startX = lastX = t0.clientX;
+      startY = lastY = lastTouchY = t0.clientY;
+      touchAccum = 0;
       clearPressTimer();
-      pressTimer = window.setTimeout(() => {
-        // Held still → start an xterm selection at the press point. bubbles:false
-        // so our own container mousedown handler (puttyMouse) doesn't arm.
-        selecting = true;
-        synthMouse("mousedown", startX, startY, screenEl(), false);
-      }, 400);
+      // Long-press → selection, main buffer only (alt-screen is app mouse mode).
+      if (term.buffer.active.type !== "alternate") {
+        pressTimer = window.setTimeout(() => {
+          selecting = true;
+          synthMouse("mousedown", startX, startY, term.element ?? null);
+        }, 400);
+      }
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
@@ -293,22 +289,22 @@ export function TerminalView({
       lastX = t.clientX;
       lastY = t.clientY;
       if (selecting) {
-        // Extend xterm's selection; xterm listens for mousemove on document.
-        synthMouse("mousemove", t.clientX, t.clientY, document, true);
+        synthMouse("mousemove", t.clientX, t.clientY, document);
         ev.preventDefault();
+        ev.stopPropagation(); // don't let xterm also scroll while selecting
         return;
       }
-      // Moved before the hold fired → it's a swipe (scroll), cancel the press.
+      // Moved before the hold fired → it's a swipe, not a press.
       if (
         pressTimer &&
         (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10)
       ) {
         clearPressTimer();
       }
-      const y = t.clientY;
-      const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
-      lastTouchY = y;
+      // Alt-screen: swipe → arrows. Main buffer: let xterm scroll natively.
       if (term.buffer.active.type === "alternate") {
+        const dy = lastTouchY - t.clientY;
+        lastTouchY = t.clientY;
         touchAccum += dy;
         const app = (term.modes as { applicationCursorKeysMode?: boolean })
           ?.applicationCursorKeysMode;
@@ -325,41 +321,38 @@ export function TerminalView({
           moved = true;
           sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
         }
-        if (moved) ev.preventDefault();
-      } else if (viewport && dy !== 0) {
-        viewport.scrollTop += dy;
-        ev.preventDefault();
+        if (moved) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
       }
     };
-    const onTouchEnd = () => {
+    const endTouch = (showMenu: boolean) => {
       touchActive = false;
       clearPressTimer();
       if (selecting) {
         selecting = false;
-        synthMouse("mouseup", lastX, lastY, document, true);
-        // Show the menu so the user can Copy the (now selected) range / Paste.
-        openTermMenuRef.current(lastX, lastY);
+        synthMouse("mouseup", lastX, lastY, document);
+        if (showMenu) openTermMenuRef.current(lastX, lastY);
       }
     };
-    const onTouchCancel = () => {
-      touchActive = false;
-      clearPressTimer();
-      if (selecting) {
-        selecting = false;
-        synthMouse("mouseup", lastX, lastY, document, true);
-      }
-    };
+    const onTouchEnd = () => endTouch(true);
+    const onTouchCancel = () => endTouch(false);
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
+      capture: true,
     });
     containerRef.current.addEventListener("touchmove", onTouchMove, {
       passive: false,
+      capture: true,
     });
     containerRef.current.addEventListener("touchend", onTouchEnd, {
       passive: true,
+      capture: true,
     });
     containerRef.current.addEventListener("touchcancel", onTouchCancel, {
       passive: true,
+      capture: true,
     });
 
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
@@ -388,8 +381,11 @@ export function TerminalView({
       const s = term.getSelection();
       if (s) dragSelection = s;
     });
-    // mousedown on OUR container = a drag-select starts in this term.
-    const mousedownHandler = () => {
+    // mousedown on OUR container = a drag-select starts in this term. Ignore the
+    // SYNTHETIC mousedown we dispatch for mobile selection (isTrusted=false) so
+    // it doesn't arm the PuTTY copy-on-select path.
+    const mousedownHandler = (e: MouseEvent) => {
+      if (!e.isTrusted) return;
       dragging = true;
       dragSelection = "";
     };
@@ -399,7 +395,8 @@ export function TerminalView({
     // (the "copying randomly stops working" report). We gate on `dragging` so
     // only the term the drag STARTED in copies; every other term's window
     // listener sees dragging=false and no-ops.
-    const mouseupHandler = () => {
+    const mouseupHandler = (e: MouseEvent) => {
+      if (!e.isTrusted) return; // ignore our synthetic mobile-selection mouseup
       if (!dragging) return;
       dragging = false;
       if (!settingsRef.current.puttyMouse) return;
@@ -590,10 +587,10 @@ export function TerminalView({
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
       containerRef.current?.removeEventListener("copy", copyHandler);
-      containerRef.current?.removeEventListener("touchstart", onTouchStart);
-      containerRef.current?.removeEventListener("touchmove", onTouchMove);
-      containerRef.current?.removeEventListener("touchend", onTouchEnd);
-      containerRef.current?.removeEventListener("touchcancel", onTouchCancel);
+      containerRef.current?.removeEventListener("touchstart", onTouchStart, true);
+      containerRef.current?.removeEventListener("touchmove", onTouchMove, true);
+      containerRef.current?.removeEventListener("touchend", onTouchEnd, true);
+      containerRef.current?.removeEventListener("touchcancel", onTouchCancel, true);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

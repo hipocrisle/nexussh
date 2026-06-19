@@ -226,7 +226,6 @@ export function TerminalView({
     let lastTouchY = 0;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-    const nativeSelecting = () => !!window.getSelection()?.toString();
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
@@ -235,38 +234,32 @@ export function TerminalView({
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      // A native selection is in progress → let the browser own the gesture
-      // (extend handles + auto-scroll at the edge); don't scroll or preventDefault.
-      if (nativeSelecting()) {
-        ev.stopPropagation();
-        return;
-      }
+      // MAIN buffer: do NOTHING — never preventDefault here, or it cancels the
+      // browser's native long-press text selection (the bug behind every failed
+      // attempt). xterm's own touch handler scrolls the main buffer; native
+      // selection handles the rest. Only ALT-screen (no scrollback, app mouse
+      // mode — xterm won't scroll it) needs swipe→arrows.
+      if (term.buffer.active.type !== "alternate") return;
       const y = ev.touches[0].clientY;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
-      if (term.buffer.active.type === "alternate") {
-        touchAccum += dy;
-        const app = (term.modes as { applicationCursorKeysMode?: boolean })
-          ?.applicationCursorKeysMode;
-        const up = app ? "\x1bOA" : "\x1b[A";
-        const down = app ? "\x1bOB" : "\x1b[B";
-        let moved = false;
-        while (touchAccum >= TOUCH_ROW_PX) {
-          touchAccum -= TOUCH_ROW_PX;
-          moved = true;
-          sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
-        }
-        while (touchAccum <= -TOUCH_ROW_PX) {
-          touchAccum += TOUCH_ROW_PX;
-          moved = true;
-          sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
-        }
-        if (moved) {
-          ev.preventDefault();
-          ev.stopPropagation();
-        }
-      } else if (viewport && dy !== 0) {
-        viewport.scrollTop += dy;
+      touchAccum += dy;
+      const app = (term.modes as { applicationCursorKeysMode?: boolean })
+        ?.applicationCursorKeysMode;
+      const up = app ? "\x1bOA" : "\x1b[A";
+      const down = app ? "\x1bOB" : "\x1b[B";
+      let moved = false;
+      while (touchAccum >= TOUCH_ROW_PX) {
+        touchAccum -= TOUCH_ROW_PX;
+        moved = true;
+        sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
+      }
+      while (touchAccum <= -TOUCH_ROW_PX) {
+        touchAccum += TOUCH_ROW_PX;
+        moved = true;
+        sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
+      }
+      if (moved) {
         ev.preventDefault();
         ev.stopPropagation();
       }

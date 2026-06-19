@@ -76,15 +76,13 @@ body {
   font-feature-settings: "liga" 1, "calt" 1;
 }
 
-/* Touch devices: make the terminal text natively selectable IN PLACE (long-press
- * a word → handles → drag → system copy), like any app. Two blockers in xterm's
- * own CSS:
- *  1) `.xterm` is user-select:none (it normally does mouse selection) → allow it.
- *  2) `.xterm-viewport` (the scroller) is absolutely positioned OVER the rows and
- *     eats the touch, so the press never reaches the text → pointer-events:none
- *     on it. We scroll programmatically from our own touch handler instead. */
-@media (pointer: coarse) {
-  .xterm,
+/* Touch devices: native text selection (long-press → word → handles → system
+ * copy), mirroring xterm.js PR #5961. xterm sets rows to user-select:none for
+ * its mouse selection; on a touch device there's no mouse, so re-enable native
+ * selection on the rows. The OTHER half of the fix is in Terminal.tsx: our touch
+ * handler must NOT preventDefault in the main buffer, or it cancels the browser's
+ * long-press selection gesture (the bug behind all the failed attempts). */
+@media (hover: none) and (pointer: coarse) {
   .xterm .xterm-screen,
   .xterm .xterm-rows,
   .xterm .xterm-rows * {
@@ -92,10 +90,8 @@ body {
     user-select: text !important;
     -webkit-touch-callout: default !important;
   }
-  .xterm .xterm-viewport {
-    pointer-events: none !important;
-  }
 }
+
 
 
 /* Smooth fade transitions for tab/screen switches */

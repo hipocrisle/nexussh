@@ -292,7 +292,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
             <Key label="*" onTap={() => emit("*")} />
             <Key label="&" onTap={() => emit("&")} />
             <Key label="$" onTap={() => emit("$")} />
-            <Key label="📋" onTap={paste} title="Вставить" />
+            <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} title="Ctrl (модификатор)" />
           </div>
         </div>
       )}
@@ -441,7 +441,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       {/* Row 1 — Esc, modifiers, panels, keyboard toggle. */}
       <div className="flex gap-1.5 px-2 pt-1.5">
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
-        <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} />
+        <Key label="📋" title="Вставить" onTap={paste} />
         <Key
           label="⌫"
           title="Backspace (зажми — повтор)"

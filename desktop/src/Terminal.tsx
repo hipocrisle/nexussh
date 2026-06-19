@@ -357,29 +357,46 @@ export function TerminalView({
         ev.preventDefault();
       }
     };
-    const onTouchEnd = () => {
+    // Ends a touch gesture. `copy` is true only on a real lift (touchend) — on
+    // touchcancel (the browser hijacked the gesture) we just reset so the hint
+    // can't get stuck.
+    const finishTouch = (copy: boolean) => {
       touchActive = false;
       clearPressTimer();
       if (selecting) {
-        const sel = term.getSelection();
-        if (sel) {
-          writeClipboard(sel);
-          setCopiedToast(true);
-          window.setTimeout(() => setCopiedToast(false), 1500);
+        if (copy) {
+          const sel = term.getSelection();
+          if (sel) {
+            writeClipboard(sel);
+            setCopiedToast(true);
+            window.setTimeout(() => setCopiedToast(false), 1500);
+          }
         }
         selecting = false;
         selAnchor = null;
         setSelectHint(false);
       }
     };
+    const onTouchEnd = () => finishTouch(true);
+    const onTouchCancel = () => finishTouch(false);
+    // CAPTURE phase: we must see the touch BEFORE xterm's .xterm-viewport scrolls
+    // natively, otherwise preventDefault() is too late and the page scrolls even
+    // mid-selection (the bug). passive:false on move so preventDefault works.
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
+      capture: true,
     });
     containerRef.current.addEventListener("touchmove", onTouchMove, {
       passive: false,
+      capture: true,
     });
     containerRef.current.addEventListener("touchend", onTouchEnd, {
       passive: true,
+      capture: true,
+    });
+    containerRef.current.addEventListener("touchcancel", onTouchCancel, {
+      passive: true,
+      capture: true,
     });
 
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
@@ -601,9 +618,10 @@ export function TerminalView({
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
       containerRef.current?.removeEventListener("copy", copyHandler);
-      containerRef.current?.removeEventListener("touchstart", onTouchStart);
-      containerRef.current?.removeEventListener("touchmove", onTouchMove);
-      containerRef.current?.removeEventListener("touchend", onTouchEnd);
+      containerRef.current?.removeEventListener("touchstart", onTouchStart, true);
+      containerRef.current?.removeEventListener("touchmove", onTouchMove, true);
+      containerRef.current?.removeEventListener("touchend", onTouchEnd, true);
+      containerRef.current?.removeEventListener("touchcancel", onTouchCancel, true);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

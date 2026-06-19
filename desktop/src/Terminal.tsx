@@ -234,15 +234,23 @@ export function TerminalView({
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      // MAIN buffer: do NOTHING — never preventDefault here, or it cancels the
-      // browser's native long-press text selection (the bug behind every failed
-      // attempt). xterm's own touch handler scrolls the main buffer; native
-      // selection handles the rest. Only ALT-screen (no scrollback, app mouse
-      // mode — xterm won't scroll it) needs swipe→arrows.
-      if (term.buffer.active.type !== "alternate") return;
+      // A native selection is in progress (long-press → handles) → step ASIDE so
+      // the browser extends it + auto-scrolls at the screen edge. Never scroll or
+      // preventDefault here, or it cancels the selection.
+      if (window.getSelection()?.toString()) return;
       const y = ev.touches[0].clientY;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
+      // Main buffer: scroll the viewport ourselves — it's now pointer-events:none
+      // (so the press reaches the text for selection), which disables its native
+      // touch-scroll. Alt-screen: swipe → arrows.
+      if (term.buffer.active.type !== "alternate") {
+        if (viewport && dy !== 0) {
+          viewport.scrollTop += dy;
+          ev.preventDefault();
+        }
+        return;
+      }
       touchAccum += dy;
       const app = (term.modes as { applicationCursorKeysMode?: boolean })
         ?.applicationCursorKeysMode;

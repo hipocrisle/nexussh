@@ -215,6 +215,64 @@ export function TerminalView({
       capture: true,
     });
 
+    // Touch scroll (mobile): a vertical swipe scrolls. In the main buffer we
+    // scroll the xterm viewport; in alt-screen (Claude Code, less, vim, htop —
+    // no scrollback) we translate the swipe into Up/Down arrow keys so the TUI
+    // scrolls naturally, instead of forcing the user to peck the SmartKeyBar
+    // arrows. Respects application-cursor-keys mode so the app gets the right
+    // sequence. A tap (no real movement) is left alone so focus / cursor still
+    // work.
+    let touchActive = false;
+    let lastTouchY = 0;
+    let touchAccum = 0;
+    const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) return;
+      touchActive = true;
+      lastTouchY = ev.touches[0].clientY;
+      touchAccum = 0;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (!touchActive || ev.touches.length !== 1) return;
+      const y = ev.touches[0].clientY;
+      const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
+      lastTouchY = y;
+      if (term.buffer.active.type === "alternate") {
+        touchAccum += dy;
+        const app = (term.modes as { applicationCursorKeysMode?: boolean })
+          ?.applicationCursorKeysMode;
+        const up = app ? "\x1bOA" : "\x1b[A";
+        const down = app ? "\x1bOB" : "\x1b[B";
+        let moved = false;
+        while (touchAccum >= TOUCH_ROW_PX) {
+          touchAccum -= TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
+        }
+        while (touchAccum <= -TOUCH_ROW_PX) {
+          touchAccum += TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
+        }
+        if (moved) ev.preventDefault();
+      } else if (viewport && dy !== 0) {
+        viewport.scrollTop += dy;
+        ev.preventDefault();
+      }
+    };
+    const onTouchEnd = () => {
+      touchActive = false;
+    };
+    containerRef.current.addEventListener("touchstart", onTouchStart, {
+      passive: true,
+    });
+    containerRef.current.addEventListener("touchmove", onTouchMove, {
+      passive: false,
+    });
+    containerRef.current.addEventListener("touchend", onTouchEnd, {
+      passive: true,
+    });
+
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
     // (keeping the visual selection), right-click pastes from clipboard
     // immediately. Shift+right-click still opens the regular context menu.
@@ -431,6 +489,9 @@ export function TerminalView({
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
       containerRef.current?.removeEventListener("copy", copyHandler);
+      containerRef.current?.removeEventListener("touchstart", onTouchStart);
+      containerRef.current?.removeEventListener("touchmove", onTouchMove);
+      containerRef.current?.removeEventListener("touchend", onTouchEnd);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

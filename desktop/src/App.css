@@ -76,29 +76,6 @@ body {
   font-feature-settings: "liga" 1, "calt" 1;
 }
 
-/* Touch devices: NATIVE in-place text selection (long-press → word → handles →
- * system copy), mirroring xterm.js PR #5961. Three parts work together:
- *  1) xterm's own selection mousedown is skipped on coarse pointers (patched in
- *     node_modules via patch-package) so it doesn't preventDefault and kill the
- *     browser's long-press gesture.
- *  2) here: the rows become natively selectable, and the .xterm-viewport (the
- *     scroller that sits OVER the rows) is made click-through so the press lands
- *     on the actual text.
- *  3) Terminal.tsx scrolls programmatically (viewport is now click-through) and
- *     steps aside while a native selection is active. */
-@media (hover: none) and (pointer: coarse) {
-  .xterm .xterm-screen,
-  .xterm .xterm-rows,
-  .xterm .xterm-rows * {
-    -webkit-user-select: text !important;
-    user-select: text !important;
-    -webkit-touch-callout: default !important;
-    pointer-events: auto !important;
-  }
-  .xterm .xterm-viewport {
-    pointer-events: none !important;
-  }
-}
 
 
 

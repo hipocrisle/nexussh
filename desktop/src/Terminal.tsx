@@ -99,6 +99,9 @@ export function TerminalView({
     idx: -1,
     count: 0,
   });
+  // Mobile: show the "Copy" pill after a touch selection (set from the touch
+  // handlers in the mount effect via the stable setter).
+  const [showCopy, setShowCopy] = useState(false);
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -216,73 +219,130 @@ export function TerminalView({
     });
 
     // ── Mobile touch ──────────────────────────────────────────────────────
-    // Selection is now NATIVE and in-place (CSS frees .xterm + makes the viewport
-    // click-through). So here we only need to SCROLL on a swipe — and step aside
-    // while a native selection is active so it (and its edge auto-scroll) runs.
-    // Because the viewport is pointer-events:none, its native touch-scroll is off,
-    // so we scroll it programmatically (main buffer) / send arrows (alt-screen).
-    // stopPropagation keeps xterm's own touch handler from double-scrolling.
+    // OUR OWN selection, the same way desktop selects: drive xterm's term.select()
+    // (the exact selection layer the desktop uses) from touch. Long-press starts
+    // it, drag extends it, release shows a "Copy" pill. A plain swipe scrolls
+    // (xterm handles main-buffer scroll itself; alt-screen → arrows). No native
+    // browser selection, no library patches — fully our code.
     let touchActive = false;
     let lastTouchY = 0;
+    let startX = 0;
     let startY = 0;
     let scrolling = false;
+    let selecting = false;
+    let pressTimer = 0;
     let touchAccum = 0;
+    let selAnchor: { col: number; row: number } | null = null;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
+    // Map a touch point to a terminal cell using the REAL rendered rows box
+    // (width/cols, height/rows) — robust, no internal xterm APIs.
+    const cellFromTouch = (x: number, y: number): { col: number; row: number } | null => {
+      const el = (containerRef.current?.querySelector(".xterm-rows") ??
+        containerRef.current?.querySelector(".xterm-screen")) as HTMLElement | null;
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const cols = term.cols || 80;
+      const vrows = term.rows || 24;
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const cellW = rect.width / cols;
+      const cellH = rect.height / vrows;
+      const col = Math.min(cols - 1, Math.max(0, Math.floor((x - rect.left) / cellW)));
+      const visRow = Math.min(vrows - 1, Math.max(0, Math.floor((y - rect.top) / cellH)));
+      return { col, row: term.buffer.active.viewportY + visRow };
+    };
+    const applySelection = (
+      a: { col: number; row: number },
+      b: { col: number; row: number },
+    ) => {
+      let s = a;
+      let e = b;
+      if (b.row < a.row || (b.row === a.row && b.col < a.col)) { s = b; e = a; }
+      const len = (e.row - s.row) * term.cols + (e.col - s.col) + 1;
+      if (len > 0) term.select(s.col, s.row, len);
+    };
+    const clearPress = () => {
+      if (pressTimer) { window.clearTimeout(pressTimer); pressTimer = 0; }
+    };
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      lastTouchY = startY = ev.touches[0].clientY;
+      const t0 = ev.touches[0];
+      startX = t0.clientX;
+      startY = lastTouchY = t0.clientY;
       scrolling = false;
+      selecting = false;
+      selAnchor = null;
       touchAccum = 0;
+      setShowCopy(false); // a new gesture dismisses the old Copy pill
+      clearPress();
+      pressTimer = window.setTimeout(() => {
+        // Held still → start a selection at the press point.
+        selecting = true;
+        selAnchor = cellFromTouch(startX, startY);
+        if (selAnchor) {
+          term.clearSelection();
+          applySelection(selAnchor, selAnchor);
+        }
+        try { navigator.vibrate?.(12); } catch { /* ignore */ }
+      }, 380);
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      // A native selection is in progress (long-press → handles) → step ASIDE so
-      // the browser extends it + auto-scrolls at the screen edge. Never scroll or
-      // preventDefault here, or it cancels the selection.
-      if (window.getSelection()?.toString()) return;
-      const y = ev.touches[0].clientY;
-      // Don't treat micro-jitter as a swipe — a long-press for selection wobbles
-      // a few px before it forms; scrolling+preventDefault on that kills the
-      // nascent selection. Only commit to scrolling once the finger has clearly
-      // moved (>10px), then stay in scroll mode for the rest of the gesture.
-      if (!scrolling && Math.abs(y - startY) <= 10) return;
-      scrolling = true;
-      const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
-      lastTouchY = y;
-      // Main buffer: scroll the viewport ourselves — it's now pointer-events:none
-      // (so the press reaches the text for selection), which disables its native
-      // touch-scroll. Alt-screen: swipe → arrows.
-      if (term.buffer.active.type !== "alternate") {
-        if (viewport && dy !== 0) {
-          viewport.scrollTop += dy;
-          ev.preventDefault();
-        }
-        return;
-      }
-      touchAccum += dy;
-      const app = (term.modes as { applicationCursorKeysMode?: boolean })
-        ?.applicationCursorKeysMode;
-      const up = app ? "\x1bOA" : "\x1b[A";
-      const down = app ? "\x1bOB" : "\x1b[B";
-      let moved = false;
-      while (touchAccum >= TOUCH_ROW_PX) {
-        touchAccum -= TOUCH_ROW_PX;
-        moved = true;
-        sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
-      }
-      while (touchAccum <= -TOUCH_ROW_PX) {
-        touchAccum += TOUCH_ROW_PX;
-        moved = true;
-        sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
-      }
-      if (moved) {
+      const t = ev.touches[0];
+      if (selecting) {
+        const end = cellFromTouch(t.clientX, t.clientY);
+        if (end && selAnchor) applySelection(selAnchor, end);
         ev.preventDefault();
         ev.stopPropagation();
+        return;
+      }
+      // Micro-jitter while still → could be a forming long-press; wait.
+      if (
+        !scrolling &&
+        Math.abs(t.clientX - startX) <= 10 &&
+        Math.abs(t.clientY - startY) <= 10
+      ) {
+        return;
+      }
+      // Real movement → it's a swipe; abandon the pending long-press.
+      scrolling = true;
+      clearPress();
+      const y = t.clientY;
+      const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
+      lastTouchY = y;
+      // Alt-screen: swipe → arrows. Main buffer: let xterm scroll natively (we
+      // don't touch it — no preventDefault, so xterm's own touch-scroll runs).
+      if (term.buffer.active.type === "alternate") {
+        touchAccum += dy;
+        const app = (term.modes as { applicationCursorKeysMode?: boolean })
+          ?.applicationCursorKeysMode;
+        const up = app ? "\x1bOA" : "\x1b[A";
+        const down = app ? "\x1bOB" : "\x1b[B";
+        let moved = false;
+        while (touchAccum >= TOUCH_ROW_PX) {
+          touchAccum -= TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
+        }
+        while (touchAccum <= -TOUCH_ROW_PX) {
+          touchAccum += TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
+        }
+        if (moved) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
       }
     };
     const onTouchEnd = () => {
       touchActive = false;
+      clearPress();
+      if (selecting) {
+        selecting = false;
+        // Show the Copy pill if we ended up with a selection.
+        if (term.getSelection()) setShowCopy(true);
+      }
     };
     const onTouchCancel = onTouchEnd;
     containerRef.current.addEventListener("touchstart", onTouchStart, {
@@ -646,6 +706,21 @@ export function TerminalView({
         className="w-full h-full"
         style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
       />
+      {/* Mobile: Copy pill shown after a touch selection (long-press → drag). */}
+      {showCopy && (
+        <button
+          type="button"
+          className="absolute top-2 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-nx bg-nx-accent text-nx-bg-base font-mono text-meta shadow-elev-modal active:opacity-80"
+          onClick={() => {
+            const sel = termRef.current?.getSelection();
+            if (sel) writeClipboard(sel);
+            termRef.current?.clearSelection();
+            setShowCopy(false);
+          }}
+        >
+          ⧉ {t("term_menu.copy")}
+        </button>
+      )}
       {findOpen && (
         <div
           className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"

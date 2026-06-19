@@ -25,6 +25,9 @@ const VaultPanel = lazy(() =>
 const SyncPanel = lazy(() =>
   import("./SyncPanel").then((m) => ({ default: m.SyncPanel })),
 );
+const MobileFiles = lazy(() =>
+  import("./MobileFiles").then((m) => ({ default: m.MobileFiles })),
+);
 const SFTPPanel = lazy(() =>
   import("./SFTPPanel").then((m) => ({ default: m.SFTPPanel })),
 );
@@ -888,8 +891,7 @@ function App() {
   // overlay; "files" (SFTP) lands in a later beta (kept out of the bar until it
   // works). Hosts ⇄ Sessions are the two persistent content views.
   const [mobileTab, setMobileTab] = useState<MobileTab>("hosts");
-  // Files (SFTP) tab not shipped to the bar yet — see no-stub rule.
-  const FILES_TAB_ENABLED = false;
+  const FILES_TAB_ENABLED = true;
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   // Transient tab-switch flash (Ctrl+Tab): tab id to pulse on. Cleared by
   // CSS animation completion via this state being reset after the animation.
@@ -1845,6 +1847,20 @@ function App() {
     };
   }
 
+  // Resolve a host to ConnectArgs for an SFTP session, handling "always ask"
+  // password prompts. Returns null if the user cancelled the prompt. Used by the
+  // mobile Files (SFTP) tab, which opens its own connection per host.
+  async function resolveSftpArgs(h: HostRecord): Promise<ConnectArgs | null> {
+    let auth = h.auth;
+    if (h.auth.kind === "password" && h.alwaysAskPassword) {
+      const creds = await askPassword(h);
+      if (!creds) return null;
+      h = { ...h, user: creds.user };
+      auth = { kind: "password", password: creds.password };
+    }
+    return buildConnectArgs(h, auth);
+  }
+
   async function openSftp(h: HostRecord) {
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
@@ -1876,10 +1892,6 @@ function App() {
     if (tab === "settings") {
       setSettingsSection(undefined);
       setSettingsOpen(true);
-      return;
-    }
-    if (tab === "files") {
-      if (!FILES_TAB_ENABLED) return; // not shown in the bar yet
       return;
     }
     if (settingsOpen) setSettingsOpen(false);
@@ -3209,7 +3221,9 @@ function App() {
           title={
             mobileTab === "sessions" && activeSession
               ? activeSession.name
-              : `NexuSSH v${version}`
+              : mobileTab === "files"
+                ? t("mobile.tab.files")
+                : `NexuSSH v${version}`
           }
           subtitle={
             mobileTab === "sessions" && activeSession
@@ -3532,6 +3546,15 @@ function App() {
                 }
                 clickMode={settings.clickMode}
               />
+            </div>
+          )}
+          {/* Mobile Files tab: single-pane SFTP browser, same overlay slot as
+           *  Hosts (lazy — pulls in the dialog plugin only when first opened). */}
+          {isMobile && mobileTab === "files" && (
+            <div className="absolute inset-0 z-40 bg-nx-bg">
+              <Suspense fallback={null}>
+                <MobileFiles resolveArgs={resolveSftpArgs} />
+              </Suspense>
             </div>
           )}
           <TabBar

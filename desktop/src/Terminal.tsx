@@ -124,6 +124,8 @@ export function TerminalView({
     setFindQuery("");
     setFindInfo({ idx: -1, count: 0 });
     searchAddorClear();
+    // Drop the lingering find-match selection so it can't be copied afterwards.
+    termRef.current?.clearSelection();
     termRef.current?.focus();
   }
   function searchAddorClear() {
@@ -254,7 +256,14 @@ export function TerminalView({
       if (!dragging) return;
       dragging = false;
       if (!settingsRef.current.puttyMouse) return;
-      const sel = term.getSelection() || dragSelection;
+      // Copy ONLY what THIS drag selected, captured live in dragSelection
+      // (onSelectionChange, gated on `dragging`). Do NOT fall back to
+      // term.getSelection(): after a search the find-match selection lingers, so
+      // a plain click (no drag) would copy IT — the "find query ends up in the
+      // clipboard" bug. A plain click leaves dragSelection "" → nothing copied;
+      // a real drag stashed its text (and that survives a TUI redraw clearing
+      // the live selection, which is why we stash in the first place).
+      const sel = dragSelection;
       if (sel) writeClipboard(sel);
     };
     containerRef.current.addEventListener("mousedown", mousedownHandler);

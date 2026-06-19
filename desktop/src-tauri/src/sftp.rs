@@ -183,8 +183,14 @@ pub async fn sftp_connect(
         let mut c = client::Config::default();
         c.preferred = crate::ssh::preferred_for(args.allow_legacy);
         // Honour the user's keepalive interval (0/absent → backend default).
-        // keepalive_max left at the russh default (unchanged behavior).
         c.keepalive_interval = Some(crate::ssh::keepalive_interval(args.keepalive));
+        // keepalive_max = 0: NEVER force-disconnect on missed keepalive replies
+        // (mirrors ssh.rs). Without this the SFTP session dropped intermittently
+        // on mobile — backgrounding for the file picker / a lossy VPN cascade
+        // delays keepalive acks and russh's default max would close the session
+        // ("SFTP connection closed, reconnect"). A truly dead link is still
+        // caught by the TCP socket closing.
+        c.keepalive_max = 0;
         c
     });
 

@@ -21,7 +21,12 @@ import {
   Loader2,
   X,
   ChevronLeft,
+  CheckSquare,
+  Square,
+  ListChecks,
 } from "lucide-react";
+import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
 import type { ConnectArgs } from "./ssh";
 import {
   sftpConnect,
@@ -75,6 +80,10 @@ export function MobileFiles({ resolveArgs }: Props) {
   const [transfer, setTransfer] = useState<
     { name: string; dir: "up" | "down"; pct: number } | null
   >(null);
+  // Multi-select (group download / delete). Selection is per-directory; changing
+  // dir clears it.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Keep the live sftp id in a ref so the unmount cleanup disconnects it.
   const idRef = useRef<string | null>(null);
@@ -91,6 +100,7 @@ export function MobileFiles({ resolveArgs }: Props) {
   const loadDir = useCallback(async (id: string, path: string) => {
     setBusy(true);
     setError(null);
+    setSelected(new Set()); // selection is per-directory
     try {
       const real = await sftpRealpath(id, path).catch(() => path);
       const list = await sftpList(id, real);
@@ -102,6 +112,19 @@ export function MobileFiles({ resolveArgs }: Props) {
       setBusy(false);
     }
   }, []);
+
+  function toggleSelect(name: string) {
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+  }
+  function exitSelect() {
+    setSelectMode(false);
+    setSelected(new Set());
+  }
 
   async function connect(h: HostRecord) {
     setError(null);
@@ -131,6 +154,7 @@ export function MobileFiles({ resolveArgs }: Props) {
     setCwd("/");
     setLabel("");
     setError(null);
+    exitSelect();
   }
 
   async function runTransfer(
@@ -155,22 +179,54 @@ export function MobileFiles({ resolveArgs }: Props) {
     }
   }
 
-  // Download: pull the remote file as bytes and hand it to the browser's
-  // download mechanism (Blob + <a download>). Avoids a save dialog's content://
-  // URI that the backend can't write to on Android.
+  // Read a remote file's bytes and write them to a local destination via the fs
+  // plugin (which can write a content:// URI from the save dialog on Android —
+  // a plain Blob/<a download> doesn't actually save in the Android WebView).
+  async function saveBytesTo(entry: SftpEntry, destPath: string, tid: string) {
+    const bytes = await sftpReadBytes(sftpId!, joinPath(cwd, entry.name), tid);
+    await writeFile(destPath, bytes);
+  }
+
+  // Download a single file: system save dialog → write bytes there.
   async function download(entry: SftpEntry) {
     if (!sftpId) return;
-    await runTransfer(entry.name, "down", async (tid) => {
-      const bytes = await sftpReadBytes(sftpId, joinPath(cwd, entry.name), tid);
-      const url = URL.createObjectURL(new Blob([bytes]));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = entry.name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 15000);
-    });
+    const dest = await saveDialog({ defaultPath: entry.name }).catch(() => null);
+    if (!dest) return;
+    await runTransfer(entry.name, "down", (tid) => saveBytesTo(entry, dest, tid));
+  }
+
+  // Group download: pick a destination FOLDER once, write each selected file
+  // into it.
+  async function downloadSelected() {
+    if (!sftpId || selected.size === 0) return;
+    const dir = await openDialog({ directory: true }).catch(() => null);
+    if (!dir || Array.isArray(dir)) return;
+    const items = entries.filter((e) => selected.has(e.name) && !e.is_dir);
+    exitSelect();
+    for (const e of items) {
+      await runTransfer(e.name, "down", (tid) =>
+        saveBytesTo(e, joinPath(dir as string, e.name), tid),
+      );
+    }
+  }
+
+  // Group delete: remove every selected entry (files and folders).
+  async function deleteSelected() {
+    if (!sftpId || selected.size === 0) return;
+    if (!confirm(t("files.delete_confirm_n", { count: selected.size }))) return;
+    const items = entries.filter((e) => selected.has(e.name));
+    setBusy(true);
+    try {
+      for (const e of items) {
+        await sftpRemove(sftpId, joinPath(cwd, e.name), e.is_dir);
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+    exitSelect();
+    if (sftpId) await loadDir(sftpId, cwd);
   }
 
   // Upload: use the standard <input type="file"> picker (pure web API) and read
@@ -267,51 +323,95 @@ export function MobileFiles({ resolveArgs }: Props) {
   // ---- Connected: remote browser ----
   return (
     <div className="absolute inset-0 z-40 flex flex-col bg-nx-bg">
-      {/* Header: back-to-hosts, connection label, actions */}
-      <div className="flex items-center gap-1 px-2 h-12 border-b border-nx-border shrink-0">
-        <button
-          type="button"
-          onClick={disconnect}
-          aria-label={t("files.disconnect")}
-          className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-text"
-        >
-          <ChevronLeft size={22} />
-        </button>
-        <span className="flex-1 min-w-0 font-mono text-base text-nx-text truncate">
-          {label}
-        </span>
-        <input
-          ref={fileInputRef}
-          type="file"
-          className="hidden"
-          onChange={onFilePicked}
-        />
-        <button
-          type="button"
-          onClick={pickUpload}
-          aria-label={t("files.upload")}
-          disabled={!!transfer}
-          className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-accent disabled:opacity-40"
-        >
-          <Upload size={20} />
-        </button>
-        <button
-          type="button"
-          onClick={makeDir}
-          aria-label={t("files.new_folder")}
-          className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted"
-        >
-          <FolderPlus size={20} />
-        </button>
-        <button
-          type="button"
-          onClick={() => sftpId && loadDir(sftpId, cwd)}
-          aria-label={t("files.refresh")}
-          className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted"
-        >
-          <RefreshCw size={18} className={busy ? "animate-spin" : ""} />
-        </button>
-      </div>
+      {/* Hidden file picker for uploads (kept mounted so the ref is stable). */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={onFilePicked}
+      />
+      {/* Header: normal actions, or the multi-select action bar. */}
+      {selectMode ? (
+        <div className="flex items-center gap-1 px-2 h-12 border-b border-nx-border shrink-0">
+          <button
+            type="button"
+            onClick={exitSelect}
+            aria-label={t("files.cancel")}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-text"
+          >
+            <X size={22} />
+          </button>
+          <span className="flex-1 min-w-0 font-mono text-base text-nx-text truncate">
+            {t("files.selected_n", { count: selected.size })}
+          </span>
+          <button
+            type="button"
+            onClick={downloadSelected}
+            aria-label={t("files.download")}
+            disabled={selected.size === 0 || !!transfer}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-accent disabled:opacity-40"
+          >
+            <Download size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={deleteSelected}
+            aria-label={t("files.delete")}
+            disabled={selected.size === 0}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-error disabled:opacity-40"
+          >
+            <Trash2 size={20} />
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 px-2 h-12 border-b border-nx-border shrink-0">
+          <button
+            type="button"
+            onClick={disconnect}
+            aria-label={t("files.disconnect")}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-text"
+          >
+            <ChevronLeft size={22} />
+          </button>
+          <span className="flex-1 min-w-0 font-mono text-base text-nx-text truncate">
+            {label}
+          </span>
+          <button
+            type="button"
+            onClick={pickUpload}
+            aria-label={t("files.upload")}
+            disabled={!!transfer}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-accent disabled:opacity-40"
+          >
+            <Upload size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={makeDir}
+            aria-label={t("files.new_folder")}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted"
+          >
+            <FolderPlus size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectMode(true)}
+            aria-label={t("files.select")}
+            disabled={entries.length === 0}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted disabled:opacity-40"
+          >
+            <ListChecks size={20} />
+          </button>
+          <button
+            type="button"
+            onClick={() => sftpId && loadDir(sftpId, cwd)}
+            aria-label={t("files.refresh")}
+            className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted"
+          >
+            <RefreshCw size={18} className={busy ? "animate-spin" : ""} />
+          </button>
+        </div>
+      )}
 
       {/* Current path */}
       <div className="px-4 py-2 font-mono text-sm text-nx-muted truncate shrink-0 border-b border-nx-divider/30">
@@ -339,7 +439,7 @@ export function MobileFiles({ resolveArgs }: Props) {
 
       {/* Entry list */}
       <div className="flex-1 overflow-y-auto">
-        {cwd !== "/" && (
+        {cwd !== "/" && !selectMode && (
           <button
             type="button"
             onClick={() => sftpId && loadDir(sftpId, parentOf(cwd))}
@@ -349,55 +449,79 @@ export function MobileFiles({ resolveArgs }: Props) {
             <span className="font-mono text-base text-nx-soft">..</span>
           </button>
         )}
-        {entries.map((e) => (
-          <div
-            key={e.name}
-            className="w-full flex items-center gap-3 px-4 py-3 border-b border-nx-divider/30 active:bg-nx-elevated"
-          >
-            <button
-              type="button"
-              onClick={() =>
-                e.is_dir
-                  ? sftpId && loadDir(sftpId, joinPath(cwd, e.name))
-                  : download(e)
+        {entries.map((e) => {
+          const isSel = selected.has(e.name);
+          return (
+            <div
+              key={e.name}
+              className={
+                "w-full flex items-center gap-3 px-4 py-3 border-b border-nx-divider/30 " +
+                (isSel ? "bg-nx-elevated" : "active:bg-nx-elevated")
               }
-              className="flex items-center gap-3 flex-1 min-w-0 text-left"
             >
-              {e.is_dir ? (
-                <Folder size={18} className="text-nx-accent shrink-0" />
-              ) : (
-                <FileText size={18} className="text-nx-muted shrink-0" />
-              )}
-              <span className="min-w-0">
-                <span className="block font-mono text-base text-nx-text truncate">
-                  {e.name}
-                </span>
-                <span className="block font-mono text-sm text-nx-muted">
-                  {e.is_dir ? t("files.folder") : fmtSize(e.size)}
-                </span>
-              </span>
-            </button>
-            {!e.is_dir && (
               <button
                 type="button"
-                onClick={() => download(e)}
-                aria-label={t("files.download")}
-                disabled={!!transfer}
-                className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full active:bg-nx-bg text-nx-muted disabled:opacity-40"
+                onClick={() => {
+                  if (selectMode) {
+                    toggleSelect(e.name);
+                  } else if (e.is_dir) {
+                    if (sftpId) loadDir(sftpId, joinPath(cwd, e.name));
+                  } else {
+                    download(e);
+                  }
+                }}
+                onContextMenu={(ev) => {
+                  // Long-press → enter selection and pick this item.
+                  ev.preventDefault();
+                  if (!selectMode) setSelectMode(true);
+                  toggleSelect(e.name);
+                }}
+                className="flex items-center gap-3 flex-1 min-w-0 text-left"
               >
-                <Download size={18} />
+                {selectMode ? (
+                  isSel ? (
+                    <CheckSquare size={20} className="text-nx-accent shrink-0" />
+                  ) : (
+                    <Square size={20} className="text-nx-muted shrink-0" />
+                  )
+                ) : e.is_dir ? (
+                  <Folder size={18} className="text-nx-accent shrink-0" />
+                ) : (
+                  <FileText size={18} className="text-nx-muted shrink-0" />
+                )}
+                <span className="min-w-0">
+                  <span className="block font-mono text-base text-nx-text truncate">
+                    {e.name}
+                  </span>
+                  <span className="block font-mono text-sm text-nx-muted">
+                    {e.is_dir ? t("files.folder") : fmtSize(e.size)}
+                  </span>
+                </span>
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => remove(e)}
-              aria-label={t("files.delete")}
-              className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full active:bg-nx-bg text-nx-muted"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-        ))}
+              {!selectMode && !e.is_dir && (
+                <button
+                  type="button"
+                  onClick={() => download(e)}
+                  aria-label={t("files.download")}
+                  disabled={!!transfer}
+                  className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full active:bg-nx-bg text-nx-muted disabled:opacity-40"
+                >
+                  <Download size={18} />
+                </button>
+              )}
+              {!selectMode && (
+                <button
+                  type="button"
+                  onClick={() => remove(e)}
+                  aria-label={t("files.delete")}
+                  className="shrink-0 inline-flex items-center justify-center w-9 h-9 rounded-full active:bg-nx-bg text-nx-muted"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
+          );
+        })}
         {!busy && entries.length === 0 && cwd === "/" && (
           <div className="px-4 py-6 text-sm font-mono text-nx-muted">
             {t("files.empty")}

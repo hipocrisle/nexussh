@@ -218,6 +218,10 @@ const ru = {
     disconnect: "Отключиться",
     delete: "Удалить",
     delete_confirm: "Удалить «{{name}}»?",
+    select: "Выбрать несколько",
+    cancel: "Отмена",
+    selected_n: "Выбрано: {{count}}",
+    delete_confirm_n: "Удалить выбранное ({{count}})?",
   },
   vault: {
     title: "vault",
@@ -1221,6 +1225,10 @@ const en = {
     disconnect: "Disconnect",
     delete: "Delete",
     delete_confirm: "Delete \"{{name}}\"?",
+    select: "Select multiple",
+    cancel: "Cancel",
+    selected_n: "Selected: {{count}}",
+    delete_confirm_n: "Delete selected ({{count}})?",
   },
   vault: {
     title: "vault",

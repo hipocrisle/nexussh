@@ -99,6 +99,10 @@ export function TerminalView({
     idx: -1,
     count: 0,
   });
+  // Mobile long-press-drag selection: a hint while selecting, a brief "copied"
+  // toast after.
+  const [selectHint, setSelectHint] = useState(false);
+  const [copiedToast, setCopiedToast] = useState(false);
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -226,24 +230,108 @@ export function TerminalView({
     let lastTouchY = 0;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-    // True while the browser's NATIVE text selection is active (long-press →
-    // word, drag the handles to extend). In that case we keep our hands off the
-    // gesture entirely so the native selection + Android copy toolbar work like
-    // in any app — instead of a janky custom selection.
-    const nativeSelecting = () => !!window.getSelection()?.toString();
+
+    // Mobile selection: HOLD a finger still (~430ms) to start selecting at that
+    // point, then DRAG to extend, RELEASE to copy. One fluid gesture, no tiny
+    // handles — xterm blocks the browser's native selection, so we drive its own
+    // selection (term.select) from touch. Cell size is measured from the real
+    // rendered rows (the internal renderer-dimensions API was unreliable and
+    // gave a single-char selection).
+    let selecting = false;
+    let selAnchor: { col: number; row: number } | null = null;
+    let pressTimer = 0;
+    let startX = 0;
+    let startY = 0;
+    const cellFromTouch = (
+      x: number,
+      y: number,
+    ): { col: number; row: number } | null => {
+      const rows = containerRef.current?.querySelector(
+        ".xterm-rows",
+      ) as HTMLElement | null;
+      if (!rows) return null;
+      const rect = rows.getBoundingClientRect();
+      const cols = term.cols || 80;
+      const vrows = term.rows || 24;
+      const cellW = rect.width / cols;
+      const firstRow = rows.children[0] as HTMLElement | undefined;
+      const cellH = firstRow
+        ? firstRow.getBoundingClientRect().height
+        : rect.height / vrows;
+      if (!cellW || !cellH) return null;
+      const col = Math.min(
+        cols - 1,
+        Math.max(0, Math.floor((x - rect.left) / cellW)),
+      );
+      const visRow = Math.min(
+        vrows - 1,
+        Math.max(0, Math.floor((y - rect.top) / cellH)),
+      );
+      return { col, row: term.buffer.active.viewportY + visRow };
+    };
+    const applySelection = (
+      a: { col: number; row: number },
+      b: { col: number; row: number },
+    ) => {
+      let s = a;
+      let e = b;
+      if (b.row < a.row || (b.row === a.row && b.col < a.col)) {
+        s = b;
+        e = a;
+      }
+      const len = (e.row - s.row) * term.cols + (e.col - s.col) + 1;
+      if (len > 0) term.select(s.col, s.row, len);
+    };
+    const clearPressTimer = () => {
+      if (pressTimer) {
+        window.clearTimeout(pressTimer);
+        pressTimer = 0;
+      }
+    };
 
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      lastTouchY = ev.touches[0].clientY;
+      const t0 = ev.touches[0];
+      lastTouchY = t0.clientY;
+      startX = t0.clientX;
+      startY = t0.clientY;
       touchAccum = 0;
+      selecting = false;
+      selAnchor = null;
+      clearPressTimer();
+      pressTimer = window.setTimeout(() => {
+        // Held still long enough → begin selection at the press point.
+        selecting = true;
+        selAnchor = cellFromTouch(startX, startY);
+        if (selAnchor) {
+          term.clearSelection();
+          applySelection(selAnchor, selAnchor);
+        }
+        setSelectHint(true);
+      }, 430);
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      // A native selection is in progress → don't scroll, don't preventDefault;
-      // let the browser drag the selection handles.
-      if (nativeSelecting()) return;
-      const y = ev.touches[0].clientY;
+      const tch = ev.touches[0];
+      // Selection drag: extend, never scroll.
+      if (selecting) {
+        if (selAnchor) {
+          const end = cellFromTouch(tch.clientX, tch.clientY);
+          if (end) applySelection(selAnchor, end);
+        }
+        ev.preventDefault();
+        return;
+      }
+      // Moved meaningfully before the hold fired → it's a swipe, not a press.
+      if (
+        pressTimer &&
+        (Math.abs(tch.clientX - startX) > 10 ||
+          Math.abs(tch.clientY - startY) > 10)
+      ) {
+        clearPressTimer();
+      }
+      const y = tch.clientY;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
       if (term.buffer.active.type === "alternate") {
@@ -271,6 +359,18 @@ export function TerminalView({
     };
     const onTouchEnd = () => {
       touchActive = false;
+      clearPressTimer();
+      if (selecting) {
+        const sel = term.getSelection();
+        if (sel) {
+          writeClipboard(sel);
+          setCopiedToast(true);
+          window.setTimeout(() => setCopiedToast(false), 1500);
+        }
+        selecting = false;
+        selAnchor = null;
+        setSelectHint(false);
+      }
     };
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
@@ -342,6 +442,9 @@ export function TerminalView({
     // All/Clear menu.
     const ctxHandler = (ev: MouseEvent) => {
       ev.preventDefault();
+      // Mobile: long-press is our selection gesture (see touch handlers), not a
+      // menu trigger. Paste lives on the SmartKeyBar (📋). So suppress the menu.
+      if (isMobileRef.current) return;
       if (settingsRef.current.puttyMouse && !ev.shiftKey) {
         readClipboard().then((text) => text && term.paste(text));
         return;
@@ -610,6 +713,16 @@ export function TerminalView({
         className="w-full h-full"
         style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
       />
+      {selectHint && (
+        <div className="absolute top-1.5 left-1/2 -translate-x-1/2 z-20 px-3 py-1 bg-nx-accent text-nx-bg-base rounded-nx shadow-elev-modal font-mono text-meta pointer-events-none">
+          {t("terminal.select_drag_hint")}
+        </div>
+      )}
+      {copiedToast && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 px-3 py-1 bg-nx-panel border border-nx-border text-nx-text rounded-nx shadow-elev-modal font-mono text-meta pointer-events-none">
+          {t("terminal.copied")}
+        </div>
+      )}
       {findOpen && (
         <div
           className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"

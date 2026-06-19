@@ -93,14 +93,22 @@ export function TerminalView({
   // ── In-terminal find (Ctrl+F / 🔍 button) ──────────────────────────────
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
-  // Set in the mount effect; lets the mobile touch handler open the term menu.
-  const openTermMenuRef = useRef<(x: number, y: number) => void>(() => {});
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findInfo, setFindInfo] = useState<{ idx: number; count: number }>({
     idx: -1,
     count: 0,
   });
+  // Mobile copy-mode: the terminal buffer rendered as plain selectable text so
+  // native selection (with handles) + the system copy toolbar work — xterm's own
+  // text can't be selected in place.
+  const [copyMode, setCopyMode] = useState(false);
+  const [copyText, setCopyText] = useState("");
+  const copyPreRef = useRef<HTMLPreElement>(null);
+  // Track `visible` for the (window-level) copy-mode trigger so only the focused
+  // terminal responds.
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -217,127 +225,56 @@ export function TerminalView({
       capture: true,
     });
 
-    // ── Mobile touch ─────────────────────────────────────────────────────
-    // xterm scrolls the MAIN buffer on touch itself (Viewport.handleTouchStart),
-    // so we leave that alone. In ALT-screen (Claude Code/less/vim — app mouse
-    // mode, where xterm skips its touch-scroll) we turn a swipe into Up/Down
-    // arrows so the TUI scrolls.
+    // ── Mobile touch ──────────────────────────────────────────────────────
+    // xterm scrolls the MAIN buffer on touch itself (Viewport.handleTouchStart).
+    // In ALT-screen (Claude Code/less/vim — app mouse mode, xterm skips its own
+    // touch-scroll) we turn a swipe into Up/Down arrows so the TUI scrolls.
     //
-    // SELECTION (main buffer): HOLD ~400ms, then DRAG, RELEASE shows the menu.
-    // We drive xterm's OWN selection by synthesizing mouse events — verified
-    // against xterm 5.5.0: SelectionService.handleMouseDown is bound to
-    // term.element (root) and picks the action from event.detail (1=start,
-    // 2=word, 3=line), then adds mousemove/mouseup on the ownerDocument. So:
-    // mousedown → term.element with detail:1; mousemove/up → document. Listeners
-    // are CAPTURE phase so they also fire over the text region.
+    // Text SELECTION on mobile is a SEPARATE copy-mode overlay (see below): the
+    // xterm text itself can't be selected in place — `.xterm` is user-select:none
+    // and the .xterm-viewport overlays the rows — so we render the buffer text in
+    // a plain selectable <pre> where native selection + handles + the system copy
+    // toolbar just work.
     let touchActive = false;
-    let selecting = false;
-    let pressTimer = 0;
-    let startX = 0;
-    let startY = 0;
-    let lastX = 0;
-    let lastY = 0;
     let lastTouchY = 0;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-    const synthMouse = (
-      type: "mousedown" | "mousemove" | "mouseup",
-      x: number,
-      y: number,
-      target: EventTarget | null | undefined,
-    ) => {
-      target?.dispatchEvent(
-        new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: x,
-          clientY: y,
-          button: 0,
-          buttons: type === "mouseup" ? 0 : 1,
-          detail: type === "mousedown" ? 1 : 0,
-        }),
-      );
-    };
-    const clearPressTimer = () => {
-      if (pressTimer) {
-        window.clearTimeout(pressTimer);
-        pressTimer = 0;
-      }
-    };
-
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      selecting = false;
-      const t0 = ev.touches[0];
-      startX = lastX = t0.clientX;
-      startY = lastY = lastTouchY = t0.clientY;
+      lastTouchY = ev.touches[0].clientY;
       touchAccum = 0;
-      clearPressTimer();
-      // Long-press → selection, main buffer only (alt-screen is app mouse mode).
-      if (term.buffer.active.type !== "alternate") {
-        pressTimer = window.setTimeout(() => {
-          selecting = true;
-          synthMouse("mousedown", startX, startY, term.element ?? null);
-        }, 400);
-      }
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      const t = ev.touches[0];
-      lastX = t.clientX;
-      lastY = t.clientY;
-      if (selecting) {
-        synthMouse("mousemove", t.clientX, t.clientY, document);
+      // Main buffer scrolls natively (xterm). Only alt-screen needs our arrows.
+      if (term.buffer.active.type !== "alternate") return;
+      const dy = lastTouchY - ev.touches[0].clientY;
+      lastTouchY = ev.touches[0].clientY;
+      touchAccum += dy;
+      const app = (term.modes as { applicationCursorKeysMode?: boolean })
+        ?.applicationCursorKeysMode;
+      const up = app ? "\x1bOA" : "\x1b[A";
+      const down = app ? "\x1bOB" : "\x1b[B";
+      let moved = false;
+      while (touchAccum >= TOUCH_ROW_PX) {
+        touchAccum -= TOUCH_ROW_PX;
+        moved = true;
+        sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
+      }
+      while (touchAccum <= -TOUCH_ROW_PX) {
+        touchAccum += TOUCH_ROW_PX;
+        moved = true;
+        sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
+      }
+      if (moved) {
         ev.preventDefault();
-        ev.stopPropagation(); // don't let xterm also scroll while selecting
-        return;
-      }
-      // Moved before the hold fired → it's a swipe, not a press.
-      if (
-        pressTimer &&
-        (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10)
-      ) {
-        clearPressTimer();
-      }
-      // Alt-screen: swipe → arrows. Main buffer: let xterm scroll natively.
-      if (term.buffer.active.type === "alternate") {
-        const dy = lastTouchY - t.clientY;
-        lastTouchY = t.clientY;
-        touchAccum += dy;
-        const app = (term.modes as { applicationCursorKeysMode?: boolean })
-          ?.applicationCursorKeysMode;
-        const up = app ? "\x1bOA" : "\x1b[A";
-        const down = app ? "\x1bOB" : "\x1b[B";
-        let moved = false;
-        while (touchAccum >= TOUCH_ROW_PX) {
-          touchAccum -= TOUCH_ROW_PX;
-          moved = true;
-          sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
-        }
-        while (touchAccum <= -TOUCH_ROW_PX) {
-          touchAccum += TOUCH_ROW_PX;
-          moved = true;
-          sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
-        }
-        if (moved) {
-          ev.preventDefault();
-          ev.stopPropagation();
-        }
+        ev.stopPropagation();
       }
     };
-    const endTouch = (showMenu: boolean) => {
+    const onTouchEnd = () => {
       touchActive = false;
-      clearPressTimer();
-      if (selecting) {
-        selecting = false;
-        synthMouse("mouseup", lastX, lastY, document);
-        if (showMenu) openTermMenuRef.current(lastX, lastY);
-      }
     };
-    const onTouchEnd = () => endTouch(true);
-    const onTouchCancel = () => endTouch(false);
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
       capture: true,
@@ -347,10 +284,6 @@ export function TerminalView({
       capture: true,
     });
     containerRef.current.addEventListener("touchend", onTouchEnd, {
-      passive: true,
-      capture: true,
-    });
-    containerRef.current.addEventListener("touchcancel", onTouchCancel, {
       passive: true,
       capture: true,
     });
@@ -451,7 +384,6 @@ export function TerminalView({
       ];
       onContextMenuRef.current?.(x, y, items);
     };
-    openTermMenuRef.current = openTermMenu;
     const ctxHandler = (ev: MouseEvent) => {
       // Mobile: long-press is the selection gesture; the menu is shown on touch
       // release (see touch handlers), so just swallow the browser's contextmenu.
@@ -590,7 +522,6 @@ export function TerminalView({
       containerRef.current?.removeEventListener("touchstart", onTouchStart, true);
       containerRef.current?.removeEventListener("touchmove", onTouchMove, true);
       containerRef.current?.removeEventListener("touchend", onTouchEnd, true);
-      containerRef.current?.removeEventListener("touchcancel", onTouchCancel, true);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();
@@ -690,6 +621,34 @@ export function TerminalView({
     return () => window.removeEventListener("nx:find", handler);
   }, [sessionId]);
 
+  // Mobile copy-mode: the SmartKeyBar ⧉ button fires nx:copymode; the VISIBLE
+  // terminal snapshots its buffer text into a selectable overlay.
+  useEffect(() => {
+    const handler = () => {
+      if (!visibleRef.current) return;
+      const term = termRef.current;
+      if (!term) return;
+      const buf = term.buffer.active;
+      const total = buf.length;
+      const start = Math.max(0, total - 10000); // cap huge scrollback
+      const lines: string[] = [];
+      for (let i = start; i < total; i++) {
+        lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+      }
+      setCopyText(lines.join("\n").replace(/\s+$/, ""));
+      setCopyMode(true);
+    };
+    window.addEventListener("nx:copymode", handler);
+    return () => window.removeEventListener("nx:copymode", handler);
+  }, []);
+
+  // Show the latest output (what was on screen) when copy-mode opens.
+  useEffect(() => {
+    if (!copyMode) return;
+    const el = copyPreRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [copyMode]);
+
   return (
     <div
       className="relative w-full h-full"
@@ -700,6 +659,40 @@ export function TerminalView({
         className="w-full h-full"
         style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
       />
+      {/* Mobile copy-mode overlay — plain selectable text of the buffer. Native
+       *  selection (with handles) + the system copy toolbar work here because
+       *  it's ordinary HTML text, not the xterm canvas/viewport. */}
+      {copyMode && (
+        <div
+          className="absolute inset-0 z-30 flex flex-col"
+          style={{ background: THEMES[settings.theme].bgBase }}
+        >
+          <div className="flex items-center gap-2 px-3 h-11 border-b border-nx-border shrink-0">
+            <span className="flex-1 font-mono text-meta text-nx-muted truncate">
+              {t("terminal.copy_mode_hint")}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCopyMode(false)}
+              className="font-mono text-sm px-4 py-1.5 rounded border border-nx-accent text-nx-accent active:bg-nx-elevated"
+            >
+              {t("terminal.copy_mode_done")}
+            </button>
+          </div>
+          <pre
+            ref={copyPreRef}
+            className="flex-1 overflow-auto m-0 px-3 py-2 font-mono whitespace-pre text-nx-text"
+            style={{
+              userSelect: "text",
+              WebkitUserSelect: "text",
+              fontSize: settings.fontSize,
+              fontFamily: fontStackOf(settings.font),
+            }}
+          >
+            {copyText}
+          </pre>
+        </div>
+      )}
       {findOpen && (
         <div
           className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"

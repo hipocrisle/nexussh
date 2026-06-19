@@ -195,6 +195,8 @@ const ru = {
     dormant_connect: "Подключиться",
     select_drag_hint: "Проведи пальцем по тексту",
     copied: "Скопировано",
+    copy_mode_hint: "Выдели текст и скопируй (системное меню)",
+    copy_mode_done: "Готово",
   },
   mobile: {
     tab: {
@@ -1205,6 +1207,8 @@ const en = {
     dormant_connect: "Connect",
     select_drag_hint: "Drag across the text",
     copied: "Copied",
+    copy_mode_hint: "Select text and copy (system menu)",
+    copy_mode_done: "Done",
   },
   mobile: {
     tab: {

@@ -76,6 +76,16 @@ body {
   font-feature-settings: "liga" 1, "calt" 1;
 }
 
+/* Mobile copy-mode overlay: force the plain-text buffer to be natively
+ * selectable (handles + system copy toolbar), overriding any inherited
+ * user-select:none from app/UI chrome. */
+.nx-copy-pre {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+  cursor: text;
+}
+
 
 /* Smooth fade transitions for tab/screen switches */
 .fade-in {

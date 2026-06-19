@@ -44,6 +44,19 @@ function fitIfVisible(el: HTMLElement | null, fit: FitAddon | null) {
   fit.fit();
 }
 
+// Snapshot the terminal buffer (capped to the last 10k lines) as plain text for
+// the mobile copy-mode overlay.
+function bufferToText(term: Terminal): string {
+  const buf = term.buffer.active;
+  const total = buf.length;
+  const start = Math.max(0, total - 10000);
+  const lines: string[] = [];
+  for (let i = start; i < total; i++) {
+    lines.push(buf.getLine(i)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n").replace(/\s+$/, "");
+}
+
 interface Props {
   sessionId: string;
   visible: boolean;
@@ -238,15 +251,40 @@ export function TerminalView({
     let touchActive = false;
     let lastTouchY = 0;
     let touchAccum = 0;
+    let startX = 0;
+    let startY = 0;
+    let pressTimer = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
+    const clearPressTimer = () => {
+      if (pressTimer) {
+        window.clearTimeout(pressTimer);
+        pressTimer = 0;
+      }
+    };
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      lastTouchY = ev.touches[0].clientY;
+      const t0 = ev.touches[0];
+      lastTouchY = startY = t0.clientY;
+      startX = t0.clientX;
       touchAccum = 0;
+      clearPressTimer();
+      // Long-press (held still) opens copy-mode — the natural gesture, no need to
+      // dig into the ⋯ panel. Cancelled below if the finger moves (= a swipe).
+      pressTimer = window.setTimeout(() => {
+        setCopyText(bufferToText(term));
+        setCopyMode(true);
+      }, 450);
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
+      const tt = ev.touches[0];
+      if (
+        pressTimer &&
+        (Math.abs(tt.clientX - startX) > 10 || Math.abs(tt.clientY - startY) > 10)
+      ) {
+        clearPressTimer(); // moved → it's a swipe, not a long-press
+      }
       // Main buffer scrolls natively (xterm). Only alt-screen needs our arrows.
       if (term.buffer.active.type !== "alternate") return;
       const dy = lastTouchY - ev.touches[0].clientY;
@@ -274,7 +312,9 @@ export function TerminalView({
     };
     const onTouchEnd = () => {
       touchActive = false;
+      clearPressTimer();
     };
+    const onTouchCancel = onTouchEnd;
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
       capture: true,
@@ -284,6 +324,10 @@ export function TerminalView({
       capture: true,
     });
     containerRef.current.addEventListener("touchend", onTouchEnd, {
+      passive: true,
+      capture: true,
+    });
+    containerRef.current.addEventListener("touchcancel", onTouchCancel, {
       passive: true,
       capture: true,
     });
@@ -522,6 +566,7 @@ export function TerminalView({
       containerRef.current?.removeEventListener("touchstart", onTouchStart, true);
       containerRef.current?.removeEventListener("touchmove", onTouchMove, true);
       containerRef.current?.removeEventListener("touchend", onTouchEnd, true);
+      containerRef.current?.removeEventListener("touchcancel", onTouchCancel, true);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();
@@ -628,14 +673,7 @@ export function TerminalView({
       if (!visibleRef.current) return;
       const term = termRef.current;
       if (!term) return;
-      const buf = term.buffer.active;
-      const total = buf.length;
-      const start = Math.max(0, total - 10000); // cap huge scrollback
-      const lines: string[] = [];
-      for (let i = start; i < total; i++) {
-        lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-      }
-      setCopyText(lines.join("\n").replace(/\s+$/, ""));
+      setCopyText(bufferToText(term));
       setCopyMode(true);
     };
     window.addEventListener("nx:copymode", handler);
@@ -681,10 +719,8 @@ export function TerminalView({
           </div>
           <pre
             ref={copyPreRef}
-            className="flex-1 overflow-auto m-0 px-3 py-2 font-mono whitespace-pre text-nx-text"
+            className="nx-copy-pre flex-1 overflow-auto m-0 px-3 py-2 font-mono whitespace-pre text-nx-text"
             style={{
-              userSelect: "text",
-              WebkitUserSelect: "text",
               fontSize: settings.fontSize,
               fontFamily: fontStackOf(settings.font),
             }}

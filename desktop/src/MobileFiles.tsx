@@ -6,7 +6,7 @@
 // Opens its OWN sftp connection per host (independent of any terminal session).
 // Mounted only while the Files tab is active; disconnects on unmount.
 
-import { useState, useEffect, useRef, useCallback, type ChangeEvent } from "react";
+import { useState, useEffect, useRef, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Folder,
@@ -25,7 +25,7 @@ import {
   Square,
   ListChecks,
 } from "lucide-react";
-import { save as saveDialog, open as openDialog } from "@tauri-apps/plugin-dialog";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import type { ConnectArgs } from "./ssh";
 import {
@@ -85,9 +85,14 @@ export function MobileFiles({ resolveArgs }: Props) {
   const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Keep the live sftp id in a ref so the unmount cleanup disconnects it.
+  // Keep the live sftp id in a ref so the unmount cleanup disconnects it, and
+  // the resolved ConnectArgs so we can transparently RECONNECT a dropped session
+  // without re-prompting (mobile freezes the process while the file picker / save
+  // dialog is foregrounded, which kills the TCP connection — "sftp: session
+  // closed"). withId() retries an op once against a fresh session on that error.
   const idRef = useRef<string | null>(null);
   idRef.current = sftpId;
+  const argsRef = useRef<ConnectArgs | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -97,21 +102,45 @@ export function MobileFiles({ resolveArgs }: Props) {
     };
   }, []);
 
-  const loadDir = useCallback(async (id: string, path: string) => {
+  function isSessionClosed(e: unknown): boolean {
+    return /session closed|not connected|channel|closed|eof|broken pipe|disconnect|reset/i.test(
+      String(e),
+    );
+  }
+
+  // Run an sftp op with the live session id; if the session died (mobile
+  // backgrounding / lossy link), reconnect once from the stored args and retry.
+  async function withId<T>(fn: (id: string) => Promise<T>): Promise<T> {
+    let id = idRef.current;
+    if (!id) throw new Error("not connected");
+    try {
+      return await fn(id);
+    } catch (e) {
+      if (!isSessionClosed(e) || !argsRef.current) throw e;
+      id = await sftpConnect(argsRef.current);
+      idRef.current = id;
+      setSftpId(id);
+      return await fn(id);
+    }
+  }
+
+  async function loadDir(path: string) {
     setBusy(true);
     setError(null);
     setSelected(new Set()); // selection is per-directory
     try {
-      const real = await sftpRealpath(id, path).catch(() => path);
-      const list = await sftpList(id, real);
-      setCwd(real);
-      setEntries(list);
+      const res = await withId(async (id) => {
+        const real = await sftpRealpath(id, path).catch(() => path);
+        return { real, list: await sftpList(id, real) };
+      });
+      setCwd(res.real);
+      setEntries(res.list);
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }
 
   function toggleSelect(name: string) {
     setSelected((prev) => {
@@ -136,10 +165,11 @@ export function MobileFiles({ resolveArgs }: Props) {
         return;
       }
       const id = await sftpConnect(args);
+      argsRef.current = args;
+      idRef.current = id;
       setSftpId(id);
       setLabel(h.name || `${h.user}@${h.host}`);
-      const home = await sftpRealpath(id, ".").catch(() => "/");
-      await loadDir(id, home);
+      await loadDir("."); // resolves & lists the home dir
     } catch (e) {
       setError(String(e));
     } finally {
@@ -149,6 +179,8 @@ export function MobileFiles({ resolveArgs }: Props) {
 
   function disconnect() {
     if (sftpId) sftpDisconnect(sftpId).catch(() => {});
+    idRef.current = null;
+    argsRef.current = null;
     setSftpId(null);
     setEntries([]);
     setCwd("/");
@@ -183,7 +215,9 @@ export function MobileFiles({ resolveArgs }: Props) {
   // plugin (which can write a content:// URI from the save dialog on Android —
   // a plain Blob/<a download> doesn't actually save in the Android WebView).
   async function saveBytesTo(entry: SftpEntry, destPath: string, tid: string) {
-    const bytes = await sftpReadBytes(sftpId!, joinPath(cwd, entry.name), tid);
+    const bytes = await withId((id) =>
+      sftpReadBytes(id, joinPath(cwd, entry.name), tid),
+    );
     await writeFile(destPath, bytes);
   }
 
@@ -195,18 +229,17 @@ export function MobileFiles({ resolveArgs }: Props) {
     await runTransfer(entry.name, "down", (tid) => saveBytesTo(entry, dest, tid));
   }
 
-  // Group download: pick a destination FOLDER once, write each selected file
-  // into it.
+  // Group download: a save dialog per file (one tap each). Writing into a picked
+  // FOLDER would need SAF tree-URI document creation, which the Android WebView
+  // doesn't do via a plain path — so we reuse the reliable single-file save.
   async function downloadSelected() {
     if (!sftpId || selected.size === 0) return;
-    const dir = await openDialog({ directory: true }).catch(() => null);
-    if (!dir || Array.isArray(dir)) return;
     const items = entries.filter((e) => selected.has(e.name) && !e.is_dir);
     exitSelect();
     for (const e of items) {
-      await runTransfer(e.name, "down", (tid) =>
-        saveBytesTo(e, joinPath(dir as string, e.name), tid),
-      );
+      const dest = await saveDialog({ defaultPath: e.name }).catch(() => null);
+      if (!dest) continue; // skipped this one
+      await runTransfer(e.name, "down", (tid) => saveBytesTo(e, dest, tid));
     }
   }
 
@@ -218,7 +251,7 @@ export function MobileFiles({ resolveArgs }: Props) {
     setBusy(true);
     try {
       for (const e of items) {
-        await sftpRemove(sftpId, joinPath(cwd, e.name), e.is_dir);
+        await withId((id) => sftpRemove(id, joinPath(cwd, e.name), e.is_dir));
       }
     } catch (e) {
       setError(String(e));
@@ -226,7 +259,7 @@ export function MobileFiles({ resolveArgs }: Props) {
       setBusy(false);
     }
     exitSelect();
-    if (sftpId) await loadDir(sftpId, cwd);
+    await loadDir(cwd);
   }
 
   // Upload: use the standard <input type="file"> picker (pure web API) and read
@@ -242,9 +275,9 @@ export function MobileFiles({ resolveArgs }: Props) {
     if (!file || !sftpId) return;
     await runTransfer(file.name, "up", async (tid) => {
       const bytes = new Uint8Array(await file.arrayBuffer());
-      await sftpWriteBytes(sftpId, joinPath(cwd, file.name), bytes, tid);
+      await withId((id) => sftpWriteBytes(id, joinPath(cwd, file.name), bytes, tid));
     });
-    if (sftpId) await loadDir(sftpId, cwd);
+    await loadDir(cwd);
   }
 
   async function makeDir() {
@@ -252,8 +285,8 @@ export function MobileFiles({ resolveArgs }: Props) {
     const name = await askPrompt(t("files.new_folder_prompt"));
     if (!name) return;
     try {
-      await sftpMkdir(sftpId, joinPath(cwd, name));
-      await loadDir(sftpId, cwd);
+      await withId((id) => sftpMkdir(id, joinPath(cwd, name)));
+      await loadDir(cwd);
     } catch (e) {
       setError(String(e));
     }
@@ -263,8 +296,8 @@ export function MobileFiles({ resolveArgs }: Props) {
     if (!sftpId) return;
     if (!confirm(t("files.delete_confirm", { name: entry.name }))) return;
     try {
-      await sftpRemove(sftpId, joinPath(cwd, entry.name), entry.is_dir);
-      await loadDir(sftpId, cwd);
+      await withId((id) => sftpRemove(id, joinPath(cwd, entry.name), entry.is_dir));
+      await loadDir(cwd);
     } catch (e) {
       setError(String(e));
     }
@@ -404,7 +437,7 @@ export function MobileFiles({ resolveArgs }: Props) {
           </button>
           <button
             type="button"
-            onClick={() => sftpId && loadDir(sftpId, cwd)}
+            onClick={() => loadDir(cwd)}
             aria-label={t("files.refresh")}
             className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-muted"
           >
@@ -442,7 +475,7 @@ export function MobileFiles({ resolveArgs }: Props) {
         {cwd !== "/" && !selectMode && (
           <button
             type="button"
-            onClick={() => sftpId && loadDir(sftpId, parentOf(cwd))}
+            onClick={() => loadDir(parentOf(cwd))}
             className="w-full flex items-center gap-3 px-4 py-3 text-left active:bg-nx-elevated border-b border-nx-divider/30"
           >
             <CornerLeftUp size={18} className="text-nx-muted shrink-0" />
@@ -465,7 +498,7 @@ export function MobileFiles({ resolveArgs }: Props) {
                   if (selectMode) {
                     toggleSelect(e.name);
                   } else if (e.is_dir) {
-                    if (sftpId) loadDir(sftpId, joinPath(cwd, e.name));
+                    loadDir(joinPath(cwd, e.name));
                   } else {
                     download(e);
                   }

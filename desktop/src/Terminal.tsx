@@ -303,6 +303,22 @@ export function TerminalView({
     };
     containerRef.current.addEventListener("contextmenu", ctxHandler);
 
+    // Belt-and-suspenders for the "clipboard gets the find query" bug: whenever
+    // a copy fires inside the terminal AND there's a real terminal selection,
+    // force the clipboard to the TERMINAL selection. The terminal is canvas, so
+    // window.getSelection() over it is empty — a stray DOM selection (e.g. the
+    // find box's text) would otherwise be what the browser copies. Copies that
+    // originate from the find input itself are left alone.
+    const copyHandler = (ev: ClipboardEvent) => {
+      if (ev.target && ev.target === findInputRef.current) return;
+      const sel = term.getSelection();
+      if (sel) {
+        ev.clipboardData?.setData("text/plain", sel);
+        ev.preventDefault();
+      }
+    };
+    containerRef.current.addEventListener("copy", copyHandler);
+
     // Keyboard shortcuts intercepted at the xterm level so they NEVER reach
     // the PTY: Ctrl+Shift+C (copy), Ctrl+Shift+V (paste), Ctrl+Shift+Up
     // (transcript overlay — actual toggle handled by App.tsx capture-phase
@@ -318,9 +334,15 @@ export function TerminalView({
         return false;
       }
       // Ctrl+F → open in-terminal find. Esc closes it (when open).
+      // Match on ev.code (physical key) NOT ev.key — on a non-Latin layout
+      // (Russian etc.) ev.key is the Cyrillic char ("а"/"с"/"м"), so the old
+      // ev.key check silently failed: Ctrl+F didn't open search AND Ctrl+Shift+C
+      // didn't run our copy handler, so the copy fell through to the browser's
+      // default which grabbed the DOM selection (the find box's query) instead
+      // of the terminal selection — the "clipboard gets the search text" bug.
       const ctrlOnly =
         ev.ctrlKey && !ev.shiftKey && !ev.altKey && !ev.metaKey;
-      if (ctrlOnly && ev.key.toLowerCase() === "f") {
+      if (ctrlOnly && ev.code === "KeyF") {
         openFindRef.current();
         return false;
       }
@@ -329,12 +351,12 @@ export function TerminalView({
         return false;
       }
       const ctrlShift = ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey;
-      if (ctrlShift && ev.key.toLowerCase() === "c") {
+      if (ctrlShift && ev.code === "KeyC") {
         const sel = term.getSelection();
         if (sel) writeClipboard(sel);
         return false;
       }
-      if (ctrlShift && ev.key.toLowerCase() === "v") {
+      if (ctrlShift && ev.code === "KeyV") {
         readClipboard().then((text) => text && term.paste(text));
         return false;
       }
@@ -399,6 +421,7 @@ export function TerminalView({
       window.removeEventListener("resize", onWinResize);
       containerRef.current?.removeEventListener("wheel", wheelHandler, true as any);
       containerRef.current?.removeEventListener("mousedown", mousedownHandler);
+      containerRef.current?.removeEventListener("copy", copyHandler);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

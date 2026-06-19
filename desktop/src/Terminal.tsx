@@ -224,12 +224,15 @@ export function TerminalView({
     // stopPropagation keeps xterm's own touch handler from double-scrolling.
     let touchActive = false;
     let lastTouchY = 0;
+    let startY = 0;
+    let scrolling = false;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      lastTouchY = ev.touches[0].clientY;
+      lastTouchY = startY = ev.touches[0].clientY;
+      scrolling = false;
       touchAccum = 0;
     };
     const onTouchMove = (ev: TouchEvent) => {
@@ -239,6 +242,12 @@ export function TerminalView({
       // preventDefault here, or it cancels the selection.
       if (window.getSelection()?.toString()) return;
       const y = ev.touches[0].clientY;
+      // Don't treat micro-jitter as a swipe — a long-press for selection wobbles
+      // a few px before it forms; scrolling+preventDefault on that kills the
+      // nascent selection. Only commit to scrolling once the finger has clearly
+      // moved (>10px), then stay in scroll mode for the rest of the gesture.
+      if (!scrolling && Math.abs(y - startY) <= 10) return;
+      scrolling = true;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
       // Main buffer: scroll the viewport ourselves — it's now pointer-events:none

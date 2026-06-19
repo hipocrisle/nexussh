@@ -193,6 +193,8 @@ const ru = {
     retry: "Повторить",
     dormant_hint: "Нажмите, чтобы подключиться",
     dormant_connect: "Подключиться",
+    select_drag_hint: "Проведи пальцем по тексту",
+    copied: "Скопировано",
   },
   mobile: {
     tab: {
@@ -998,6 +1000,7 @@ const ru = {
   term_menu: {
     copy: "Копировать",
     paste: "Вставить",
+    select_range: "Выделить текст",
     select_all: "Выделить всё",
     clear: "Очистить терминал",
   },
@@ -1200,6 +1203,8 @@ const en = {
     retry: "Retry",
     dormant_hint: "Click to connect",
     dormant_connect: "Connect",
+    select_drag_hint: "Drag across the text",
+    copied: "Copied",
   },
   mobile: {
     tab: {
@@ -2002,6 +2007,7 @@ const en = {
   term_menu: {
     copy: "Copy",
     paste: "Paste",
+    select_range: "Select text",
     select_all: "Select all",
     clear: "Clear terminal",
   },

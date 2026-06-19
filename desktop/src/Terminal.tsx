@@ -93,12 +93,18 @@ export function TerminalView({
   // ── In-terminal find (Ctrl+F / 🔍 button) ──────────────────────────────
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
+  // Set inside the mount effect; lets the context menu arm drag-to-select.
+  const armSelectRef = useRef<() => void>(() => {});
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findInfo, setFindInfo] = useState<{ idx: number; count: number }>({
     idx: -1,
     count: 0,
   });
+  // Mobile drag-to-select: a hint banner while the mode is armed, and a brief
+  // "copied" toast after a selection is grabbed. Toggled from the touch handlers.
+  const [selectHint, setSelectHint] = useState(false);
+  const [copiedToast, setCopiedToast] = useState(false);
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -226,14 +232,82 @@ export function TerminalView({
     let lastTouchY = 0;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
+
+    // Drag-to-select (mobile). Armed from the long-press context menu. While
+    // armed, a drag selects a text range instead of scrolling; releasing copies
+    // it. Phone-friendly: no precise cursor placement, no tiny handles.
+    let selectMode = false;
+    let selAnchor: { col: number; row: number } | null = null;
+    const cellFromTouch = (
+      x: number,
+      y: number,
+    ): { col: number; row: number } | null => {
+      const el = containerRef.current;
+      if (!el) return null;
+      const core = (
+        term as unknown as {
+          _core?: {
+            _renderService?: {
+              dimensions?: { css?: { cell?: { width: number; height: number } } };
+            };
+          };
+        }
+      )._core;
+      const cell = core?._renderService?.dimensions?.css?.cell;
+      if (!cell || !cell.width || !cell.height) return null;
+      const rect = el.getBoundingClientRect();
+      const col = Math.min(
+        term.cols - 1,
+        Math.max(0, Math.floor((x - rect.left) / cell.width)),
+      );
+      const visRow = Math.max(0, Math.floor((y - rect.top) / cell.height));
+      return { col, row: term.buffer.active.viewportY + visRow };
+    };
+    const applySelection = (
+      a: { col: number; row: number },
+      b: { col: number; row: number },
+    ) => {
+      let s = a;
+      let e = b;
+      if (b.row < a.row || (b.row === a.row && b.col < a.col)) {
+        s = b;
+        e = a;
+      }
+      const len = (e.row - s.row) * term.cols + (e.col - s.col) + 1;
+      if (len > 0) term.select(s.col, s.row, len);
+    };
+    // Called from the context menu to arm selection.
+    armSelectRef.current = () => {
+      selectMode = true;
+      selAnchor = null;
+      term.clearSelection();
+      setSelectHint(true);
+    };
+
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
       lastTouchY = ev.touches[0].clientY;
       touchAccum = 0;
+      if (selectMode) {
+        selAnchor = cellFromTouch(ev.touches[0].clientX, ev.touches[0].clientY);
+        if (selAnchor) applySelection(selAnchor, selAnchor);
+      }
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
+      // Selection drag: extend the range, never scroll.
+      if (selectMode) {
+        if (selAnchor) {
+          const end = cellFromTouch(
+            ev.touches[0].clientX,
+            ev.touches[0].clientY,
+          );
+          if (end) applySelection(selAnchor, end);
+        }
+        ev.preventDefault();
+        return;
+      }
       const y = ev.touches[0].clientY;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
@@ -262,6 +336,17 @@ export function TerminalView({
     };
     const onTouchEnd = () => {
       touchActive = false;
+      if (selectMode) {
+        const sel = term.getSelection();
+        if (sel) {
+          writeClipboard(sel);
+          setCopiedToast(true);
+          window.setTimeout(() => setCopiedToast(false), 1500);
+        }
+        selectMode = false;
+        selAnchor = null;
+        setSelectHint(false);
+      }
     };
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
@@ -340,6 +425,15 @@ export function TerminalView({
       const tr = tRef.current;
       const selection = term.getSelection();
       const items: TerminalAction[] = [
+        // Mobile: arm drag-to-select (no mouse to drag a selection with).
+        ...(isMobileRef.current
+          ? [
+              {
+                label: tr("term_menu.select_range"),
+                onClick: () => armSelectRef.current(),
+              },
+            ]
+          : []),
         {
           label: tr("term_menu.copy"),
           disabled: !selection,
@@ -601,6 +695,18 @@ export function TerminalView({
         className="w-full h-full"
         style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
       />
+      {/* Drag-to-select hint while the mode is armed. */}
+      {selectHint && (
+        <div className="absolute top-1.5 left-1/2 -translate-x-1/2 z-20 px-3 py-1 bg-nx-accent text-nx-bg-base rounded-nx shadow-elev-modal font-mono text-meta pointer-events-none">
+          {t("terminal.select_drag_hint")}
+        </div>
+      )}
+      {/* Brief confirmation after a selection is copied. */}
+      {copiedToast && (
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-20 px-3 py-1 bg-nx-panel border border-nx-border text-nx-text rounded-nx shadow-elev-modal font-mono text-meta pointer-events-none">
+          {t("terminal.copied")}
+        </div>
+      )}
       {findOpen && (
         <div
           className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"

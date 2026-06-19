@@ -17,7 +17,7 @@
 // keyboard up while you use the bar (tapping a focus-stealing button would
 // dismiss it). Output goes through `onSend` (active terminal send-bytes).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { readClipboard } from "./clipboard";
 import {
   listSnippets,
@@ -58,12 +58,21 @@ function Key({
   onTap,
   armed,
   title,
+  repeat,
 }: {
   label: React.ReactNode;
   onTap: () => void;
   armed?: boolean;
   title?: string;
+  /** Hold-to-repeat (backspace, arrows): fire once, then auto-repeat while held. */
+  repeat?: boolean;
 }) {
+  const timers = useRef<{ to?: number; iv?: number }>({});
+  const stop = () => {
+    if (timers.current.to) window.clearTimeout(timers.current.to);
+    if (timers.current.iv) window.clearInterval(timers.current.iv);
+    timers.current = {};
+  };
   return (
     <button
       type="button"
@@ -72,7 +81,14 @@ function Key({
       onPointerDown={(e) => {
         e.preventDefault();
         onTap();
+        if (!repeat) return;
+        timers.current.to = window.setTimeout(() => {
+          timers.current.iv = window.setInterval(onTap, 55);
+        }, 380);
       }}
+      onPointerUp={stop}
+      onPointerLeave={stop}
+      onPointerCancel={stop}
     >
       {label}
     </button>
@@ -261,6 +277,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
             <Key label="Del" onTap={() => emitRaw("\x1b[3~")} />
           </div>
           <div className="flex gap-1.5">
+            <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} title="Alt (модификатор)" />
             <Key label="Tab" onTap={() => emitRaw("\t")} title="Tab (автодополнение)" />
             <Key label="⌃D" onTap={() => onSend("\x04")} title="Ctrl+D" />
             <Key label="⌃Z" onTap={() => onSend("\x1a")} title="Ctrl+Z" />
@@ -425,7 +442,12 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       <div className="flex gap-1.5 px-2 pt-1.5">
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
         <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} />
-        <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} />
+        <Key
+          label="⌫"
+          title="Backspace (зажми — повтор)"
+          repeat
+          onTap={() => onSend("\x7f")}
+        />
         <Key
           label="⚡"
           armed={panel === "snip"}
@@ -461,10 +483,10 @@ export function SmartKeyBar({ onSend, visible }: Props) {
           onTap={() => setPanel((p) => (p === "pw" ? null : "pw"))}
         />
         <Key label="⌃C" onTap={() => onSend("\x03")} title="Ctrl+C" />
-        <Key label="←" onTap={() => emitRaw(ARROWS.left)} />
-        <Key label="↑" onTap={() => emitRaw(ARROWS.up)} />
-        <Key label="↓" onTap={() => emitRaw(ARROWS.down)} />
-        <Key label="→" onTap={() => emitRaw(ARROWS.right)} />
+        <Key label="←" repeat onTap={() => emitRaw(ARROWS.left)} />
+        <Key label="↑" repeat onTap={() => emitRaw(ARROWS.up)} />
+        <Key label="↓" repeat onTap={() => emitRaw(ARROWS.down)} />
+        <Key label="→" repeat onTap={() => emitRaw(ARROWS.right)} />
         <Key label="↵" onTap={() => onSend("\r")} title="Enter" />
       </div>
     </div>

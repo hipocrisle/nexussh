@@ -19,6 +19,14 @@
 
 import { useEffect, useState } from "react";
 import { readClipboard } from "./clipboard";
+import {
+  listSnippets,
+  addSnippet,
+  updateSnippet,
+  deleteSnippet,
+  onSnippetsChanged,
+  type Snippet,
+} from "./snippets";
 
 interface Props {
   onSend: (bytes: string) => void;
@@ -78,8 +86,43 @@ type PwState = {
 
 export function SmartKeyBar({ onSend, visible }: Props) {
   const [mods, setMods] = useState<Set<Mod>>(new Set());
-  const [panel, setPanel] = useState<null | "fn" | "more" | "pw">(null);
+  const [panel, setPanel] = useState<null | "fn" | "more" | "pw" | "snip">(null);
   const [pw, setPw] = useState<PwState>({ status: "idle", items: [] });
+  const [snips, setSnips] = useState<Snippet[]>([]);
+  // null = not editing; otherwise the add/edit form (id null = adding new).
+  const [snipForm, setSnipForm] = useState<{
+    id: string | null;
+    name: string;
+    command: string;
+    enter: boolean;
+  } | null>(null);
+
+  // Load snippets when the ⚡ panel opens and live-update on changes.
+  useEffect(() => {
+    if (panel !== "snip") {
+      setSnipForm(null);
+      return;
+    }
+    setSnips(listSnippets());
+    return onSnippetsChanged(() => setSnips(listSnippets()));
+  }, [panel]);
+
+  function runSnippet(s: Snippet) {
+    onSend(s.command + (s.enter ? "\r" : ""));
+    setPanel(null);
+  }
+  function saveSnipForm() {
+    if (!snipForm) return;
+    const command = snipForm.command;
+    if (!command.trim()) return;
+    const name = snipForm.name.trim() || command.trim().slice(0, 24);
+    if (snipForm.id) {
+      updateSnippet({ id: snipForm.id, name, command, enter: snipForm.enter });
+    } else {
+      addSnippet({ name, command, enter: snipForm.enter });
+    }
+    setSnipForm(null);
+  }
 
   // The "✱✱✱" panel lists hosts that have a password saved IN THE VAULT, so the
   // password is fetched and typed straight into the terminal — never shown,
@@ -271,11 +314,124 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         </div>
       )}
 
+      {/* Snippets panel — saved commands, fired into the terminal on tap. */}
+      {panel === "snip" && (
+        <div className="flex flex-col gap-1.5 px-2 pt-2 pb-2 border-b border-nx-border max-h-[46vh] overflow-y-auto">
+          {snips.length === 0 && !snipForm && (
+            <div className="px-1 py-2 text-[13px] text-nx-muted">
+              Нет сниппетов. Добавь часто используемую команду.
+            </div>
+          )}
+          {!snipForm &&
+            snips.map((s) => (
+              <div key={s.id} className="flex gap-1.5 items-stretch">
+                <button
+                  type="button"
+                  className="flex-1 min-w-0 h-11 px-3 flex items-center gap-2 text-left text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text active:bg-nx-bg-2"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    runSnippet(s);
+                  }}
+                >
+                  <span className="text-nx-accent shrink-0">⚡</span>
+                  <span className="truncate">{s.name}</span>
+                </button>
+                <button
+                  type="button"
+                  title="Изменить"
+                  className="w-11 h-11 shrink-0 rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
+                  onClick={() =>
+                    setSnipForm({
+                      id: s.id,
+                      name: s.name,
+                      command: s.command,
+                      enter: s.enter,
+                    })
+                  }
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  title="Удалить"
+                  className="w-11 h-11 shrink-0 rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
+                  onClick={() => deleteSnippet(s.id)}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+
+          {snipForm ? (
+            <div className="flex flex-col gap-1.5">
+              <input
+                value={snipForm.name}
+                onChange={(e) =>
+                  setSnipForm({ ...snipForm, name: e.target.value })
+                }
+                placeholder="Название (необязательно)"
+                className="h-11 px-3 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text placeholder:text-nx-muted outline-none focus:border-nx-accent"
+              />
+              <input
+                value={snipForm.command}
+                onChange={(e) =>
+                  setSnipForm({ ...snipForm, command: e.target.value })
+                }
+                placeholder="Команда, напр. sudo systemctl restart nginx"
+                className="h-11 px-3 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text placeholder:text-nx-muted outline-none focus:border-nx-accent"
+              />
+              <label className="flex items-center gap-2 px-1 text-[13px] text-nx-soft">
+                <input
+                  type="checkbox"
+                  checked={snipForm.enter}
+                  onChange={(e) =>
+                    setSnipForm({ ...snipForm, enter: e.target.checked })
+                  }
+                />
+                Выполнить сразу (Enter после команды)
+              </label>
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  className="flex-1 h-11 text-[14px] font-mono rounded-nx border bg-[var(--nx-accent)]/15 border-nx-accent text-nx-accent active:bg-nx-bg-2"
+                  onClick={saveSnipForm}
+                >
+                  Сохранить
+                </button>
+                <button
+                  type="button"
+                  className="flex-1 h-11 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
+                  onClick={() => setSnipForm(null)}
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="h-11 text-[14px] font-mono rounded-nx border border-dashed border-nx-border text-nx-muted active:bg-nx-bg-2"
+              onClick={() =>
+                setSnipForm({ id: null, name: "", command: "", enter: true })
+              }
+            >
+              ＋ Добавить сниппет
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Row 1 — Esc, modifiers, panels, keyboard toggle. */}
       <div className="flex gap-1.5 px-2 pt-1.5">
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
         <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} />
         <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} />
+        <Key
+          label="⚡"
+          armed={panel === "snip"}
+          title="Сниппеты — команды в один тап"
+          onTap={() => setPanel((p) => (p === "snip" ? null : "snip"))}
+        />
         <Key
           label="CC"
           title="Claude Code: показать переписку (Ctrl+O)"

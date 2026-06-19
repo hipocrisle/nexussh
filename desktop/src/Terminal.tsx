@@ -93,6 +93,8 @@ export function TerminalView({
   // ── In-terminal find (Ctrl+F / 🔍 button) ──────────────────────────────
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const findInputRef = useRef<HTMLInputElement | null>(null);
+  // Set in the mount effect; lets the mobile touch handler open the term menu.
+  const openTermMenuRef = useRef<(x: number, y: number) => void>(() => {});
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findInfo, setFindInfo] = useState<{ idx: number; count: number }>({
@@ -224,27 +226,86 @@ export function TerminalView({
     // work.
     let touchActive = false;
     let lastTouchY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let startX = 0;
+    let startY = 0;
     let touchAccum = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-    // While the browser's NATIVE text selection is active (long-press → word,
-    // drag the handles to extend), STEP ASIDE: don't scroll, don't
-    // preventDefault. That lets the native selection extend AND auto-scroll when
-    // the finger nears the screen edge (so you can select past the visible area).
-    // Native selection is what works here — see the CSS that frees the rows and
-    // disables the helper-textarea overlay on touch devices.
-    const nativeSelecting = () => !!window.getSelection()?.toString();
+
+    // Mobile selection: HOLD a finger still (~400ms) → DRAG to select → RELEASE
+    // shows the menu. We drive xterm's OWN selection by synthesizing mouse events
+    // from the touch (mousedown→mousemove→mouseup) — so all the cell math, word
+    // snapping, highlight and getSelection() are xterm's, not ours. A plain
+    // swipe (move before the hold fires) scrolls instead.
+    let selecting = false;
+    let pressTimer = 0;
+    const screenEl = () =>
+      containerRef.current?.querySelector(".xterm-screen") as HTMLElement | null;
+    const synthMouse = (
+      type: "mousedown" | "mousemove" | "mouseup",
+      x: number,
+      y: number,
+      target: EventTarget | null,
+      bubbles: boolean,
+    ) => {
+      target?.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+          button: 0,
+          buttons: type === "mouseup" ? 0 : 1,
+        }),
+      );
+    };
+    const clearPressTimer = () => {
+      if (pressTimer) {
+        window.clearTimeout(pressTimer);
+        pressTimer = 0;
+      }
+    };
 
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      lastTouchY = ev.touches[0].clientY;
+      const t0 = ev.touches[0];
+      lastTouchY = t0.clientY;
+      startX = t0.clientX;
+      startY = t0.clientY;
+      lastX = t0.clientX;
+      lastY = t0.clientY;
       touchAccum = 0;
+      selecting = false;
+      clearPressTimer();
+      pressTimer = window.setTimeout(() => {
+        // Held still → start an xterm selection at the press point. bubbles:false
+        // so our own container mousedown handler (puttyMouse) doesn't arm.
+        selecting = true;
+        synthMouse("mousedown", startX, startY, screenEl(), false);
+      }, 400);
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      // Native selection owns the gesture (including edge auto-scroll).
-      if (nativeSelecting()) return;
-      const y = ev.touches[0].clientY;
+      const t = ev.touches[0];
+      lastX = t.clientX;
+      lastY = t.clientY;
+      if (selecting) {
+        // Extend xterm's selection; xterm listens for mousemove on document.
+        synthMouse("mousemove", t.clientX, t.clientY, document, true);
+        ev.preventDefault();
+        return;
+      }
+      // Moved before the hold fired → it's a swipe (scroll), cancel the press.
+      if (
+        pressTimer &&
+        (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10)
+      ) {
+        clearPressTimer();
+      }
+      const y = t.clientY;
       const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
       lastTouchY = y;
       if (term.buffer.active.type === "alternate") {
@@ -272,6 +333,21 @@ export function TerminalView({
     };
     const onTouchEnd = () => {
       touchActive = false;
+      clearPressTimer();
+      if (selecting) {
+        selecting = false;
+        synthMouse("mouseup", lastX, lastY, document, true);
+        // Show the menu so the user can Copy the (now selected) range / Paste.
+        openTermMenuRef.current(lastX, lastY);
+      }
+    };
+    const onTouchCancel = () => {
+      touchActive = false;
+      clearPressTimer();
+      if (selecting) {
+        selecting = false;
+        synthMouse("mouseup", lastX, lastY, document, true);
+      }
     };
     containerRef.current.addEventListener("touchstart", onTouchStart, {
       passive: true,
@@ -280,6 +356,9 @@ export function TerminalView({
       passive: false,
     });
     containerRef.current.addEventListener("touchend", onTouchEnd, {
+      passive: true,
+    });
+    containerRef.current.addEventListener("touchcancel", onTouchCancel, {
       passive: true,
     });
 
@@ -341,16 +420,9 @@ export function TerminalView({
     // the browser menu is "Writing Direction" garbage anyway. Behaviour
     // depends on settings.puttyMouse: instant paste vs Copy/Paste/Select
     // All/Clear menu.
-    const ctxHandler = (ev: MouseEvent) => {
-      // Mobile: let the OS handle long-press → native text selection + its copy
-      // toolbar. Don't preventDefault, don't show our menu. (Paste also on the
-      // SmartKeyBar 📋.)
-      if (isMobileRef.current) return;
-      ev.preventDefault();
-      if (settingsRef.current.puttyMouse && !ev.shiftKey) {
-        readClipboard().then((text) => text && term.paste(text));
-        return;
-      }
+    // Build + show the terminal context menu (Copy/Paste/Select all/Clear).
+    // Shared by desktop right-click and the mobile long-press release.
+    const openTermMenu = (x: number, y: number) => {
       const tr = tRef.current;
       const selection = term.getSelection();
       const items: TerminalAction[] = [
@@ -380,7 +452,22 @@ export function TerminalView({
           destructive: true,
         },
       ];
-      onContextMenuRef.current?.(ev.clientX, ev.clientY, items);
+      onContextMenuRef.current?.(x, y, items);
+    };
+    openTermMenuRef.current = openTermMenu;
+    const ctxHandler = (ev: MouseEvent) => {
+      // Mobile: long-press is the selection gesture; the menu is shown on touch
+      // release (see touch handlers), so just swallow the browser's contextmenu.
+      if (isMobileRef.current) {
+        ev.preventDefault();
+        return;
+      }
+      ev.preventDefault();
+      if (settingsRef.current.puttyMouse && !ev.shiftKey) {
+        readClipboard().then((text) => text && term.paste(text));
+        return;
+      }
+      openTermMenu(ev.clientX, ev.clientY);
     };
     containerRef.current.addEventListener("contextmenu", ctxHandler);
 
@@ -506,6 +593,7 @@ export function TerminalView({
       containerRef.current?.removeEventListener("touchstart", onTouchStart);
       containerRef.current?.removeEventListener("touchmove", onTouchMove);
       containerRef.current?.removeEventListener("touchend", onTouchEnd);
+      containerRef.current?.removeEventListener("touchcancel", onTouchCancel);
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

@@ -76,27 +76,6 @@ body {
   font-feature-settings: "liga" 1, "calt" 1;
 }
 
-/* Touch devices (phones): make the terminal text natively selectable — long
- * press selects a word, drag the handles to extend, copy via the system toolbar,
- * exactly like a browser. Two things are needed:
- *  1) xterm's transparent helper-textarea sits OVER the text to catch keyboard
- *     input; on touch it swallows the long-press (you'd select nothing on text,
- *     only on the empty area below). Drop its pointer-events so the press lands
- *     on the actual rows. Keyboard still works — it's focused via the ⌨ button.
- *  2) xterm sets the rows to user-select:none for its own mouse selection; on a
- *     phone there's no mouse, so re-enable native selection. */
-@media (pointer: coarse) {
-  .xterm .xterm-helper-textarea {
-    pointer-events: none !important;
-  }
-  .xterm .xterm-screen,
-  .xterm .xterm-rows,
-  .xterm .xterm-rows * {
-    -webkit-user-select: text !important;
-    user-select: text !important;
-    -webkit-touch-callout: default !important;
-  }
-}
 
 /* Smooth fade transitions for tab/screen switches */
 .fade-in {

@@ -6,7 +6,7 @@
 // Opens its OWN sftp connection per host (independent of any terminal session).
 // Mounted only while the Files tab is active; disconnects on unmount.
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, type ChangeEvent } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Folder,
@@ -22,14 +22,13 @@ import {
   X,
   ChevronLeft,
 } from "lucide-react";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import type { ConnectArgs } from "./ssh";
 import {
   sftpConnect,
   sftpList,
   sftpRealpath,
-  sftpDownload,
-  sftpUpload,
+  sftpWriteBytes,
+  sftpReadBytes,
   sftpMkdir,
   sftpRemove,
   sftpDisconnect,
@@ -80,6 +79,7 @@ export function MobileFiles({ resolveArgs }: Props) {
   // Keep the live sftp id in a ref so the unmount cleanup disconnects it.
   const idRef = useRef<string | null>(null);
   idRef.current = sftpId;
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     listHosts().then(setHosts).catch(() => {});
@@ -155,27 +155,39 @@ export function MobileFiles({ resolveArgs }: Props) {
     }
   }
 
+  // Download: pull the remote file as bytes and hand it to the browser's
+  // download mechanism (Blob + <a download>). Avoids a save dialog's content://
+  // URI that the backend can't write to on Android.
   async function download(entry: SftpEntry) {
     if (!sftpId) return;
-    const dest = await saveDialog({ defaultPath: entry.name }).catch(() => null);
-    if (!dest) return;
-    await runTransfer(entry.name, "down", (tid) =>
-      sftpDownload(sftpId, joinPath(cwd, entry.name), dest as string, tid),
-    );
+    await runTransfer(entry.name, "down", async (tid) => {
+      const bytes = await sftpReadBytes(sftpId, joinPath(cwd, entry.name), tid);
+      const url = URL.createObjectURL(new Blob([bytes]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = entry.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 15000);
+    });
   }
 
-  async function upload() {
-    if (!sftpId) return;
-    const picked = await openDialog({ multiple: false, directory: false }).catch(
-      () => null,
-    );
-    if (!picked) return;
-    const src = Array.isArray(picked) ? picked[0] : (picked as string);
-    if (!src) return;
-    const base = src.split(/[\\/]/).pop() || "upload.bin";
-    await runTransfer(base, "up", (tid) =>
-      sftpUpload(sftpId, src, joinPath(cwd, base), tid),
-    );
+  // Upload: use the standard <input type="file"> picker (pure web API) and read
+  // the chosen file's bytes via the File API, then ship them to the backend.
+  // This sidesteps the content:// URI that Android's native picker returns —
+  // which the path-based sftp_upload can't open (os error 2).
+  function pickUpload() {
+    fileInputRef.current?.click();
+  }
+  async function onFilePicked(ev: ChangeEvent<HTMLInputElement>) {
+    const file = ev.target.files?.[0];
+    ev.target.value = ""; // allow re-picking the same file later
+    if (!file || !sftpId) return;
+    await runTransfer(file.name, "up", async (tid) => {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      await sftpWriteBytes(sftpId, joinPath(cwd, file.name), bytes, tid);
+    });
     if (sftpId) await loadDir(sftpId, cwd);
   }
 
@@ -268,9 +280,15 @@ export function MobileFiles({ resolveArgs }: Props) {
         <span className="flex-1 min-w-0 font-mono text-base text-nx-text truncate">
           {label}
         </span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          className="hidden"
+          onChange={onFilePicked}
+        />
         <button
           type="button"
-          onClick={upload}
+          onClick={pickUpload}
           aria-label={t("files.upload")}
           disabled={!!transfer}
           className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated text-nx-accent disabled:opacity-40"

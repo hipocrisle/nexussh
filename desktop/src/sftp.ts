@@ -81,6 +81,35 @@ export async function sftpUpload(
 }
 
 /**
+ * Upload raw bytes to a remote path (mobile path — avoids the content:// URI an
+ * Android file picker returns, which the streaming sftp_upload can't open). The
+ * frontend reads the picked file via the File API and ships the bytes here.
+ */
+export async function sftpWriteBytes(
+  sftpId: string,
+  remotePath: string,
+  data: Uint8Array,
+  transferId: string,
+): Promise<void> {
+  await invoke("sftp_write_bytes", { sftpId, remotePath, data, transferId });
+}
+
+/** Download a remote file as raw bytes (mobile path — turned into a Blob for
+ *  saving). Returns the file contents as a Uint8Array. */
+export async function sftpReadBytes(
+  sftpId: string,
+  remotePath: string,
+  transferId: string,
+): Promise<Uint8Array> {
+  const buf = await invoke<ArrayBuffer>("sftp_read_bytes", {
+    sftpId,
+    remotePath,
+    transferId,
+  });
+  return new Uint8Array(buf);
+}
+
+/**
  * Error message a download/upload promise rejects with when the user cancelled
  * it (matches the Rust `CANCELLED` sentinel). Callers treat this as a normal
  * user-cancel rather than a real failure. Tauri surfaces command errors as

@@ -555,6 +555,83 @@ pub async fn sftp_upload(
     Ok(())
 }
 
+/// Upload a file given its raw BYTES (not a local path). This is the mobile
+/// path: Android's file picker hands the webview a content:// URI, never a real
+/// filesystem path, so `sftp_upload`'s `std::fs::File::open` fails with ENOENT.
+/// Instead the frontend reads the picked file's bytes (FileReader / arrayBuffer)
+/// and ships them here, so we never touch the local filesystem. Fine for the
+/// phone-sized files this is used for; desktop keeps the streaming path version.
+#[tauri::command]
+pub async fn sftp_write_bytes(
+    app: AppHandle,
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    remote_path: String,
+    data: Vec<u8>,
+    transfer_id: String,
+) -> Result<(), SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+    let total = data.len() as u64;
+    let mut remote = h.sftp.create(remote_path).await?;
+    let mut transferred: u64 = 0;
+    let mut last = std::time::Instant::now();
+    for chunk in data.chunks(CHUNK_BYTES) {
+        remote.write_all(chunk).await?;
+        transferred += chunk.len() as u64;
+        emit_progress(&app, &mut last, &transfer_id, transferred, total, "upload", false);
+    }
+    remote.flush().await?;
+    remote.shutdown().await?;
+    emit_progress(&app, &mut last, &transfer_id, total, total, "upload", true);
+    Ok(())
+}
+
+/// Download a remote file as raw BYTES (counterpart of `sftp_write_bytes`). The
+/// mobile UI turns these into a Blob it can save/share, sidestepping the
+/// content:// URI that a save dialog would hand back (unopenable by `std::fs`).
+/// Returns the bytes as a raw IPC response (ArrayBuffer on the JS side), not a
+/// JSON array, so it isn't bloated 4×.
+#[tauri::command]
+pub async fn sftp_read_bytes(
+    app: AppHandle,
+    state: State<'_, Arc<SftpManager>>,
+    sftp_id: String,
+    remote_path: String,
+    transfer_id: String,
+) -> Result<tauri::ipc::Response, SftpError> {
+    let h = get_session(&state, &sftp_id).await?;
+    let total = h
+        .sftp
+        .metadata(remote_path.clone())
+        .await
+        .ok()
+        .and_then(|m| m.size)
+        .unwrap_or(0);
+    let mut file = h.sftp.open(remote_path).await?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; CHUNK_BYTES];
+    let mut last = std::time::Instant::now();
+    loop {
+        let n = file.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        emit_progress(
+            &app,
+            &mut last,
+            &transfer_id,
+            buf.len() as u64,
+            total,
+            "download",
+            false,
+        );
+    }
+    let done = buf.len() as u64;
+    emit_progress(&app, &mut last, &transfer_id, done, total.max(done), "download", true);
+    Ok(tauri::ipc::Response::new(buf))
+}
+
 /// Result of reading a remote file as text for the built-in viewer/editor.
 #[derive(Serialize)]
 pub struct SftpTextRead {

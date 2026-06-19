@@ -701,33 +701,26 @@ export function TerminalView({
        *  selection (with handles) + the system copy toolbar work here because
        *  it's ordinary HTML text, not the xterm canvas/viewport. */}
       {copyMode && (
-        <div
-          className="absolute inset-0 z-30 flex flex-col"
-          style={{ background: THEMES[settings.theme].bgBase }}
+        <pre
+          ref={copyPreRef}
+          className="nx-copy-pre absolute inset-0 z-30 overflow-auto m-0 px-3 font-mono whitespace-pre text-nx-text"
+          style={{
+            background: THEMES[settings.theme].bgBase,
+            fontSize: settings.fontSize,
+            fontFamily: fontStackOf(settings.font),
+            // Headroom so Android's selection toolbar (top of screen) doesn't sit
+            // on top of the handles when selecting the first lines.
+            paddingTop: 56,
+            paddingBottom: 24,
+          }}
+          onClick={() => {
+            // A plain tap (no selection) dismisses — back to the live terminal.
+            // Long-press / handle-drag keeps a selection, so this won't fire then.
+            if (!window.getSelection()?.toString()) setCopyMode(false);
+          }}
         >
-          <div className="flex items-center gap-2 px-3 h-11 border-b border-nx-border shrink-0">
-            <span className="flex-1 font-mono text-meta text-nx-muted truncate">
-              {t("terminal.copy_mode_hint")}
-            </span>
-            <button
-              type="button"
-              onClick={() => setCopyMode(false)}
-              className="font-mono text-sm px-4 py-1.5 rounded border border-nx-accent text-nx-accent active:bg-nx-elevated"
-            >
-              {t("terminal.copy_mode_done")}
-            </button>
-          </div>
-          <pre
-            ref={copyPreRef}
-            className="nx-copy-pre flex-1 overflow-auto m-0 px-3 py-2 font-mono whitespace-pre text-nx-text"
-            style={{
-              fontSize: settings.fontSize,
-              fontFamily: fontStackOf(settings.font),
-            }}
-          >
-            {copyText}
-          </pre>
-        </div>
+          {copyText}
+        </pre>
       )}
       {findOpen && (
         <div

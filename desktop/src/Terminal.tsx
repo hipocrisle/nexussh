@@ -102,6 +102,14 @@ export function TerminalView({
   // Mobile: show the "Copy" pill after a touch selection (set from the touch
   // handlers in the mount effect via the stable setter).
   const [showCopy, setShowCopy] = useState(false);
+  // Debug log ring for diagnosing mobile selection — dumped to clipboard via the
+  // 🐞 button. Cheap; only the touch handlers write to it.
+  const dbgRef = useRef<string[]>([]);
+  const dbg = (m: string) => {
+    const a = dbgRef.current;
+    a.push(m);
+    if (a.length > 400) a.shift();
+  };
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -236,19 +244,36 @@ export function TerminalView({
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
     // Map a touch point to a terminal cell using the REAL rendered rows box
     // (width/cols, height/rows) — robust, no internal xterm APIs.
-    const cellFromTouch = (x: number, y: number): { col: number; row: number } | null => {
-      const el = (containerRef.current?.querySelector(".xterm-rows") ??
-        containerRef.current?.querySelector(".xterm-screen")) as HTMLElement | null;
-      if (!el) return null;
+    const cellFromTouch = (
+      x: number,
+      y: number,
+      tag: string,
+    ): { col: number; row: number } | null => {
+      const rowsEl = containerRef.current?.querySelector(".xterm-rows") as HTMLElement | null;
+      const scrEl = containerRef.current?.querySelector(".xterm-screen") as HTMLElement | null;
+      const el = rowsEl ?? scrEl;
+      if (!el) {
+        dbg(`cell[${tag}] NO-ELEM rows=${!!rowsEl} scr=${!!scrEl}`);
+        return null;
+      }
       const rect = el.getBoundingClientRect();
       const cols = term.cols || 80;
       const vrows = term.rows || 24;
-      if (rect.width <= 0 || rect.height <= 0) return null;
+      if (rect.width <= 0 || rect.height <= 0) {
+        dbg(`cell[${tag}] ZERO-RECT w=${rect.width} h=${rect.height} el=${rowsEl ? "rows" : "scr"}`);
+        return null;
+      }
       const cellW = rect.width / cols;
       const cellH = rect.height / vrows;
       const col = Math.min(cols - 1, Math.max(0, Math.floor((x - rect.left) / cellW)));
       const visRow = Math.min(vrows - 1, Math.max(0, Math.floor((y - rect.top) / cellH)));
-      return { col, row: term.buffer.active.viewportY + visRow };
+      const vy = term.buffer.active.viewportY;
+      dbg(
+        `cell[${tag}] el=${rowsEl ? "rows" : "scr"} xy=${Math.round(x)},${Math.round(y)} ` +
+          `rect=${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}x${Math.round(rect.height)} ` +
+          `cols=${cols} vrows=${vrows} cw=${cellW.toFixed(1)} ch=${cellH.toFixed(1)} -> col=${col} vrow=${visRow} row=${vy + visRow}`,
+      );
+      return { col, row: vy + visRow };
     };
     const applySelection = (
       a: { col: number; row: number },
@@ -264,6 +289,7 @@ export function TerminalView({
       if (pressTimer) { window.clearTimeout(pressTimer); pressTimer = 0; }
     };
     const onTouchStart = (ev: TouchEvent) => {
+      dbg(`START touches=${ev.touches.length}`);
       if (ev.touches.length !== 1) return;
       touchActive = true;
       const t0 = ev.touches[0];
@@ -274,14 +300,19 @@ export function TerminalView({
       selAnchor = null;
       touchAccum = 0;
       setShowCopy(false); // a new gesture dismisses the old Copy pill
+      dbg(`START xy=${Math.round(startX)},${Math.round(startY)} buf=${term.buffer.active.type}`);
       clearPress();
       pressTimer = window.setTimeout(() => {
         // Held still → start a selection at the press point.
+        dbg(`LONGPRESS fire (timer)`);
         selecting = true;
-        selAnchor = cellFromTouch(startX, startY);
+        selAnchor = cellFromTouch(startX, startY, "press");
         if (selAnchor) {
           term.clearSelection();
           applySelection(selAnchor, selAnchor);
+          dbg(`LONGPRESS anchor=${selAnchor.col},${selAnchor.row} selLen=${term.getSelection().length} hasSel=${term.hasSelection()}`);
+        } else {
+          dbg(`LONGPRESS anchor=NULL (cellFromTouch failed)`);
         }
         try { navigator.vibrate?.(12); } catch { /* ignore */ }
       }, 380);
@@ -290,8 +321,9 @@ export function TerminalView({
       if (!touchActive || ev.touches.length !== 1) return;
       const t = ev.touches[0];
       if (selecting) {
-        const end = cellFromTouch(t.clientX, t.clientY);
+        const end = cellFromTouch(t.clientX, t.clientY, "move");
         if (end && selAnchor) applySelection(selAnchor, end);
+        dbg(`MOVE(sel) end=${end ? end.col + "," + end.row : "NULL"} selLen=${term.getSelection().length}`);
         ev.preventDefault();
         ev.stopPropagation();
         return;
@@ -305,6 +337,7 @@ export function TerminalView({
         return;
       }
       // Real movement → it's a swipe; abandon the pending long-press.
+      if (!scrolling) dbg(`SWIPE begin dx=${Math.round(t.clientX - startX)} dy=${Math.round(t.clientY - startY)} buf=${term.buffer.active.type}`);
       scrolling = true;
       clearPress();
       const y = t.clientY;
@@ -338,6 +371,7 @@ export function TerminalView({
     const onTouchEnd = () => {
       touchActive = false;
       clearPress();
+      dbg(`END selecting=${selecting} scrolling=${scrolling} selLen=${term.getSelection().length} hasSel=${term.hasSelection()}`);
       if (selecting) {
         selecting = false;
         // Show the Copy pill if we ended up with a selection.
@@ -719,6 +753,22 @@ export function TerminalView({
           }}
         >
           ⧉ {t("term_menu.copy")}
+        </button>
+      )}
+      {/* Mobile: debug-log dump button — copies the touch/selection trace to the
+          clipboard so it can be pasted back for diagnosis. */}
+      {isMobile && (
+        <button
+          type="button"
+          className="absolute bottom-2 right-2 z-20 w-9 h-9 rounded-full bg-nx-panel/80 border border-nx-border text-meta active:opacity-70"
+          title="copy debug log"
+          onClick={() => {
+            const log = dbgRef.current.join("\n") || "(empty)";
+            writeClipboard(log);
+            dbgRef.current = [];
+          }}
+        >
+          🐞
         </button>
       )}
       {findOpen && (

@@ -28,49 +28,67 @@ export async function readClipboard(): Promise<string> {
 export async function copyTextVerbose(text: string): Promise<string> {
   if (!text) return "copy: EMPTY text";
   const out: string[] = [`len=${text.length}`];
-  // A) Tauri clipboard-manager plugin (the intended path on Android).
+
+  // IMPORTANT: the gesture-bound methods (execCommand, navigator.clipboard) must
+  // be invoked SYNCHRONOUSLY while the user-activation is still live — i.e.
+  // BEFORE the first `await`. The Tauri plugin's readback "match" is a FALSE
+  // POSITIVE on Android (it echoes its own internal store, which is NOT the
+  // system clipboard), so we never trust it to skip the real system writes.
+
+  // C) Legacy hidden-textarea + execCommand('copy') — the most reliable WebView
+  //    path to the SYSTEM clipboard. Runs first, synchronously, in-gesture.
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", ""); // avoid popping the soft keyboard
+    ta.style.position = "fixed";
+    ta.style.left = "0";
+    ta.style.top = "0";
+    ta.style.width = "1px";
+    ta.style.height = "1px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    out.push(`C:execCommand=${ok}`);
+  } catch (e) {
+    out.push(`C:execCommand ERR=${String(e).slice(0, 60)}`);
+  }
+
+  // B) Web Clipboard API — also initiated in-gesture (don't await before it).
+  let navPromise: Promise<void> | null = null;
+  try {
+    navPromise = navigator.clipboard.writeText(text);
+  } catch (e) {
+    out.push(`B:navigator-call ERR=${String(e).slice(0, 60)}`);
+  }
+
+  // A) Tauri clipboard-manager plugin (async import → safe to await now).
   if (HAS_TAURI) {
     try {
       const { writeText, readText } = await import(
         "@tauri-apps/plugin-clipboard-manager"
       );
       await writeText(text);
-      out.push("A:write=OK");
-      try {
-        const rb = (await readText()) ?? "";
-        out.push(`A:readback len=${rb.length} match=${rb === text}`);
-        if (rb === text) return out.join(" ");
-      } catch (e) {
-        out.push(`A:readback ERR=${String(e).slice(0, 80)}`);
-      }
+      const rb = (await readText().catch(() => "")) ?? "";
+      out.push(`A:plugin write=OK readback=${rb.length}`);
     } catch (e) {
-      out.push(`A:write ERR=${String(e).slice(0, 80)}`);
+      out.push(`A:plugin ERR=${String(e).slice(0, 80)}`);
     }
   } else {
     out.push("A:skip(no-tauri)");
   }
-  // B) Web Clipboard API.
-  try {
-    await navigator.clipboard.writeText(text);
-    out.push("B:navigator=OK");
-  } catch (e) {
-    out.push(`B:navigator ERR=${String(e).slice(0, 60)}`);
-  }
-  // C) Legacy hidden-textarea + execCommand('copy').
-  try {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    ta.style.top = "0";
-    document.body.appendChild(ta);
-    ta.focus();
-    ta.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(ta);
-    out.push(`C:execCommand=${ok}`);
-  } catch (e) {
-    out.push(`C:execCommand ERR=${String(e).slice(0, 60)}`);
+
+  if (navPromise) {
+    try {
+      await navPromise;
+      out.push("B:navigator=OK");
+    } catch (e) {
+      out.push(`B:navigator ERR=${String(e).slice(0, 60)}`);
+    }
   }
   return out.join(" ");
 }

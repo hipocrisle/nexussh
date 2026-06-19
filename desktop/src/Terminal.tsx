@@ -241,6 +241,7 @@ export function TerminalView({
     let pressTimer = 0;
     let touchAccum = 0;
     let selAnchor: { col: number; row: number } | null = null;
+    let lastCopied = ""; // de-dupe: copy each distinct selection only once
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
     // Map a touch point to a terminal cell using the REAL rendered rows box
     // (width/cols, height/rows) — robust, no internal xterm APIs.
@@ -374,22 +375,27 @@ export function TerminalView({
         }
       }
     };
+    // Copy whatever is currently selected to the SYSTEM clipboard, in-gesture.
+    // Must be called synchronously from a user-gesture handler (touchend /
+    // dblclick / click) so execCommand('copy') keeps user-activation.
+    const copyCurrentSelection = (src: string) => {
+      const sel = term.getSelection();
+      if (!sel || sel === lastCopied) return;
+      lastCopied = sel;
+      copyTextVerbose(sel)
+        .then((r) => dbg(`COPY(${src}) ${r}`))
+        .catch((e) => dbg(`COPY(${src}) EXC ${String(e).slice(0, 80)}`));
+      setShowCopy(true);
+    };
     const onTouchEnd = () => {
       touchActive = false;
       clearPress();
-      dbg(`END selecting=${selecting} scrolling=${scrolling} selLen=${term.getSelection().length} hasSel=${term.hasSelection()}`);
-      if (selecting) {
-        selecting = false;
-        const sel = term.getSelection();
-        if (sel) {
-          // Auto-copy on release — no need to hunt for a button. Log exactly
-          // which clipboard method landed it (and the read-back result).
-          copyTextVerbose(sel)
-            .then((r) => dbg(`COPY ${r}`))
-            .catch((e) => dbg(`COPY EXC ${String(e).slice(0, 80)}`));
-          setShowCopy(true);
-        }
-      }
+      const sel = term.getSelection();
+      dbg(`END selecting=${selecting} scrolling=${scrolling} selLen=${sel.length} hasSel=${term.hasSelection()}`);
+      selecting = false;
+      // Copy ANY selection present at release — our long-press drag sets it by
+      // now; a double-tap word is handled by the dblclick listener below.
+      if (sel) copyCurrentSelection("end");
     };
     const onTouchCancel = onTouchEnd;
     containerRef.current.addEventListener("touchstart", onTouchStart, {
@@ -407,6 +413,20 @@ export function TerminalView({
     containerRef.current.addEventListener("touchcancel", onTouchCancel, {
       passive: true,
       capture: true,
+    });
+    // Double-tap selects a word via xterm itself (selecting=false in our state,
+    // so onTouchEnd misses it). dblclick fires AFTER xterm has set the word
+    // selection and still carries user-activation → copy it here.
+    const onDblClick = () => {
+      if (!isMobileRef.current) return;
+      copyCurrentSelection("dbl");
+    };
+    containerRef.current.addEventListener("dblclick", onDblClick);
+    // Universal fallback: any time a selection appears on mobile, surface the
+    // Copy pill so a tap (a fresh gesture) can copy even if the auto-paths miss.
+    const selDispose = term.onSelectionChange(() => {
+      if (!isMobileRef.current) return;
+      if (term.getSelection()) setShowCopy(true);
     });
 
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
@@ -644,6 +664,8 @@ export function TerminalView({
       containerRef.current?.removeEventListener("touchmove", onTouchMove, true);
       containerRef.current?.removeEventListener("touchend", onTouchEnd, true);
       containerRef.current?.removeEventListener("touchcancel", onTouchCancel, true);
+      containerRef.current?.removeEventListener("dblclick", onDblClick);
+      selDispose.dispose();
       window.removeEventListener("mouseup", mouseupHandler);
       selDisposable.dispose();
       searchResultsDisposable.dispose();

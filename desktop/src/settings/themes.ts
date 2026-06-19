@@ -96,7 +96,11 @@ export function xtermThemeOf(t: ThemePalette) {
   return {
     background: t.bgBase, foreground: t.textPrimary,
     cursor: t.accent, cursorAccent: t.bgBase,
-    selectionBackground: t.bgElevated,
+    // Selection must be clearly visible over coloured glyphs (the old bgElevated
+    // was nearly indistinguishable from the background — invisible on mobile).
+    // Semi-transparent accent reads on every theme. 8-digit hex (#rrggbbaa).
+    selectionBackground: `${t.accent}59`, // ~35%
+    selectionInactiveBackground: `${t.accent}33`, // ~20%
     black: t.bgBase, red: t.error, green: t.accent, yellow: t.warning,
     blue: t.accent2, magenta: t.accent2, cyan: t.textSoft, white: t.textPrimary,
     brightBlack: t.textMuted, brightRed: t.error, brightGreen: t.accent,

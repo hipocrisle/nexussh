@@ -21,7 +21,7 @@ import {
 import { useSettings } from "./settings/settings-store";
 import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
-import { readClipboard, writeClipboard } from "./clipboard";
+import { readClipboard, writeClipboard, copyTextVerbose } from "./clipboard";
 import { useIsMobile } from "./useIsMobile";
 
 export interface TerminalAction {
@@ -283,7 +283,13 @@ export function TerminalView({
       let e = b;
       if (b.row < a.row || (b.row === a.row && b.col < a.col)) { s = b; e = a; }
       const len = (e.row - s.row) * term.cols + (e.col - s.col) + 1;
-      if (len > 0) term.select(s.col, s.row, len);
+      if (len > 0) {
+        term.select(s.col, s.row, len);
+        // term.select() updates the model but the DOM renderer doesn't always
+        // repaint the highlight when the change came from the API (vs a mouse
+        // drag). Force a repaint so the selection is actually visible on touch.
+        term.refresh(0, term.rows - 1);
+      }
     };
     const clearPress = () => {
       if (pressTimer) { window.clearTimeout(pressTimer); pressTimer = 0; }
@@ -374,8 +380,15 @@ export function TerminalView({
       dbg(`END selecting=${selecting} scrolling=${scrolling} selLen=${term.getSelection().length} hasSel=${term.hasSelection()}`);
       if (selecting) {
         selecting = false;
-        // Show the Copy pill if we ended up with a selection.
-        if (term.getSelection()) setShowCopy(true);
+        const sel = term.getSelection();
+        if (sel) {
+          // Auto-copy on release — no need to hunt for a button. Log exactly
+          // which clipboard method landed it (and the read-back result).
+          copyTextVerbose(sel)
+            .then((r) => dbg(`COPY ${r}`))
+            .catch((e) => dbg(`COPY EXC ${String(e).slice(0, 80)}`));
+          setShowCopy(true);
+        }
       }
     };
     const onTouchCancel = onTouchEnd;
@@ -747,8 +760,11 @@ export function TerminalView({
           className="absolute top-2 left-1/2 -translate-x-1/2 z-20 px-4 py-2 rounded-nx bg-nx-accent text-nx-bg-base font-mono text-meta shadow-elev-modal active:opacity-80"
           onClick={() => {
             const sel = termRef.current?.getSelection();
-            if (sel) writeClipboard(sel);
-            termRef.current?.clearSelection();
+            if (sel) {
+              copyTextVerbose(sel)
+                .then((r) => dbg(`COPY(pill) ${r}`))
+                .catch((e) => dbg(`COPY(pill) EXC ${String(e).slice(0, 80)}`));
+            }
             setShowCopy(false);
           }}
         >

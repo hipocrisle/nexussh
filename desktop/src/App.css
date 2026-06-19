@@ -76,14 +76,25 @@ body {
   font-feature-settings: "liga" 1, "calt" 1;
 }
 
-/* Mobile copy-mode overlay: force the plain-text buffer to be natively
- * selectable (handles + system copy toolbar), overriding any inherited
- * user-select:none from app/UI chrome. */
-.nx-copy-pre {
-  -webkit-user-select: text !important;
-  user-select: text !important;
-  -webkit-touch-callout: default !important;
-  cursor: text;
+/* Touch devices: make the terminal text natively selectable IN PLACE (long-press
+ * a word → handles → drag → system copy), like any app. Two blockers in xterm's
+ * own CSS:
+ *  1) `.xterm` is user-select:none (it normally does mouse selection) → allow it.
+ *  2) `.xterm-viewport` (the scroller) is absolutely positioned OVER the rows and
+ *     eats the touch, so the press never reaches the text → pointer-events:none
+ *     on it. We scroll programmatically from our own touch handler instead. */
+@media (pointer: coarse) {
+  .xterm,
+  .xterm .xterm-screen,
+  .xterm .xterm-rows,
+  .xterm .xterm-rows * {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-touch-callout: default !important;
+  }
+  .xterm .xterm-viewport {
+    pointer-events: none !important;
+  }
 }
 
 

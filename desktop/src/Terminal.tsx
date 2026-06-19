@@ -44,19 +44,6 @@ function fitIfVisible(el: HTMLElement | null, fit: FitAddon | null) {
   fit.fit();
 }
 
-// Snapshot the terminal buffer (capped to the last 10k lines) as plain text for
-// the mobile copy-mode overlay.
-function bufferToText(term: Terminal): string {
-  const buf = term.buffer.active;
-  const total = buf.length;
-  const start = Math.max(0, total - 10000);
-  const lines: string[] = [];
-  for (let i = start; i < total; i++) {
-    lines.push(buf.getLine(i)?.translateToString(true) ?? "");
-  }
-  return lines.join("\n").replace(/\s+$/, "");
-}
-
 interface Props {
   sessionId: string;
   visible: boolean;
@@ -112,16 +99,6 @@ export function TerminalView({
     idx: -1,
     count: 0,
   });
-  // Mobile copy-mode: the terminal buffer rendered as plain selectable text so
-  // native selection (with handles) + the system copy toolbar work — xterm's own
-  // text can't be selected in place.
-  const [copyMode, setCopyMode] = useState(false);
-  const [copyText, setCopyText] = useState("");
-  const copyPreRef = useRef<HTMLPreElement>(null);
-  // Track `visible` for the (window-level) copy-mode trigger so only the focused
-  // terminal responds.
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -239,80 +216,63 @@ export function TerminalView({
     });
 
     // ── Mobile touch ──────────────────────────────────────────────────────
-    // xterm scrolls the MAIN buffer on touch itself (Viewport.handleTouchStart).
-    // In ALT-screen (Claude Code/less/vim — app mouse mode, xterm skips its own
-    // touch-scroll) we turn a swipe into Up/Down arrows so the TUI scrolls.
-    //
-    // Text SELECTION on mobile is a SEPARATE copy-mode overlay (see below): the
-    // xterm text itself can't be selected in place — `.xterm` is user-select:none
-    // and the .xterm-viewport overlays the rows — so we render the buffer text in
-    // a plain selectable <pre> where native selection + handles + the system copy
-    // toolbar just work.
+    // Selection is now NATIVE and in-place (CSS frees .xterm + makes the viewport
+    // click-through). So here we only need to SCROLL on a swipe — and step aside
+    // while a native selection is active so it (and its edge auto-scroll) runs.
+    // Because the viewport is pointer-events:none, its native touch-scroll is off,
+    // so we scroll it programmatically (main buffer) / send arrows (alt-screen).
+    // stopPropagation keeps xterm's own touch handler from double-scrolling.
     let touchActive = false;
     let lastTouchY = 0;
     let touchAccum = 0;
-    let startX = 0;
-    let startY = 0;
-    let pressTimer = 0;
     const TOUCH_ROW_PX = 16; // swipe distance per arrow step in alt-screen
-    const clearPressTimer = () => {
-      if (pressTimer) {
-        window.clearTimeout(pressTimer);
-        pressTimer = 0;
-      }
-    };
+    const nativeSelecting = () => !!window.getSelection()?.toString();
     const onTouchStart = (ev: TouchEvent) => {
       if (ev.touches.length !== 1) return;
       touchActive = true;
-      const t0 = ev.touches[0];
-      lastTouchY = startY = t0.clientY;
-      startX = t0.clientX;
+      lastTouchY = ev.touches[0].clientY;
       touchAccum = 0;
-      clearPressTimer();
-      // Long-press (held still) opens copy-mode — the natural gesture, no need to
-      // dig into the ⋯ panel. Cancelled below if the finger moves (= a swipe).
-      pressTimer = window.setTimeout(() => {
-        setCopyText(bufferToText(term));
-        setCopyMode(true);
-      }, 450);
     };
     const onTouchMove = (ev: TouchEvent) => {
       if (!touchActive || ev.touches.length !== 1) return;
-      const tt = ev.touches[0];
-      if (
-        pressTimer &&
-        (Math.abs(tt.clientX - startX) > 10 || Math.abs(tt.clientY - startY) > 10)
-      ) {
-        clearPressTimer(); // moved → it's a swipe, not a long-press
+      // A native selection is in progress → let the browser own the gesture
+      // (extend handles + auto-scroll at the edge); don't scroll or preventDefault.
+      if (nativeSelecting()) {
+        ev.stopPropagation();
+        return;
       }
-      // Main buffer scrolls natively (xterm). Only alt-screen needs our arrows.
-      if (term.buffer.active.type !== "alternate") return;
-      const dy = lastTouchY - ev.touches[0].clientY;
-      lastTouchY = ev.touches[0].clientY;
-      touchAccum += dy;
-      const app = (term.modes as { applicationCursorKeysMode?: boolean })
-        ?.applicationCursorKeysMode;
-      const up = app ? "\x1bOA" : "\x1b[A";
-      const down = app ? "\x1bOB" : "\x1b[B";
-      let moved = false;
-      while (touchAccum >= TOUCH_ROW_PX) {
-        touchAccum -= TOUCH_ROW_PX;
-        moved = true;
-        sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
-      }
-      while (touchAccum <= -TOUCH_ROW_PX) {
-        touchAccum += TOUCH_ROW_PX;
-        moved = true;
-        sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
-      }
-      if (moved) {
+      const y = ev.touches[0].clientY;
+      const dy = lastTouchY - y; // finger up → dy>0 → scroll content downward
+      lastTouchY = y;
+      if (term.buffer.active.type === "alternate") {
+        touchAccum += dy;
+        const app = (term.modes as { applicationCursorKeysMode?: boolean })
+          ?.applicationCursorKeysMode;
+        const up = app ? "\x1bOA" : "\x1b[A";
+        const down = app ? "\x1bOB" : "\x1b[B";
+        let moved = false;
+        while (touchAccum >= TOUCH_ROW_PX) {
+          touchAccum -= TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(down)).catch(() => {});
+        }
+        while (touchAccum <= -TOUCH_ROW_PX) {
+          touchAccum += TOUCH_ROW_PX;
+          moved = true;
+          sshSend(sessionId, new TextEncoder().encode(up)).catch(() => {});
+        }
+        if (moved) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      } else if (viewport && dy !== 0) {
+        viewport.scrollTop += dy;
         ev.preventDefault();
         ev.stopPropagation();
       }
     };
     const onTouchEnd = () => {
       touchActive = false;
-      clearPressTimer();
     };
     const onTouchCancel = onTouchEnd;
     containerRef.current.addEventListener("touchstart", onTouchStart, {
@@ -666,27 +626,6 @@ export function TerminalView({
     return () => window.removeEventListener("nx:find", handler);
   }, [sessionId]);
 
-  // Mobile copy-mode: the SmartKeyBar ⧉ button fires nx:copymode; the VISIBLE
-  // terminal snapshots its buffer text into a selectable overlay.
-  useEffect(() => {
-    const handler = () => {
-      if (!visibleRef.current) return;
-      const term = termRef.current;
-      if (!term) return;
-      setCopyText(bufferToText(term));
-      setCopyMode(true);
-    };
-    window.addEventListener("nx:copymode", handler);
-    return () => window.removeEventListener("nx:copymode", handler);
-  }, []);
-
-  // Show the latest output (what was on screen) when copy-mode opens.
-  useEffect(() => {
-    if (!copyMode) return;
-    const el = copyPreRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [copyMode]);
-
   return (
     <div
       className="relative w-full h-full"
@@ -697,31 +636,6 @@ export function TerminalView({
         className="w-full h-full"
         style={{ background: THEMES[settings.theme].bgBase, minHeight: 0 }}
       />
-      {/* Mobile copy-mode overlay — plain selectable text of the buffer. Native
-       *  selection (with handles) + the system copy toolbar work here because
-       *  it's ordinary HTML text, not the xterm canvas/viewport. */}
-      {copyMode && (
-        <pre
-          ref={copyPreRef}
-          className="nx-copy-pre absolute inset-0 z-30 overflow-auto m-0 px-3 font-mono whitespace-pre text-nx-text"
-          style={{
-            background: THEMES[settings.theme].bgBase,
-            fontSize: settings.fontSize,
-            fontFamily: fontStackOf(settings.font),
-            // Headroom so Android's selection toolbar (top of screen) doesn't sit
-            // on top of the handles when selecting the first lines.
-            paddingTop: 56,
-            paddingBottom: 24,
-          }}
-          onClick={() => {
-            // A plain tap (no selection) dismisses — back to the live terminal.
-            // Long-press / handle-drag keeps a selection, so this won't fire then.
-            if (!window.getSelection()?.toString()) setCopyMode(false);
-          }}
-        >
-          {copyText}
-        </pre>
-      )}
       {findOpen && (
         <div
           className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"

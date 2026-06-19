@@ -269,16 +269,6 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       {panel === "more" && (
         <div className="flex flex-col gap-1.5 px-2 pt-2 border-b border-nx-border">
           <div className="flex gap-1.5">
-            <Key
-              label="⧉ Копировать"
-              title="Выделить и скопировать текст терминала"
-              onTap={() => {
-                setPanel(null);
-                window.dispatchEvent(new CustomEvent("nx:copymode"));
-              }}
-            />
-          </div>
-          <div className="flex gap-1.5">
             <Key label="Home" onTap={() => emitRaw("\x1b[H")} />
             <Key label="End" onTap={() => emitRaw("\x1b[F")} />
             <Key label="PgUp" onTap={() => emitRaw("\x1b[5~")} />

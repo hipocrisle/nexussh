@@ -1001,6 +1001,7 @@ const ru = {
   },
   term_menu: {
     copy: "Копировать",
+    copied: "Скопировано",
     paste: "Вставить",
     select_range: "Выделить текст",
     select_all: "Выделить всё",
@@ -2010,6 +2011,7 @@ const en = {
   },
   term_menu: {
     copy: "Copy",
+    copied: "Copied",
     paste: "Paste",
     select_range: "Select text",
     select_all: "Select all",

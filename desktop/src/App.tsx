@@ -3593,6 +3593,12 @@ function App() {
                 if (!focusedSession) return;
                 const bytes = new TextEncoder().encode(s);
                 sshSend(focusedSession.id, bytes).catch(() => {});
+                // Sending input clears any lingering mobile text selection.
+                window.dispatchEvent(
+                  new CustomEvent("nx:input", {
+                    detail: { sessionId: focusedSession.id },
+                  }),
+                );
               }}
             />
           )}

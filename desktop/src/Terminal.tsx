@@ -749,34 +749,43 @@ export function TerminalView({
       return true;
     });
 
-    // Android IME doubling guard: when a keyboard suggestion is confirmed, xterm
-    // emits the same word TWICE — once from compositionend (_finalizeComposition,
-    // deferred) and once from the insertText `input` event (_inputEvent). Drop an
-    // EXACT duplicate that lands within a short window after a compositionend.
-    // Outside that window nothing is de-duped, so normal typing never loses input.
+    // Android IME doubling fix — structural, not content-based. When a keyboard
+    // suggestion is confirmed WITHOUT a keydown, xterm emits the word twice:
+    //   1) compositionend → _finalizeComposition  (reliable: always fires)
+    //   2) input(insertText) → _inputEvent         (the duplicate)
+    // xterm listens for "input" in the BUBBLE phase, so a CAPTURE listener here
+    // runs first; if an insertText `input` lands right after a compositionend we
+    // stopImmediatePropagation() so xterm's _inputEvent never sees it — leaving
+    // only the composition path. Window is tight so the space/char that confirms
+    // a suggestion (a separate, later event) is untouched.
     let lastCompositionEndAt = -1e9;
-    let lastData = "";
-    let lastDataAt = -1e9;
     if (isMobileRef.current) {
       const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",
       );
-      ta?.addEventListener("compositionend", () => {
-        lastCompositionEndAt = performance.now();
-      });
+      if (ta) {
+        ta.addEventListener("compositionend", () => {
+          lastCompositionEndAt = performance.now();
+        });
+        ta.addEventListener(
+          "input",
+          (e) => {
+            const ie = e as InputEvent;
+            const dt = performance.now() - lastCompositionEndAt;
+            if (
+              !ie.isComposing &&
+              ie.inputType === "insertText" &&
+              dt < 60
+            ) {
+              dbg(`IME suppress dup input '${ie.data ?? ""}' dt=${dt.toFixed(0)}`);
+              e.stopImmediatePropagation();
+            }
+          },
+          { capture: true },
+        );
+      }
     }
     const onDataDisposable = term.onData((data) => {
-      const now = performance.now();
-      if (
-        now - lastCompositionEndAt < 200 &&
-        data === lastData &&
-        now - lastDataAt < 200
-      ) {
-        dbg(`IME drop dup '${data.slice(0, 12)}'`);
-        return; // duplicate echo of a just-composed suggestion
-      }
-      lastData = data;
-      lastDataAt = now;
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {

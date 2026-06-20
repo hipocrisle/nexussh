@@ -110,6 +110,113 @@ export function TerminalView({
     a.push(m);
     if (a.length > 400) a.shift();
   };
+
+  // ── Mobile selection drag-handles ─────────────────────────────────────────
+  // Two Android-style handles at the selection ends; dragging either re-runs
+  // term.select() so the user can extend a word/range to anything. All cell math
+  // is INCLUSIVE here; getSelectionPosition().end is exclusive (start+len), so we
+  // convert it when needed.
+  const [handles, setHandles] = useState<
+    { a: { x: number; y: number }; b: { x: number; y: number }; h: number } | null
+  >(null);
+  const handleDragRef = useRef<{ which: "a" | "b"; fixed: { col: number; row: number } } | null>(
+    null,
+  );
+  const refreshHandlesRef = useRef<() => void>(() => {});
+  const rowsGeom = () => {
+    const term = termRef.current;
+    const cont = containerRef.current;
+    const rowsEl = cont?.querySelector(".xterm-rows") as HTMLElement | null;
+    if (!term || !cont || !rowsEl) return null;
+    const cRect = cont.getBoundingClientRect();
+    const rRect = rowsEl.getBoundingClientRect();
+    if (rRect.width <= 0 || rRect.height <= 0) return null;
+    return {
+      term,
+      cRect,
+      rRect,
+      cellW: rRect.width / term.cols,
+      cellH: rRect.height / term.rows,
+      vy: term.buffer.active.viewportY,
+    };
+  };
+  const cellFromClient = (x: number, y: number) => {
+    const g = rowsGeom();
+    if (!g) return null;
+    const col = Math.min(g.term.cols - 1, Math.max(0, Math.floor((x - g.rRect.left) / g.cellW)));
+    const vrow = Math.min(g.term.rows - 1, Math.max(0, Math.floor((y - g.rRect.top) / g.cellH)));
+    return { col, row: g.vy + vrow };
+  };
+  const refreshHandles = () => {
+    const term = termRef.current;
+    const g = rowsGeom();
+    const pos = term?.getSelectionPosition?.();
+    if (!isMobile || !term || !g || !pos || !term.hasSelection()) {
+      setHandles(null);
+      return;
+    }
+    setHandles({
+      a: {
+        x: g.rRect.left - g.cRect.left + pos.start.x * g.cellW,
+        y: g.rRect.top - g.cRect.top + (pos.start.y - g.vy) * g.cellH,
+      },
+      b: {
+        x: g.rRect.left - g.cRect.left + pos.end.x * g.cellW,
+        y: g.rRect.top - g.cRect.top + (pos.end.y - g.vy) * g.cellH,
+      },
+      h: g.cellH,
+    });
+  };
+  refreshHandlesRef.current = refreshHandles;
+  const onHandleStart = (which: "a" | "b") => (e: React.TouchEvent) => {
+    const term = termRef.current;
+    const pos = term?.getSelectionPosition?.();
+    if (!term || !pos) return;
+    // Fix the OPPOSITE endpoint (inclusive cells); end is exclusive → -1.
+    const fixed =
+      which === "b"
+        ? { col: pos.start.x, row: pos.start.y }
+        : pos.end.x > 0
+          ? { col: pos.end.x - 1, row: pos.end.y }
+          : { col: term.cols - 1, row: pos.end.y - 1 };
+    handleDragRef.current = { which, fixed };
+    e.stopPropagation();
+  };
+  const onHandleMove = (e: React.TouchEvent) => {
+    const d = handleDragRef.current;
+    const term = termRef.current;
+    if (!d || !term) return;
+    const t = e.touches[0];
+    const focus = cellFromClient(t.clientX, t.clientY);
+    if (focus) {
+      let lo = d.fixed;
+      let hi = focus;
+      if (hi.row < lo.row || (hi.row === lo.row && hi.col < lo.col)) {
+        lo = focus;
+        hi = d.fixed;
+      }
+      const len = (hi.row - lo.row) * term.cols + (hi.col - lo.col) + 1;
+      if (len > 0) {
+        term.select(lo.col, lo.row, len);
+        term.refresh(0, term.rows - 1);
+      }
+    }
+    e.stopPropagation();
+  };
+  const onHandleEnd = (e: React.TouchEvent) => {
+    if (handleDragRef.current) {
+      const sel = termRef.current?.getSelection();
+      if (sel) {
+        copyTextVerbose(sel)
+          .then((r) => dbg(`COPY(handle) ${r}`))
+          .catch(() => {});
+        setShowCopy(true);
+      }
+    }
+    handleDragRef.current = null;
+    e.stopPropagation();
+  };
+
   const palette = THEMES[settings.theme];
   // Outline-only decorations (a fill over coloured glyphs is unreadable).
   const searchOpts: ISearchOptions = {
@@ -295,6 +402,19 @@ export function TerminalView({
     const clearPress = () => {
       if (pressTimer) { window.clearTimeout(pressTimer); pressTimer = 0; }
     };
+    // Word boundaries (non-space run) around a cell — for long-press word-select.
+    const wordRangeAt = (c: { col: number; row: number }) => {
+      const line = term.buffer.active.getLine(c.row);
+      if (!line) return null;
+      const text = line.translateToString(true);
+      const ch = text[c.col];
+      if (c.col >= text.length || !ch || /\s/.test(ch)) return null;
+      let s = c.col;
+      let e = c.col;
+      while (s > 0 && !/\s/.test(text[s - 1])) s--;
+      while (e < text.length - 1 && !/\s/.test(text[e + 1])) e++;
+      return { col: s, row: c.row, len: e - s + 1 };
+    };
     const onTouchStart = (ev: TouchEvent) => {
       dbg(`START touches=${ev.touches.length}`);
       if (ev.touches.length !== 1) return;
@@ -310,16 +430,28 @@ export function TerminalView({
       dbg(`START xy=${Math.round(startX)},${Math.round(startY)} buf=${term.buffer.active.type}`);
       clearPress();
       pressTimer = window.setTimeout(() => {
-        // Held still → start a selection at the press point.
+        // Held still → select the WORD under the finger (like every mobile app).
+        // Dragging on without lifting then extends from the word; or lift and use
+        // the handles to adjust the range.
         dbg(`LONGPRESS fire (timer)`);
         selecting = true;
-        selAnchor = cellFromTouch(startX, startY, "press");
-        if (selAnchor) {
+        const c = cellFromTouch(startX, startY, "press");
+        if (c) {
           term.clearSelection();
-          applySelection(selAnchor, selAnchor);
-          dbg(`LONGPRESS anchor=${selAnchor.col},${selAnchor.row} selLen=${term.getSelection().length} hasSel=${term.hasSelection()}`);
+          const w = wordRangeAt(c);
+          if (w) {
+            term.select(w.col, w.row, w.len);
+            selAnchor = { col: w.col, row: w.row };
+            dbg(`LONGPRESS word col=${w.col} row=${w.row} len=${w.len}`);
+          } else {
+            applySelection(c, c);
+            selAnchor = c;
+            dbg(`LONGPRESS char col=${c.col} row=${c.row}`);
+          }
+          lastCopied = ""; // a fresh selection may re-copy
+          term.refresh(0, term.rows - 1);
         } else {
-          dbg(`LONGPRESS anchor=NULL (cellFromTouch failed)`);
+          dbg(`LONGPRESS cellFromTouch failed`);
         }
         try { navigator.vibrate?.(12); } catch { /* ignore */ }
       }, 380);
@@ -427,6 +559,7 @@ export function TerminalView({
     const selDispose = term.onSelectionChange(() => {
       if (!isMobileRef.current) return;
       if (term.getSelection()) setShowCopy(true);
+      refreshHandlesRef.current(); // reposition the drag handles
     });
 
     // PuTTY-style mouse — when enabled in Settings: selection auto-copies
@@ -792,6 +925,41 @@ export function TerminalView({
         >
           ⧉ {t("term_menu.copy")}
         </button>
+      )}
+      {/* Mobile: Android-style selection drag-handles — grab & extend the range. */}
+      {handles && (
+        <>
+          {([
+            ["a", handles.a],
+            ["b", handles.b],
+          ] as const).map(([k, p]) => (
+            <div
+              key={k}
+              onTouchStart={onHandleStart(k)}
+              onTouchMove={onHandleMove}
+              onTouchEnd={onHandleEnd}
+              onTouchCancel={onHandleEnd}
+              className="absolute z-30 flex items-start justify-center"
+              style={{
+                left: p.x - 16,
+                top: p.y + handles.h - 3,
+                width: 32,
+                height: 32,
+                touchAction: "none",
+              }}
+            >
+              <div
+                className="rounded-full shadow-elev-modal"
+                style={{
+                  width: 18,
+                  height: 18,
+                  background: palette.accent,
+                  border: `2px solid ${palette.bgBase}`,
+                }}
+              />
+            </div>
+          ))}
+        </>
       )}
       {/* Mobile: debug-log dump button — copies the touch/selection trace to the
           clipboard so it can be pasted back for diagnosis. */}

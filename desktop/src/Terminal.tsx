@@ -749,7 +749,34 @@ export function TerminalView({
       return true;
     });
 
+    // Android IME doubling guard: when a keyboard suggestion is confirmed, xterm
+    // emits the same word TWICE — once from compositionend (_finalizeComposition,
+    // deferred) and once from the insertText `input` event (_inputEvent). Drop an
+    // EXACT duplicate that lands within a short window after a compositionend.
+    // Outside that window nothing is de-duped, so normal typing never loses input.
+    let lastCompositionEndAt = -1e9;
+    let lastData = "";
+    let lastDataAt = -1e9;
+    if (isMobileRef.current) {
+      const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      ta?.addEventListener("compositionend", () => {
+        lastCompositionEndAt = performance.now();
+      });
+    }
     const onDataDisposable = term.onData((data) => {
+      const now = performance.now();
+      if (
+        now - lastCompositionEndAt < 200 &&
+        data === lastData &&
+        now - lastDataAt < 200
+      ) {
+        dbg(`IME drop dup '${data.slice(0, 12)}'`);
+        return; // duplicate echo of a just-composed suggestion
+      }
+      lastData = data;
+      lastDataAt = now;
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {

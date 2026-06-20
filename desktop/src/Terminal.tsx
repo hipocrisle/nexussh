@@ -749,43 +749,52 @@ export function TerminalView({
       return true;
     });
 
-    // Android IME doubling fix — structural, not content-based. When a keyboard
-    // suggestion is confirmed WITHOUT a keydown, xterm emits the word twice:
-    //   1) compositionend → _finalizeComposition  (reliable: always fires)
-    //   2) input(insertText) → _inputEvent         (the duplicate)
-    // xterm listens for "input" in the BUBBLE phase, so a CAPTURE listener here
-    // runs first; if an insertText `input` lands right after a compositionend we
-    // stopImmediatePropagation() so xterm's _inputEvent never sees it — leaving
-    // only the composition path. Window is tight so the space/char that confirms
-    // a suggestion (a separate, later event) is untouched.
+    // Android IME doubling — DIAGNOSTIC build. The capture-phase input
+    // suppression (beta.35) broke xterm's textarea cleanup (→ "pastes already
+    // typed text"), so it's removed. Here we only OBSERVE the input pipeline
+    // (composition + input + onData, with timing) so one typing log pins down the
+    // exact duplicate mechanism, plus a conservative exact-dup drop after a
+    // compositionend. The passive listeners never block anything.
     let lastCompositionEndAt = -1e9;
+    const esc = (s: string) =>
+      s.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\x1b/g, "\\e");
     if (isMobileRef.current) {
       const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",
       );
       if (ta) {
-        ta.addEventListener("compositionend", () => {
-          lastCompositionEndAt = performance.now();
-        });
-        ta.addEventListener(
-          "input",
-          (e) => {
-            const ie = e as InputEvent;
-            const dt = performance.now() - lastCompositionEndAt;
-            if (
-              !ie.isComposing &&
-              ie.inputType === "insertText" &&
-              dt < 60
-            ) {
-              dbg(`IME suppress dup input '${ie.data ?? ""}' dt=${dt.toFixed(0)}`);
-              e.stopImmediatePropagation();
-            }
-          },
-          { capture: true },
+        ta.addEventListener("compositionstart", () => dbg(`comp:start`));
+        ta.addEventListener("compositionupdate", (e) =>
+          dbg(`comp:update '${esc((e as CompositionEvent).data ?? "")}'`),
         );
+        ta.addEventListener("compositionend", (e) => {
+          lastCompositionEndAt = performance.now();
+          dbg(`comp:end '${esc((e as CompositionEvent).data ?? "")}'`);
+        });
+        ta.addEventListener("input", (e) => {
+          const ie = e as InputEvent;
+          const dt = (performance.now() - lastCompositionEndAt).toFixed(0);
+          dbg(
+            `input type=${ie.inputType} comp=${ie.isComposing} dt=${dt} '${esc(ie.data ?? "")}'`,
+          );
+        });
       }
     }
+    let lastData = "";
+    let lastDataAt = -1e9;
     const onDataDisposable = term.onData((data) => {
+      const now = performance.now();
+      const sinceComp = now - lastCompositionEndAt;
+      dbg(`onData sinceComp=${sinceComp.toFixed(0)} '${esc(data).slice(0, 24)}'`);
+      // Conservative: drop only an EXACT repeat of the immediately-previous data
+      // when it lands right after a compositionend (the classic finalize+input
+      // double). Anything else passes through untouched.
+      if (sinceComp < 350 && data === lastData && now - lastDataAt < 350) {
+        dbg(`  ↑ dropped (dup after comp)`);
+        return;
+      }
+      lastData = data;
+      lastDataAt = now;
       sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {

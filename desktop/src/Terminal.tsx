@@ -104,7 +104,6 @@ export function TerminalView({
   // Mobile: brief "Скопировано" toast, shown only on an EXPLICIT copy (tap on the
   // selection). Selection itself no longer auto-copies.
   const [copiedToast, setCopiedToast] = useState(false);
-  const [showLog, setShowLog] = useState(false); // mobile debug-log panel
   const copiedTimerRef = useRef<number | null>(null);
   const flashCopied = () => {
     setCopiedToast(true);
@@ -1045,61 +1044,6 @@ export function TerminalView({
             </div>
           ))}
         </>
-      )}
-      {/* Mobile: debug-log button — opens an on-screen panel that's easy to
-          SCREENSHOT (and copy) for diagnosis, instead of dumping to clipboard
-          where it could land in the shell. */}
-      {isMobile && (
-        <button
-          type="button"
-          className="absolute bottom-2 right-2 z-20 w-9 h-9 rounded-full bg-nx-panel/80 border border-nx-border text-meta active:opacity-70"
-          title="debug log"
-          onClick={() => setShowLog(true)}
-        >
-          🐞
-        </button>
-      )}
-      {showLog && (
-        <div className="absolute inset-0 z-40 flex flex-col bg-nx-bg-base/95">
-          <div className="flex items-center gap-2 p-2 border-b border-nx-border shrink-0">
-            <span className="font-mono text-meta text-nx-text-primary">
-              debug log ({dbgRef.current.length})
-            </span>
-            <div className="ml-auto flex gap-2">
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-nx bg-nx-accent text-nx-bg-base font-mono text-meta active:opacity-80"
-                onClick={() =>
-                  copyTextVerbose(dbgRef.current.join("\n") || "(empty)").catch(
-                    () => {},
-                  )
-                }
-              >
-                ⧉ copy
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-nx bg-nx-panel border border-nx-border font-mono text-meta text-nx-text-primary active:opacity-80"
-                onClick={() => {
-                  dbgRef.current = [];
-                  setShowLog(false);
-                }}
-              >
-                clear
-              </button>
-              <button
-                type="button"
-                className="px-3 py-1.5 rounded-nx bg-nx-panel border border-nx-border font-mono text-meta text-nx-text-primary active:opacity-80"
-                onClick={() => setShowLog(false)}
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          <pre className="flex-1 overflow-auto p-2 m-0 font-mono text-[10px] leading-tight text-nx-text-primary whitespace-pre-wrap break-all">
-            {dbgRef.current.join("\n") || "(empty)"}
-          </pre>
-        </div>
       )}
       {findOpen && (
         <div

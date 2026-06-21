@@ -756,47 +756,73 @@ export function TerminalView({
     // (composition + input + onData, with timing) so one typing log pins down the
     // exact duplicate mechanism, plus a conservative exact-dup drop after a
     // compositionend. The passive listeners never block anything.
-    let lastCompositionEndAt = -1e9;
+    // Android input doubling — ROOT CAUSE (proven by the typing log): xterm keeps
+    // its hidden helper-textarea filled as you type ("тестиру"→"тестирую "), it
+    // does NOT clear it per-key on Android. When GBoard inserts punctuation it
+    // first deleteContentBackward (drops the trailing space) then insertText the
+    // comma; xterm's textarea-diff then sees the WHOLE accumulated buffer as new
+    // and re-sends it ("тестирую,") — the doubling.
+    //
+    // Fix: on mobile we OWN the input. A beforeinput listener maps each edit to
+    // the right bytes and preventDefault()s it, so the textarea never accumulates
+    // and xterm's diff (onData) emits nothing. preventDefault is safe here because
+    // this GBoard path is NOT IME composition (comp=false in the log); genuine
+    // composition still falls through to xterm via onData below.
     const esc = (s: string) =>
       s.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\x1b/g, "\\e");
+    const send = (s: string) => {
+      if (s) sshSend(sessionId, new TextEncoder().encode(s)).catch(console.error);
+    };
     if (isMobileRef.current) {
       const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",
       );
       if (ta) {
-        ta.addEventListener("compositionstart", () => dbg(`comp:start`));
-        ta.addEventListener("compositionupdate", (e) =>
-          dbg(`comp:update '${esc((e as CompositionEvent).data ?? "")}'`),
+        ta.addEventListener(
+          "beforeinput",
+          (e) => {
+            const ie = e as InputEvent;
+            // Let real IME composition go through xterm untouched.
+            if (ie.isComposing || ie.inputType?.includes("Composition")) return;
+            let out: string | null = null;
+            switch (ie.inputType) {
+              case "insertText":
+              case "insertReplacementText":
+              case "insertFromPaste":
+                out = ie.data ?? "";
+                break;
+              case "insertLineBreak":
+              case "insertParagraph":
+                out = "\r";
+                break;
+              case "deleteContentBackward":
+                out = "\x7f"; // DEL/backspace
+                break;
+              case "deleteWordBackward":
+                out = "\x17"; // Ctrl-W
+                break;
+              case "deleteContentForward":
+                out = "\x1b[3~";
+                break;
+              default:
+                out = null; // unknown → let xterm try
+            }
+            if (out !== null) {
+              dbg(`beforeinput ${ie.inputType} '${esc(ie.data ?? "")}' → send '${esc(out)}'`);
+              send(out);
+              ta.value = ""; // keep the textarea empty so xterm never diffs it
+              e.preventDefault();
+            }
+          },
+          { capture: true },
         );
-        ta.addEventListener("compositionend", (e) => {
-          lastCompositionEndAt = performance.now();
-          dbg(`comp:end '${esc((e as CompositionEvent).data ?? "")}'`);
-        });
-        ta.addEventListener("input", (e) => {
-          const ie = e as InputEvent;
-          const dt = (performance.now() - lastCompositionEndAt).toFixed(0);
-          dbg(
-            `input type=${ie.inputType} comp=${ie.isComposing} dt=${dt} '${esc(ie.data ?? "")}'`,
-          );
-        });
       }
     }
-    let lastData = "";
-    let lastDataAt = -1e9;
     const onDataDisposable = term.onData((data) => {
-      const now = performance.now();
-      const sinceComp = now - lastCompositionEndAt;
-      dbg(`onData sinceComp=${sinceComp.toFixed(0)} '${esc(data).slice(0, 24)}'`);
-      // Conservative: drop only an EXACT repeat of the immediately-previous data
-      // when it lands right after a compositionend (the classic finalize+input
-      // double). Anything else passes through untouched.
-      if (sinceComp < 350 && data === lastData && now - lastDataAt < 350) {
-        dbg(`  ↑ dropped (dup after comp)`);
-        return;
-      }
-      lastData = data;
-      lastDataAt = now;
-      sshSend(sessionId, new TextEncoder().encode(data)).catch(console.error);
+      // Reached only for input we didn't intercept above (e.g. IME composition,
+      // desktop). Send as-is.
+      dbg(`onData '${esc(data).slice(0, 24)}'`);
+      send(data);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
       sshResize(sessionId, cols, rows).catch(console.error);

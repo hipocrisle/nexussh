@@ -118,6 +118,17 @@ pub async fn require_auth(
             "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
             rusqlite::params![now(), device_id],
         );
+        // Sliding session: renew the expiry on use, so an ACTIVE device is not
+        // logged out every 30 days from login regardless of activity (that fixed
+        // 30d-from-login expiry is exactly what produced the "invalid token"
+        // surprise). Only bump when it has drifted by >1 day, to avoid a write
+        // on every single request.
+        if expires_at - now() < SESSION_TTL_SECS - 86400 {
+            let _ = conn.execute(
+                "UPDATE sessions SET expires_at = ?1 WHERE token = ?2",
+                rusqlite::params![now() + SESSION_TTL_SECS, &token],
+            );
+        }
     }
 
     req.extensions_mut().insert(AuthUser { user_id, device_id });

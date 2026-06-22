@@ -1253,11 +1253,30 @@ pub async fn account_sync_now(
     let since = cfg.last_sync_rev;
     let url = server_url.clone();
     let tok = token.clone();
-    let pull_raw = tokio::task::spawn_blocking(move || {
+    let pull_res = tokio::task::spawn_blocking(move || {
         http_get_json(&url, &format!("/v1/items?since={since}"), &tok)
     })
     .await
-    .map_err(|e| AccountError::Other(e.to_string()))??;
+    .map_err(|e| AccountError::Other(e.to_string()))?;
+    let pull_raw = match pull_res {
+        Ok(v) => v,
+        // Token rejected by the server (expired/removed → "invalid token"). Auto
+        // log out so the UI shows the login screen instead of a raw 401: clear the
+        // in-memory session, drop the stashed user key, and wipe the saved token.
+        // Surfaced as NotLoggedIn, which the frontend already handles as "sign in".
+        Err(AccountError::Server { status: 401, .. }) => {
+            *state.inner.lock().unwrap() = None;
+            if vault::is_unlocked(&vault_state) {
+                let _ = vault::delete_key(&vault_state, USER_KEY_VAULT_KEY);
+            }
+            if let Ok(mut c) = load_config(&app) {
+                c.token = None;
+                let _ = save_config(&app, &c);
+            }
+            return Err(AccountError::NotLoggedIn);
+        }
+        Err(e) => return Err(e),
+    };
     let mut pull: PullResponse = serde_json::from_value(pull_raw)?;
 
     // SELF-HEAL: if the server's max rev is BELOW our cursor, the server lost data

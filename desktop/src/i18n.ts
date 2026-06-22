@@ -447,6 +447,9 @@ const ru = {
     mode_view: "режим просмотра (только чтение)",
     mode_edit: "режим редактирования",
   },
+  host: {
+    unreachable: "Хост недоступен: {{host}}",
+  },
   tunnel: {
     title: "проброс портов",
     header: "туннели",
@@ -1459,6 +1462,9 @@ const en = {
     discard_confirm: "Discard unsaved changes?",
     mode_view: "view mode (read-only)",
     mode_edit: "edit mode",
+  },
+  host: {
+    unreachable: "Host unreachable: {{host}}",
   },
   tunnel: {
     title: "port forwards",

@@ -69,6 +69,21 @@ export async function sshConnect(
   }
 }
 
+/** Pre-auth TCP reachability probe (host:port) — used before asking for a
+ *  password so an offline host is reported as unreachable, not mistaken for a
+ *  wrong password. Direct path only (VPN hosts are skipped by the caller). */
+export async function hostReachable(
+  host: string,
+  port: number,
+  timeoutSecs: number,
+): Promise<boolean> {
+  return invoke<boolean>("host_reachable", {
+    host,
+    port,
+    timeoutSecs,
+  });
+}
+
 export async function sshSend(sessionId: string, data: Uint8Array): Promise<void> {
   await invoke("ssh_send", {
     sessionId,

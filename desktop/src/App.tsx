@@ -61,7 +61,7 @@ import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, startupCheck } from "./updater";
-import { sshConnect, sshDisconnect, sshSend } from "./ssh";
+import { sshConnect, sshDisconnect, sshSend, hostReachable } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
 import { ShortcutsOverlay } from "./ShortcutsOverlay";
@@ -1747,6 +1747,17 @@ function App() {
   }
 
   async function openHost(h: HostRecord) {
+    // Reachability check BEFORE asking for a password (PuTTY-style): an offline
+    // host should say "unreachable", not be mistaken for a wrong password after
+    // a long hang. Skip for VPN hosts (they go through SOCKS — a direct TCP
+    // probe would falsely fail). Fail-open if the probe itself errors.
+    if (!resolveHostVpn(h)) {
+      const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
+      if (!reachable) {
+        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }));
+        return;
+      }
+    }
     // If user opted to always ask for password, prompt before opening tab.
     let auth = h.auth;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
@@ -3334,19 +3345,19 @@ function App() {
           >
             {!recSids[focusedSession.id] && (
               <span
-                className="absolute w-2.5 h-2.5 rounded-full animate-ping"
-                style={{ background: "var(--nx-error)", opacity: 0.55 }}
+                className="absolute w-1.5 h-1.5 rounded-full animate-ping"
+                style={{ background: "var(--nx-error)", opacity: 0.3 }}
               />
             )}
             <span
-              className="relative w-2.5 h-2.5 rounded-full"
+              className="relative w-1.5 h-1.5 rounded-full"
               style={{
                 background: recSids[focusedSession.id]
                   ? "var(--nx-text-muted)"
                   : "var(--nx-error)",
                 boxShadow: recSids[focusedSession.id]
                   ? "none"
-                  : "0 0 6px var(--nx-error)",
+                  : "0 0 3px var(--nx-error)",
               }}
             />
           </button>

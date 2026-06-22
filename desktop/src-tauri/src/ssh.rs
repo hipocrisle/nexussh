@@ -140,6 +140,20 @@ pub fn keepalive_interval(secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Pre-auth reachability probe: a plain TCP connect to `host:port` with a short
+/// timeout, run BEFORE we ask the user for a password — so an offline host is
+/// reported as "unreachable" instead of being mistaken for a wrong password
+/// after a long hang. Direct path only; VPN/SOCKS hosts skip this on the
+/// frontend. Returns true only on a successful connect within the timeout.
+#[tauri::command]
+pub async fn host_reachable(host: String, port: u16, timeout_secs: u64) -> bool {
+    let to = std::time::Duration::from_secs(if timeout_secs == 0 { 5 } else { timeout_secs.min(10) });
+    matches!(
+        tokio::time::timeout(to, tokio::net::TcpStream::connect((host.as_str(), port))).await,
+        Ok(Ok(_))
+    )
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectResult {
     pub session_id: String,

@@ -780,9 +780,20 @@ function App() {
   // Resolves to the (possibly just-entered) login + password, or null if
   // cancelled. For hosts WITH a login it just asks the password; for login-less
   // hosts (imported address-only) it asks both.
-  function askPassword(
+  async function askPassword(
     h: HostRecord,
   ): Promise<{ user: string; password: string } | null> {
+    // Reachability check BEFORE the password prompt (PuTTY-style) — covers EVERY
+    // path that asks for a password (quick-connect, always-ask, reconnect). An
+    // offline host says "unreachable" instead of being mistaken for a wrong
+    // password. Skip VPN hosts (SOCKS path); fail-open if the probe errors.
+    if (!resolveHostVpn(h)) {
+      const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
+      if (!reachable) {
+        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }));
+        return null;
+      }
+    }
     return new Promise((resolve) =>
       setPwQueue((q) => [
         ...q,

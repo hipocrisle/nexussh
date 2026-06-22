@@ -154,6 +154,31 @@ pub async fn host_reachable(host: String, port: u16, timeout_secs: u64) -> bool 
     )
 }
 
+#[cfg(test)]
+mod reachable_tests {
+    use super::host_reachable;
+
+    #[tokio::test]
+    async fn closed_port_is_unreachable() {
+        // Port 1 on loopback is virtually never listening → false (not a panic).
+        assert!(!host_reachable("127.0.0.1".to_string(), 1, 2).await);
+    }
+
+    #[tokio::test]
+    async fn bogus_dns_is_unreachable() {
+        // Unresolvable name (incl. the user's "длоытдлопы" case) → false.
+        assert!(!host_reachable("nonexistent-zzz-длоытдлопы.invalid".to_string(), 22, 2).await);
+    }
+
+    #[tokio::test]
+    async fn open_port_is_reachable() {
+        // Bind an ephemeral listener and confirm the probe sees it as reachable.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        assert!(host_reachable("127.0.0.1".to_string(), port, 2).await);
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectResult {
     pub session_id: String,

@@ -50,6 +50,18 @@ export interface ClosedEvent {
 export async function sshConnect(
   args: ConnectArgs,
 ): Promise<{ sessionId: string; recording: boolean }> {
+  // Reachability guard — the single choke-point every connect path goes through
+  // (saved-password/key/vault hosts skip the askPassword probe, so guarding only
+  // there leaves a hole). A bogus/offline host fails fast here with a clear
+  // message instead of a long SSH-handshake hang mistaken for bad creds. Skip
+  // VPN hosts (they reach the target via the SOCKS path). Fail-open if the probe
+  // itself errors, so a probe glitch never blocks a real connection.
+  if (!args.vpn) {
+    const reachable = await hostReachable(args.host, args.port, 5).catch(
+      () => true,
+    );
+    if (!reachable) throw `Хост недоступен: ${args.host}:${args.port}`;
+  }
   try {
     const res = await invoke<{ session_id: string; recording: boolean }>(
       "ssh_connect",

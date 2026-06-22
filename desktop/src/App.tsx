@@ -3741,9 +3741,17 @@ function App() {
             // after invoking the callback.
             setCreateHostOpen(true);
           }}
-          onQuickConnect={(host, port, save) => {
+          onQuickConnect={async (host, port, save) => {
             setPickerOpen(false);
             setPendingSplit(null);
+            // Reachability check BEFORE the quick-connect login/password dialog —
+            // a bogus/offline address says "unreachable" instead of opening the
+            // creds prompt. Quick-connect is always a direct host (no VPN).
+            const reachable = await hostReachable(host, port, 5).catch(() => true);
+            if (!reachable) {
+              showToast(t("host.unreachable", { host: `${host}:${port}` }));
+              return;
+            }
             setQuickConnect({ host, port, save });
           }}
           onClose={() => {

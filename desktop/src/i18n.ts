@@ -448,7 +448,8 @@ const ru = {
     mode_edit: "режим редактирования",
   },
   host: {
-    unreachable: "Хост недоступен: {{host}}",
+    checking: "⏳ Проверка хоста {{host}}…",
+    unreachable: "🔴 Хост недоступен: {{host}}",
   },
   tunnel: {
     title: "проброс портов",
@@ -1464,7 +1465,8 @@ const en = {
     mode_edit: "edit mode",
   },
   host: {
-    unreachable: "Host unreachable: {{host}}",
+    checking: "⏳ Checking host {{host}}…",
+    unreachable: "🔴 Host unreachable: {{host}}",
   },
   tunnel: {
     title: "port forwards",

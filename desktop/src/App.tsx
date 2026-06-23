@@ -753,12 +753,13 @@ function App() {
     } | null;
   } | null>(null);
   // Transient toast (e.g. "tunnel started"). Auto-dismisses after a few sec.
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; kind?: "error" } | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  function showToast(msg: string) {
-    setToast(msg);
+  function showToast(msg: string, kind?: "error") {
+    setToast({ msg, kind });
     if (toastTimerRef.current != null) window.clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 4000);
+    // errors linger longer (9s) so they're not missed; info stays 4s.
+    toastTimerRef.current = window.setTimeout(() => setToast(null), kind === "error" ? 9000 : 4000);
   }
 
   // "Always ask password" prompt — promise-based so openHost/openSftp can await
@@ -790,7 +791,7 @@ function App() {
     if (!resolveHostVpn(h)) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
-        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }));
+        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
         return null;
       }
     }
@@ -1765,7 +1766,7 @@ function App() {
     if (!resolveHostVpn(h)) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
-        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }));
+        showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
         return;
       }
     }
@@ -3747,9 +3748,10 @@ function App() {
             // Reachability check BEFORE the quick-connect login/password dialog —
             // a bogus/offline address says "unreachable" instead of opening the
             // creds prompt. Quick-connect is always a direct host (no VPN).
+            showToast(t("host.checking", { host: `${host}:${port}` }));
             const reachable = await hostReachable(host, port, 5).catch(() => true);
             if (!reachable) {
-              showToast(t("host.unreachable", { host: `${host}:${port}` }));
+              showToast(t("host.unreachable", { host: `${host}:${port}` }), "error");
               return;
             }
             setQuickConnect({ host, port, save });
@@ -3910,8 +3912,15 @@ function App() {
 
       {/* Transient toast (tunnel started, …). */}
       {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-nx bg-nx-panel border border-nx-accent shadow-glow-md font-mono text-meta text-nx-text">
-          {toast}
+        <div
+          className={
+            "fixed bottom-4 left-1/2 -translate-x-1/2 z-[120] px-4 py-2 rounded-nx bg-nx-panel shadow-glow-md font-mono text-meta " +
+            (toast.kind === "error"
+              ? "border-2 border-nx-error text-nx-error"
+              : "border border-nx-accent text-nx-text")
+          }
+        >
+          {toast.msg}
         </div>
       )}
 

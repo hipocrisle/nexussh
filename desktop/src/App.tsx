@@ -410,16 +410,23 @@ function WindowControls() {
   }, [win]);
   const btn =
     "inline-flex items-center justify-center w-11 h-9 text-nx-muted hover:bg-nx-elevated hover:text-nx-text transition-colors duration-[80ms]";
+  // preventDefault on mousedown so a click NEVER moves keyboard focus onto the
+  // window button (tabIndex -1 keeps them out of the Tab ring too). Otherwise,
+  // after minimize→restore from the taskbar, focus stayed on the Minimize button
+  // and the next Enter minimized the app instead of going to the terminal.
+  const noFocus = (e: React.MouseEvent) => e.preventDefault();
   return (
     <div className="flex items-stretch h-9 -mr-3 ml-1">
-      <button className={btn} onClick={() => win.minimize()} title="Minimize">
+      <button className={btn} tabIndex={-1} onMouseDown={noFocus} onClick={() => win.minimize()} title="Minimize">
         <Minus size={14} />
       </button>
-      <button className={btn} onClick={() => win.toggleMaximize()} title="Maximize">
+      <button className={btn} tabIndex={-1} onMouseDown={noFocus} onClick={() => win.toggleMaximize()} title="Maximize">
         {maxed ? <RestoreIcon size={12} /> : <Square size={12} />}
       </button>
       <button
         className="inline-flex items-center justify-center w-11 h-9 text-nx-muted hover:bg-nx-error hover:text-white transition-colors duration-[80ms]"
+        tabIndex={-1}
+        onMouseDown={noFocus}
         onClick={() => win.close()}
         title="Close"
       >

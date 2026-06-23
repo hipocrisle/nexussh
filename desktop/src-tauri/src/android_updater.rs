@@ -36,8 +36,12 @@ pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdate
     let cur = app.package_info().version.to_string();
     // The Android channel has its OWN manifest (produced by the android CI job),
     // independent of the desktop latest.json — it carries the APK url + SHA-256.
+    // Served from the self-hosted mirror (like the desktop updater): GitHub's
+    // release CDN (release-assets.githubusercontent.com) doesn't traverse our
+    // VPN-exit, so the APK wouldn't download with the VPN on. The mirror's
+    // manifest also rewrites the APK url to upd.hipogas.org.
     const ENDPOINT: &str =
-        "https://github.com/hipocrisle/nexussh/releases/latest/download/latest-android.json";
+        "https://upd.hipogas.org/nexussh/android/latest-android.json";
     let body = tokio::task::spawn_blocking(|| -> Result<String, String> {
         ureq::get(ENDPOINT)
             .call()

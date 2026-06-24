@@ -144,3 +144,11 @@ export async function biometricDisable(): Promise<void> {
 export function hostPasswordKey(hostId: string): string {
   return `host.${hostId}.password`;
 }
+
+/** Vault key for a key-auth host's private-key path + passphrase (JSON).
+ *  Deliberately NOT in the account-sync list (sync only carries
+ *  `host.<id>.password` + known_hosts) — so the private key stays LOCAL to the
+ *  device and the passphrase never lands in plaintext hosts.json. */
+export function hostKeyDataKey(hostId: string): string {
+  return `host.${hostId}.keydata`;
+}

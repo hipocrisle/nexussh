@@ -3,11 +3,33 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { VpnNode } from "./vpn";
+import { vaultGet, hostKeyDataKey } from "./vault";
 
 export type AuthMethod =
   | { kind: "password"; password: string }
   | { kind: "key"; path: string; passphrase?: string }
   | { kind: "vault"; key: string };
+
+/** Persisted host-record auth (key has NO secrets — they live in the vault). */
+export type StoredAuth =
+  | { kind: "password"; password: string }
+  | { kind: "key" }
+  | { kind: "vault"; key: string };
+
+/** Turn a persisted auth into a runtime AuthMethod. For key-auth, the private-key
+ *  path + passphrase are read from the LOCAL vault (hostKeyDataKey) — never from
+ *  the synced record. Missing/locked vault → empty path so the backend reports a
+ *  clear "key not set on this device" error (e.g. after sync to a new machine). */
+export async function resolveAuth(auth: StoredAuth, hostId: string): Promise<AuthMethod> {
+  if (auth.kind !== "key") return auth;
+  try {
+    const raw = await vaultGet(hostKeyDataKey(hostId));
+    const d = JSON.parse(raw) as { path?: string; passphrase?: string };
+    return { kind: "key", path: d.path ?? "", passphrase: d.passphrase || undefined };
+  } catch {
+    return { kind: "key", path: "", passphrase: undefined };
+  }
+}
 
 export interface ConnectArgs {
   host: string;

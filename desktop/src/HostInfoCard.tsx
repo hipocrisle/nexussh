@@ -37,7 +37,7 @@ function authBadge(auth: HostRecord["auth"]) {
     return { icon: <Lock size={12} />, label: "password" };
   }
   if (auth.kind === "key") {
-    return { icon: <KeyRound size={12} />, label: `key (${auth.path})` };
+    return { icon: <KeyRound size={12} />, label: "key" };
   }
   // The host's own password lives under an auto-generated `host.<id>.password`
   // key — showing that raw uuid just overflows the card. Use a friendly label;

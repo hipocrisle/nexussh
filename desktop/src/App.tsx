@@ -61,7 +61,8 @@ import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, startupCheck } from "./updater";
-import { sshConnect, sshDisconnect, sshSend, hostReachable } from "./ssh";
+import { sshConnect, sshDisconnect, sshSend, hostReachable, resolveAuth } from "./ssh";
+import type { AuthMethod } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
 import { ShortcutsOverlay } from "./ShortcutsOverlay";
@@ -1293,7 +1294,7 @@ function App() {
   // restore). Mirrors openHost's success/error handling but doesn't add a
   // tab, since the pane is already there.
   async function kickoffConnect(pendingId: string, h: HostRecord) {
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
       if (!creds) {
@@ -1778,7 +1779,7 @@ function App() {
       }
     }
     // If user opted to always ask for password, prompt before opening tab.
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
       if (!creds) return; // cancelled
@@ -1863,7 +1864,7 @@ function App() {
   // Build the base ConnectArgs for a host with a resolved auth (handles the
   // shared shape used by SFTP and tunnels). The caller resolves "always ask"
   // first and passes the effective auth/user via the host it hands in.
-  function buildConnectArgs(h: HostRecord, auth: HostRecord["auth"]): ConnectArgs {
+  function buildConnectArgs(h: HostRecord, auth: AuthMethod): ConnectArgs {
     return {
       host: h.host,
       port: h.port,
@@ -1881,7 +1882,7 @@ function App() {
   // password prompts. Returns null if the user cancelled the prompt. Used by the
   // mobile Files (SFTP) tab, which opens its own connection per host.
   async function resolveSftpArgs(h: HostRecord): Promise<ConnectArgs | null> {
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
       if (!creds) return null;
@@ -1892,7 +1893,7 @@ function App() {
   }
 
   async function openSftp(h: HostRecord) {
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
       if (!creds) return;
@@ -1932,7 +1933,7 @@ function App() {
   // "always ask" auth, then shows the unified list (this host's saved forwards
   // plus all others) with the "+ New tunnel" button wired to this host.
   async function openTunnelFor(h: HostRecord) {
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     let host = h;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
@@ -1960,7 +1961,7 @@ function App() {
     const all = await listHosts();
     const h = all.find((x) => x.id === hostId);
     if (!h) return null;
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     let host = h;
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
@@ -2015,7 +2016,7 @@ function App() {
     // a quick-connect session holding the typed password in memory — in both
     // cases reusing it would just retry the same (possibly wrong) password
     // forever, so ask again.
-    let auth = host.auth;
+    let auth: AuthMethod = await resolveAuth(host.auth, host.id);
     let user = host.user;
     if (host.auth.kind === "password") {
       const creds = await askPassword(host);
@@ -2087,7 +2088,7 @@ function App() {
     intent: { wsId: string; paneId: string; dir: "row" | "col" },
     h: HostRecord,
   ) {
-    let auth = h.auth;
+    let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
       if (!creds) return;

@@ -13,6 +13,7 @@ import {
   saveHostsBatch,
   newHostId,
 } from "./hosts";
+import { vaultSet, hostKeyDataKey } from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { THEMES } from "./settings/themes";
 import { useBackdropClose } from "./useBackdropClose";
@@ -174,27 +175,36 @@ export function ImportHostsPanel({ onClose, onImported }: Props) {
       // progress, then persist all of them in ONE vault write — see
       // saveHostsBatch. Looping saveHost would re-encrypt the whole list N times.
       const recs: HostRecord[] = [];
+      const keyData: { id: string; path: string }[] = [];
       for (const i of pick) {
         const r = rows[i];
         const idFile = r.identity_file
           ? await invoke<string>("expand_home", { path: r.identity_file })
           : null;
+        const id = newHostId();
         recs.push({
-          id: newHostId(),
+          id,
           name: r.alias,
           host: r.hostname,
           port: r.port,
           user: r.user ?? settings.defaultUser,
           group: IMPORT_GROUP,
-          auth: idFile
-            ? { kind: "key", path: idFile }
-            : { kind: "password", password: "" },
+          auth: idFile ? { kind: "key" } : { kind: "password", password: "" },
           alwaysAskPassword: !idFile,
           sync: syncImported || undefined,
         });
+        // key path → ЛОКАЛЬНЫЙ vault (не plaintext, не синкается)
+        if (idFile) keyData.push({ id, path: idFile });
         setProgress({ done: recs.length, total: pick.length });
       }
       await saveHostsBatch(recs);
+      for (const kd of keyData) {
+        try {
+          await vaultSet(hostKeyDataKey(kd.id), JSON.stringify({ path: kd.path }));
+        } catch {
+          /* vault locked — путь к ключу укажется при первом подключении */
+        }
+      }
       setSuccess(recs.length);
       onImported?.();
     } catch (e) {

@@ -17,9 +17,13 @@ export interface HostRecord {
   host: string;
   port: number;
   user: string;
+  // NOTE: key-auth no longer stores path/passphrase here — they live in the
+  // vault under hostKeyDataKey(id) (local, encrypted, NOT synced). Persisted
+  // record only carries the kind; the runtime AuthMethod (ssh.ts) is resolved
+  // from the vault at connect time via resolveAuth().
   auth:
     | { kind: "password"; password: string }
-    | { kind: "key"; path: string; passphrase?: string }
+    | { kind: "key" }
     | { kind: "vault"; key: string };
   /** Optional grouping/folder name */
   group?: string;

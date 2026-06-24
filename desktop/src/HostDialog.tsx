@@ -15,9 +15,11 @@ import { useIsMobile } from "./useIsMobile";
 import {
   vaultKeys,
   vaultStatus,
+  vaultGet,
   vaultSet,
   vaultDelete,
   hostPasswordKey,
+  hostKeyDataKey,
 } from "./vault";
 import { useSettings } from "./settings/settings-store";
 import { useBackdropClose } from "./useBackdropClose";
@@ -157,8 +159,17 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       if (initial.auth.kind === "password") {
         setPassword(initial.auth.password);
       } else if (initial.auth.kind === "key") {
-        setKeyPath(initial.auth.path);
-        setKeyPass(initial.auth.passphrase ?? "");
+        // path + passphrase живут в ЛОКАЛЬНОМ vault (не в синкаемой записи)
+        vaultGet(hostKeyDataKey(initial.id))
+          .then((raw) => {
+            const d = JSON.parse(raw) as { path?: string; passphrase?: string };
+            setKeyPath(d.path ?? "");
+            setKeyPass(d.passphrase ?? "");
+          })
+          .catch(() => {
+            setKeyPath("");
+            setKeyPass("");
+          });
       } else if (initial.auth.kind === "vault") {
         setVaultKey(initial.auth.key);
       }
@@ -250,7 +261,17 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       // "always ask" stores nothing. The manual "vault" tab is unchanged.
       let auth: HostRecord["auth"];
       if (authKind === "key") {
-        auth = { kind: "key", path: keyPath, passphrase: keyPass || undefined };
+        // path + passphrase → ЛОКАЛЬНЫЙ vault (не plaintext, НЕ синкается).
+        // Требует разблокированный vault, как и сохранённый пароль.
+        const st = await vaultStatus();
+        if (!st.unlocked) {
+          return setError(t("dialog.err_vault_locked"));
+        }
+        await vaultSet(
+          hostKeyDataKey(id),
+          JSON.stringify({ path: keyPath, passphrase: keyPass || undefined }),
+        );
+        auth = { kind: "key" };
       } else if (authKind === "vault") {
         auth = { kind: "vault", key: vaultKey };
       } else if (alwaysAskPassword) {

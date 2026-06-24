@@ -213,7 +213,16 @@ function QuickConnectCard({
       )}
 
       {state.kind === "creds" && (
-        <>
+        <div
+          onKeyDown={(e) => {
+            // ↵ из любого поля карточки → подключение (Tab проходит login →
+            // password → "сохранить хост" → кнопку; Space переключает чекбокс).
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onFinish();
+            }
+          }}
+        >
           <div className="flex items-center gap-2 pb-2.5 mb-2.5 border-b border-nx-divider">
             <Check size={13} className="text-nx-accent shrink-0" />
             <span className="text-body text-nx-text">{t("connect.reachable")}</span>
@@ -231,7 +240,7 @@ function QuickConnectCard({
               {t("connect.connect_btn")}
             </Button>
           </div>
-        </>
+        </div>
       )}
 
       {state.kind === "error" && (
@@ -434,9 +443,16 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
               setIdx(0);
             }}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && quick.kind === "ready") {
-                runQuickConnect();
-                e.preventDefault();
+              if (e.key === "Enter") {
+                // Выделенная сохранённая строка имеет приоритет: ↑↓ выбирают её,
+                // ↵ подключает. Быстрое подключение по ↵ — ТОЛЬКО когда среди
+                // сохранённых нет совпадений (список пуст).
+                if (activeRows.length > 0) {
+                  onKey(e);
+                } else if (quick.kind === "ready") {
+                  runQuickConnect();
+                  e.preventDefault();
+                }
               } else {
                 onKey(e);
               }

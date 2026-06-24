@@ -22,14 +22,14 @@ built-in VPN transport.
 ## Features
 
 **Terminal**
-- Tabs with split-view, restore last closed tab (`Ctrl+Shift+T`) and a persistent layout
+- Split tabs and keyboard shortcuts
 - Status line with live connection state
-- Dark monospace UI
+- Theme and font selection
+- Built-in search and session history
 
 **Connecting**
-- Quick-connect by `user@host`
-- Host-reachability probe — TCP-checks `host:port` before asking for a password, so an offline host isn't mistaken for a wrong one
-- TOFU host-key verification (`known_hosts.json`); SFTP verifies host keys too
+- Quick-connect by IP address
+- Host-key verification (TOFU, `known_hosts.json`); SFTP verifies keys too
 - Legacy algorithm support for old Cisco IOS / ESXi devices
 - SFTP file browse and transfer over the same connection
 
@@ -38,13 +38,13 @@ built-in VPN transport.
 - Envelope-encrypted host saves, an encryptable host list, scoped filesystem access, strict CSP
 
 **Sync**
-- Self-hosted account sync of hosts and settings, end-to-end encrypted
+- Cloud sync of hosts and settings, end-to-end encrypted
 - Recovery key and self-healing force-resync
-- Bulk import, cross-PC export/import
+- Bulk import, cross-PC host export/import
 
 **Built-in VPN transport**
 - Per-host "route via built-in VPN" — reach hosts from networks where they're blocked, without a separate VPN client or admin rights
-- Bundles [xray-core](https://github.com/XTLS/Xray-core); paste your own subscription (VLESS / Reality / VMess / Trojan / Shadowsocks link or `…/sub/…` URL) in **Settings → VPN**, flag a host, pick an exit
+- Bundles [xray-core](https://github.com/XTLS/Xray-core); paste your own subscription (VLESS / Reality / VMess / Trojan / Shadowsocks link)
 - Userspace local SOCKS (no system TUN); subscriptions stay local and are never synced
 
 **Platform**

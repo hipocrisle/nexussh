@@ -318,7 +318,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         useVpn: useVpn || undefined,
         vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
         vpnExit: useVpn ? vpnExit : undefined,
-        sync: sync || undefined,
+        // Folder = category: a host in a folder keeps its category (set by where
+        // it lives / moved to); the per-host toggle only applies to folder-less
+        // hosts. Prevents one host dragging its whole folder into the cloud.
+        sync: (group ? !!initial?.sync : sync) || undefined,
         recordHistory:
           recordHistory === "default"
             ? undefined
@@ -649,12 +652,22 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             <div className={kicker + " mt-6 mb-3 block"}>
               // {t("dialog.col_sync")}
             </div>
-            <Checkbox
-              checked={sync}
-              onChange={setSync}
-              label={t("dialog.sync_host")}
-              hint={t("dialog.sync_host_hint")}
-            />
+            {group ? (
+              // Folder = category: a host inside a folder inherits Cloud/Local
+              // from that folder. Change it by moving the host between sections
+              // (drag), not with a per-host toggle — otherwise a single host
+              // would drag its whole folder into the cloud.
+              <p className="text-nx-muted text-meta font-mono">
+                {t("dialog.sync_by_folder")}
+              </p>
+            ) : (
+              <Checkbox
+                checked={sync}
+                onChange={setSync}
+                label={t("dialog.sync_host")}
+                hint={t("dialog.sync_host_hint")}
+              />
+            )}
 
             {/* Local port forwards (ssh -L). Rows with autoStart open on connect. */}
             <div className={kicker + " mt-6 mb-3 block"}>

@@ -53,7 +53,7 @@ import { HostDialog } from "./HostDialog";
 import { useIsMobile } from "./useIsMobile";
 import { accountStatus } from "./account";
 import { MenuItem } from "./ContextMenu";
-import { askPrompt, askChoice } from "./dialogs";
+import { askPrompt, askChoice, askConfirm } from "./dialogs";
 import { FolderPicker } from "./FolderPicker";
 
 // Folders form a tree via "/"-separated group paths ("Work/Office-A/Switches").
@@ -733,6 +733,16 @@ export function Sidebar({
             });
             if (where === null) return; // cancelled
             synced = where === "cloud";
+          }
+          // Don't silently no-op on a duplicate — warn instead. A folder exists
+          // if a host already uses it OR an empty one is remembered, in the SAME
+          // category (Cloud/Local).
+          const exists =
+            hosts.some((h) => h.group === n && !!h.sync === synced) ||
+            knownFolders.some((f) => f.path === n && f.synced === synced);
+          if (exists) {
+            await askConfirm(t("sidebar.folder_exists", { name: n }));
+            return;
           }
           addKnownFolder(n, synced);
           refreshFolders();

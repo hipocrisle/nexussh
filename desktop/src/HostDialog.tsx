@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus,
-  User, Globe, Clock, ArrowLeftRight } from "lucide-react";
+  User, Globe, Clock, ArrowLeftRight, Cloud } from "lucide-react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -632,18 +632,21 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 { value: "off", label: t("dialog.record_off") },
               ]}
             />
-            {/* sync opt-in only for folder-less hosts (a host in a folder takes
-             *  the folder's category; moving between sections changes it) */}
-            {!group && (
-              <Checkbox
-                checked={sync}
-                onChange={setSync}
-                className="mt-3.5"
-                label={t("dialog.sync_host")}
-                hint={t("dialog.sync_host_hint")}
-              />
-            )}
             </Card>
+
+            {/* Sync card — only for folder-less hosts (a host in a folder takes the
+             *  folder's category; moving between sections changes it). Own section so
+             *  it reads consistently in both create & edit and isn't buried under History. */}
+            {!group && (
+              <Card icon={<Cloud size={12} />} label={t("dialog.col_sync")}>
+                <Checkbox
+                  checked={sync}
+                  onChange={setSync}
+                  label={t("dialog.sync_host")}
+                  hint={t("dialog.sync_host_hint")}
+                />
+              </Card>
+            )}
 
             {/* Port forwarding card */}
             <Card

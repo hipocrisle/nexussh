@@ -47,7 +47,6 @@ import { HostDialog } from "./HostDialog";
 import { ResizeHandles } from "./ResizeHandles";
 import { historyPause } from "./history";
 import { PasswordPrompt } from "./PasswordPrompt";
-import { QuickConnectDialog } from "./QuickConnectDialog";
 const SettingsScreen = lazy(() =>
   import("./SettingsScreen").then((m) => ({ default: m.SettingsScreen })),
 );
@@ -846,7 +845,6 @@ function App() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<"ssh" | "sftp">("ssh");
-  const [quickConnect, setQuickConnect] = useState<{ host: string; port: number; save: boolean } | null>(null);
   // Prefilled new-host dialog (e.g. "Save host" from a quick-connect session).
   const [prefillHost, setPrefillHost] = useState<HostRecord | null>(null);
   // When set, the next host picked completes a split inside this workspace
@@ -3750,67 +3748,41 @@ function App() {
             // after invoking the callback.
             setCreateHostOpen(true);
           }}
-          onQuickConnect={async (host, port, save) => {
+          onQuickConnect={(host, port, save, user, password) => {
             setPickerOpen(false);
             setPendingSplit(null);
-            // Reachability check BEFORE the quick-connect login/password dialog —
-            // a bogus/offline address says "unreachable" instead of opening the
-            // creds prompt. Quick-connect is always a direct host (no VPN).
-            showToast(t("host.checking", { host: `${host}:${port}` }));
-            const reachable = await hostReachable(host, port, 5).catch(() => true);
-            if (!reachable) {
-              showToast(t("host.unreachable", { host: `${host}:${port}` }), "error");
-              return;
-            }
-            setQuickConnect({ host, port, save });
-          }}
-          onClose={() => {
-            setPickerOpen(false);
-            setPendingSplit(null);
-          }}
-        />
-      )}
-      {quickConnect && (
-        <QuickConnectDialog
-          host={quickConnect.host}
-          port={quickConnect.port}
-          defaultUser={settings.defaultUser}
-          onCancel={() => setQuickConnect(null)}
-          onSubmit={({ user, password }) => {
-            const qc = quickConnect;
-            setQuickConnect(null);
-            if (!qc) return;
-            // Quick connect enables legacy algorithms by default so it "just
-            // works" with old gear (Cisco/ESXi) — no per-host toggle to fuss
-            // with in the fast path.
-            //
-            // When "Save host" is ticked, connect under the SAVED host's id (not
-            // an ephemeral "quick-" id) so the sidebar matches it: live badge,
-            // active caret, and a name that updates with renames. Otherwise use
-            // a throwaway id that never persists.
-            const id = qc.save ? newHostId() : "quick-" + crypto.randomUUID();
-            if (qc.save) {
+            // Reachability + creds уже собраны в quick-connect карточке TabPicker
+            // (step 11). Здесь только открываем сессию (+ сохраняем хост, если save).
+            // Legacy-алгоритмы включены, чтобы "просто работало" со старым железом.
+            // При save — под id СОХРАНЁННОГО хоста (живой бейдж/каретка в сайдбаре),
+            // иначе одноразовый "quick-" id.
+            const id = save ? newHostId() : "quick-" + crypto.randomUUID();
+            if (save) {
               saveHost({
                 id,
-                name: qc.host,
-                host: qc.host,
-                port: qc.port,
+                name: host,
+                host,
+                port,
                 user,
-                auth: { kind: "password", password: "" }, // never store the pw
+                auth: { kind: "password", password: "" }, // никогда не храним пароль
                 alwaysAskPassword: true,
                 allowLegacy: true,
               }).catch(() => {});
             }
             openHost({
               id,
-              name: qc.host,
-              host: qc.host,
-              port: qc.port,
+              name: host,
+              host,
+              port,
               user,
               auth: { kind: "password", password },
               alwaysAskPassword: false,
               allowLegacy: true,
             });
+          }}
+          onClose={() => {
+            setPickerOpen(false);
+            setPendingSplit(null);
           }}
         />
       )}

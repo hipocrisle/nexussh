@@ -12,18 +12,30 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Server, ChevronRight, ChevronDown, Folder, Plus, X, Zap } from "lucide-react";
+import { Server, ChevronRight, ChevronDown, Folder, Plus, X, Zap,
+  Loader2, Check, AlertTriangle } from "lucide-react";
 import { HostRecord, listHosts } from "./hosts";
+import { tcpPing } from "./ssh";
+import { Input, PasswordInput, Button, Checkbox } from "./components/primitives";
 import { useBackdropClose } from "./useBackdropClose";
 import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
 
 interface Props {
   onPick: (h: HostRecord) => void;
   onCreateNew?: () => void;
-  /** PuTTY-style quick connect: open host:port without saving (unless `save`). */
-  onQuickConnect?: (host: string, port: number, save: boolean) => void;
+  /** Quick connect after the in-card reachability check + creds: open host:port
+   *  with the given login/password (saved as a host when `save`). */
+  onQuickConnect?: (host: string, port: number, save: boolean, user: string, password: string) => void;
   onClose: () => void;
 }
+
+type Target = { host: string; port: number };
+type QuickState =
+  | { kind: "idle" }
+  | { kind: "ready" }
+  | { kind: "checking"; target: Target }
+  | { kind: "creds"; target: Target; latencyMs: number }
+  | { kind: "error"; target: Target; reason: string };
 
 function Highlighted({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>;
@@ -131,24 +143,155 @@ function persistExpanded(s: Set<string>) {
   } catch {}
 }
 
+/** Contextual quick-connect card with the reachability flow (step 11).
+ *  ready → (Enter) checking → reachable=creds / unreachable=error. */
+function QuickConnectCard({
+  state, port, onPort, save, onSave, login, onLogin, password, onPassword,
+  onRun, onFinish, onCancel,
+}: {
+  state: QuickState;
+  port: string; onPort: (v: string) => void;
+  save: boolean; onSave: (v: boolean) => void;
+  login: string; onLogin: (v: string) => void;
+  password: string; onPassword: (v: string) => void;
+  onRun: () => void; onFinish: () => void; onCancel: () => void;
+}) {
+  const { t } = useTranslation();
+  const target = "target" in state ? state.target : null;
+  const addr = target ? `${target.host}:${target.port}` : "";
+  const wrap =
+    state.kind === "error" ? "border-nx-error"
+    : state.kind === "checking" ? "border-nx-warning"
+    : "border-nx-accent";
+
+  return (
+    <div
+      className={"rounded-[7px] p-3.5 border " + wrap}
+      style={{
+        background: "linear-gradient(180deg, rgba(0,255,149,0.06), transparent)",
+        boxShadow: "0 0 24px var(--nx-accent-glow)",
+      }}
+    >
+      {state.kind === "ready" && (
+        <>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Zap size={13} className="text-nx-accent shrink-0" />
+            <span className="text-micro uppercase tracking-wider text-nx-accent">
+              {t("connect.quick_kicker")}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <label className="text-meta text-nx-muted">{t("connect.port")}</label>
+              <input
+                value={port}
+                onChange={(e) => onPort(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") onRun(); e.stopPropagation(); }}
+                inputMode="numeric"
+                aria-label={t("connect.port")}
+                className="w-[60px] bg-nx-panel border border-nx-border rounded-nx px-2 py-1 text-nx-text font-mono text-body text-center outline-none focus:border-nx-accent"
+              />
+              <Button type="button" variant="primary" size="sm" onClick={onRun}>
+                {t("connect.connect_btn")} ↵
+              </Button>
+            </div>
+          </div>
+          <p className="text-meta text-nx-muted mt-2">{t("connect.quick_hint")}</p>
+          <Checkbox checked={save} onChange={onSave} className="mt-3" label={t("connect.save_after")} />
+        </>
+      )}
+
+      {state.kind === "checking" && (
+        <div className="flex items-center gap-2.5">
+          <Loader2 size={14} className="text-nx-warning shrink-0 animate-spin" />
+          <div className="min-w-0">
+            <div className="text-body text-nx-text">{t("connect.checking")}</div>
+            <div className="text-meta text-nx-muted font-mono truncate">{addr} — {t("connect.tcp_ping")}</div>
+          </div>
+          <button type="button" onClick={onCancel} className="ml-auto text-meta text-nx-muted hover:text-nx-text">
+            {t("connect.cancel")}
+          </button>
+        </div>
+      )}
+
+      {state.kind === "creds" && (
+        <>
+          <div className="flex items-center gap-2 pb-2.5 mb-2.5 border-b border-nx-divider">
+            <Check size={13} className="text-nx-accent shrink-0" />
+            <span className="text-body text-nx-text">{t("connect.reachable")}</span>
+            <span className="text-meta text-nx-muted font-mono ml-auto truncate">
+              {addr} · {state.latencyMs}ms
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <Input value={login} onChange={onLogin} placeholder={t("connect.login")} autoFocus />
+            <PasswordInput value={password} onChange={onPassword} placeholder={t("connect.password")} />
+          </div>
+          <div className="flex items-center gap-3 mt-3">
+            <Checkbox checked={save} onChange={onSave} label={t("connect.save_as_host")} />
+            <Button type="button" variant="primary" size="sm" className="ml-auto" onClick={onFinish}>
+              {t("connect.connect_btn")}
+            </Button>
+          </div>
+        </>
+      )}
+
+      {state.kind === "error" && (
+        <div className="flex items-center gap-2.5">
+          <AlertTriangle size={14} className="text-nx-error shrink-0" />
+          <div className="min-w-0">
+            <div className="text-body text-nx-error">{t("connect.unreachable")}</div>
+            <div className="text-meta text-nx-muted font-mono truncate">{addr} — {t("connect.timeout", { s: 8 })}</div>
+          </div>
+          <Button type="button" variant="secondary" size="sm" className="ml-auto" onClick={onRun}>
+            {t("connect.retry")}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [q, setQ] = useState("");
-  // Quick-connect form (PuTTY-style): host + port, optional "save host".
-  const [qcHost, setQcHost] = useState("");
+  // Quick-connect state machine (idle→ready→checking→creds/error).
+  const [quick, setQuick] = useState<QuickState>({ kind: "idle" });
   const [qcPort, setQcPort] = useState("22");
   const [qcSave, setQcSave] = useState(false);
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const qcRef = useRef<HTMLInputElement>(null);
 
-  function submitQuick() {
-    const host = qcHost.trim();
-    if (!host || !onQuickConnect) return;
+  // Surface the quick card whenever the field is non-empty — but don't disturb
+  // an in-flight checking/creds/error flow.
+  useEffect(() => {
+    setQuick((s) =>
+      s.kind === "idle" || s.kind === "ready"
+        ? { kind: q.trim() ? "ready" : "idle" }
+        : s,
+    );
+  }, [q]);
+
+  async function runQuickConnect() {
+    const host = q.trim();
+    if (!host) return;
     const n = parseInt(qcPort, 10);
     const port = Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 22;
-    onQuickConnect(host, port, qcSave);
+    const target = { host, port };
+    setQuick({ kind: "checking", target });
+    try {
+      const latencyMs = await tcpPing(host, port, 8000);
+      setQuick({ kind: "creds", target, latencyMs });
+    } catch (e) {
+      setQuick({ kind: "error", target, reason: String(e) });
+    }
+  }
+
+  function finishConnect() {
+    if (quick.kind !== "creds" || !onQuickConnect) return;
+    const { host, port } = quick.target;
+    onQuickConnect(host, port, qcSave, login.trim(), password);
     onClose();
   }
   const listRef = useRef<HTMLDivElement>(null);
@@ -174,8 +317,8 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
         setExpanded(top);
       }
     });
-    // Focus the quick-connect host field — it's the primary action now.
-    setTimeout(() => qcRef.current?.focus(), 0);
+    // Focus the smart search field — it's the single primary input now.
+    setTimeout(() => inputRef.current?.focus(), 0);
   }, []);
 
   function toggleExpand(path: string) {
@@ -279,92 +422,10 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
           POPOVER_SURFACE
         }
       >
-        {/* Quick connect (PuTTY-style) — top of the picker. Host + port only;
-            login/password are asked after, like PuTTY's post-Open prompts. */}
-        {onQuickConnect && (
-          <div className="nx-safe-top px-3.5 pt-3 pb-2.5 border-b border-nx-divider shrink-0">
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-1.5 text-nx-accent font-mono">
-                <Zap size={13} />
-                <span className="text-micro uppercase tracking-wider">
-                  {t("quick.title")}
-                </span>
-              </div>
-              {/* Close — mobile has no backdrop to tap. */}
-              <button
-                onClick={onClose}
-                aria-label={t("picker.close") ?? "Close"}
-                className="md:hidden shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
-              >
-                <X size={14} />
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                ref={qcRef}
-                value={qcHost}
-                onChange={(e) => setQcHost(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitQuick();
-                  else if (e.key === "Escape") onClose();
-                  e.stopPropagation();
-                }}
-                placeholder={t("quick.host_placeholder")}
-                className="flex-1 min-w-0 bg-nx-panel border border-nx-border rounded-nx px-2.5 py-1.5 text-nx-text font-mono text-body outline-none focus:border-nx-accent placeholder-nx-muted"
-              />
-              <input
-                value={qcPort}
-                onChange={(e) => setQcPort(e.target.value.replace(/\D/g, ""))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitQuick();
-                  e.stopPropagation();
-                }}
-                aria-label={t("quick.port")}
-                className="w-16 bg-nx-panel border border-nx-border rounded-nx px-2.5 py-1.5 text-nx-text font-mono text-body text-center outline-none focus:border-nx-accent"
-              />
-              <button
-                type="button"
-                onClick={submitQuick}
-                disabled={!qcHost.trim()}
-                className="shrink-0 px-3 py-1.5 rounded-nx bg-nx-accent text-nx-bg-1 font-mono text-body font-bold disabled:opacity-40"
-              >
-                {t("quick.connect")}
-              </button>
-            </div>
-            <label className="mt-2 flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={qcSave}
-                onChange={(e) => setQcSave(e.target.checked)}
-                className="accent-nx-accent"
-              />
-              <span className="text-meta text-nx-soft font-mono">
-                {t("quick.save")}
-              </span>
-            </label>
-          </div>
-        )}
-
-        {/* Add host — single "+" (icon), full save dialog */}
-        {onCreateNew && (
-          <>
-            <div
-              onClick={() => {
-                onCreateNew();
-                onClose();
-              }}
-              className="nx-row grid grid-cols-[16px_1fr] gap-2.5 items-center px-3.5 py-2 max-md:py-3 cursor-pointer text-nx-accent hover:bg-nx-elevated"
-            >
-              <Plus size={14} className="shrink-0" />
-              <span className="text-lead">{t("picker.create_new")}</span>
-            </div>
-            <PopoverDivider />
-          </>
-        )}
-
-        {/* Saved hosts — filter + list */}
-        <div className="flex items-center gap-2.5 px-3.5 py-2 border-b border-nx-divider shrink-0">
-          <span className="text-nx-muted">&gt;</span>
+        {/* Smart field — single input: filters saved hosts AND is the
+            quick-connect target. ">" prefix, autofocus. */}
+        <div className="nx-safe-top flex items-center gap-2.5 px-3.5 py-3 border-b border-nx-divider shrink-0">
+          <span className="text-nx-accent font-bold shrink-0">&gt;</span>
           <input
             ref={inputRef}
             value={q}
@@ -372,12 +433,58 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
               setQ(e.target.value);
               setIdx(0);
             }}
-            onKeyDown={onKey}
-            placeholder={t("picker.placeholder")}
-            className="flex-1 bg-transparent border-none text-nx-text font-mono text-body outline-none placeholder-nx-muted"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && quick.kind === "ready") {
+                runQuickConnect();
+                e.preventDefault();
+              } else {
+                onKey(e);
+              }
+            }}
+            placeholder={t("connect.search_placeholder")}
+            className="flex-1 bg-transparent border-none text-nx-text font-mono text-lead outline-none placeholder-nx-muted"
           />
-          <span className="text-micro uppercase tracking-wider px-1.5 rounded-nx-sm border border-nx-border text-nx-muted whitespace-nowrap">
-            {q.trim() ? `${activeRows.length} ${t("picker.results")}` : `${hosts.length}`}
+          <button
+            onClick={onClose}
+            aria-label={t("picker.close") ?? "Close"}
+            className="md:hidden shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Contextual quick-connect card — appears whenever the field is non-empty */}
+        {onQuickConnect && quick.kind !== "idle" && (
+          <div className="px-3.5 pt-3 shrink-0">
+            <QuickConnectCard
+              state={quick}
+              port={qcPort}
+              onPort={(v) => setQcPort(v.replace(/\D/g, ""))}
+              save={qcSave}
+              onSave={setQcSave}
+              login={login}
+              onLogin={setLogin}
+              password={password}
+              onPassword={setPassword}
+              onRun={runQuickConnect}
+              onFinish={finishConnect}
+              onCancel={() => setQuick({ kind: "ready" })}
+            />
+          </div>
+        )}
+
+        {/* Saved hosts header — count / matches by the same query */}
+        <div className="flex items-center gap-2.5 px-3.5 pt-3 pb-1.5 shrink-0">
+          <span className="text-micro uppercase tracking-[0.16em] text-nx-soft">
+            // {t("connect.saved_hosts")}
+          </span>
+          <span className="ml-auto text-meta text-nx-muted">
+            {q.trim()
+              ? t("connect.matches", { n: activeRows.length, total: hosts.length })
+              : t("connect.host_count", {
+                  hosts: hosts.length,
+                  folders: new Set(hosts.map((h) => h.group).filter(Boolean)).size,
+                })}
           </span>
         </div>
 
@@ -467,22 +574,30 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
         </div>
 
         <PopoverDivider />
-        {/* Footer hints — keyboard shortcuts, hidden on touch/mobile. */}
-        <div className="max-md:hidden shrink-0 px-3.5 py-2 flex gap-4 text-micro uppercase tracking-[0.12em] text-nx-muted">
-          <span>
-            <kbd className="text-nx-accent">↑ ↓</kbd> {t("picker.hint_move")}
+        {/* Footer — keyboard hints + demoted "add host" action. */}
+        <div className="shrink-0 px-3.5 py-2.5 flex items-center gap-4 text-micro uppercase tracking-[0.1em] text-nx-muted bg-nx-bg-2">
+          <span className="max-md:hidden">
+            <kbd className="text-nx-accent">↑↓</kbd> {t("connect.nav")}
           </span>
           {!q.trim() && (
-            <span>
-              <kbd className="text-nx-accent">← →</kbd> {t("picker.hint_fold")}
+            <span className="max-md:hidden">
+              <kbd className="text-nx-accent">←→</kbd> {t("connect.folder")}
             </span>
           )}
-          <span>
-            <kbd className="text-nx-accent">↵</kbd> {t("picker.hint_open")}
+          <span className="max-md:hidden">
+            <kbd className="text-nx-accent">↵</kbd> {t("connect.open")}
           </span>
-          <span className="ml-auto">
-            <kbd className="text-nx-accent">esc</kbd> {t("picker.hint_close")}
-          </span>
+          {onCreateNew && (
+            <button
+              onClick={() => {
+                onCreateNew();
+                onClose();
+              }}
+              className="ml-auto inline-flex items-center gap-1.5 text-nx-accent normal-case tracking-normal text-meta hover:underline"
+            >
+              <Plus size={14} /> {t("connect.add_host")}
+            </button>
+          )}
         </div>
       </div>
     </div>

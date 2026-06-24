@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Lock, KeyRound, Shield, ChevronDown, Folder, Pencil, Plus } from "lucide-react";
+import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus } from "lucide-react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+
+const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { accountRecordTombstones, accountSyncNow } from "./account";
 import type { PortForward } from "./tunnel";
@@ -32,7 +35,6 @@ import { Select } from "./Select";
 
 type AuthKind = "password" | "key" | "vault";
 
-const advancedEnabled = () => localStorage.getItem("nexussh.advanced") === "1";
 
 interface Props {
   initial?: HostRecord;
@@ -334,15 +336,12 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     }
   }
 
-  // Vault tab is gated behind the advanced flag, but keep it visible when
-  // editing a host that already uses vault auth so the value isn't lost.
+  // Только два реальных способа входа на хост: пароль и ключ. (Внутренний vault —
+  // это лишь хранилище СОХРАНЁННОГО пароля, не отдельный способ; ручной vault-tab убран.)
   const authOptions: { value: AuthKind; label: string; icon: React.ReactNode }[] = [
     { value: "password", label: t("dialog.auth_password"), icon: <Lock size={12} /> },
     { value: "key", label: t("dialog.auth_key"), icon: <KeyRound size={12} /> },
   ];
-  if (advancedEnabled() || authKind === "vault") {
-    authOptions.push({ value: "vault", label: t("dialog.auth_vault"), icon: <Shield size={12} /> });
-  }
 
   const kicker = "text-micro uppercase tracking-[0.2em] text-nx-accent";
 
@@ -501,11 +500,29 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             {authKind === "key" && (
               <div className="mt-4">
                 <RowLabel>{t("dialog.key_path")}</RowLabel>
-                <Input
-                  value={keyPath}
-                  onChange={setKeyPath}
-                  placeholder={t("dialog.key_path_ph")}
-                />
+                <div className="flex gap-2 mt-1.5">
+                  <div className="flex-1 min-w-0">
+                    <Input
+                      value={keyPath}
+                      onChange={setKeyPath}
+                      placeholder={t("dialog.key_path_ph")}
+                    />
+                  </div>
+                  {HAS_TAURI && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const p = await openFileDialog({ multiple: false, title: t("dialog.key_pick_title") });
+                          if (typeof p === "string") setKeyPath(p);
+                        } catch { /* cancelled */ }
+                      }}
+                      className="nx-focus shrink-0 px-3 bg-nx-panel border border-nx-border rounded-nx text-nx-muted hover:text-nx-text hover:bg-nx-elevated inline-flex items-center gap-1.5 font-mono text-meta"
+                    >
+                      <FolderOpen size={13} /> {t("dialog.key_browse")}
+                    </button>
+                  )}
+                </div>
                 <RowLabel className="mt-3">{t("dialog.passphrase")}</RowLabel>
                 <PasswordInput value={keyPass} onChange={setKeyPass} />
               </div>

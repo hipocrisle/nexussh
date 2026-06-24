@@ -216,6 +216,7 @@ export function SegCtl<V extends string>({ value, onChange, options }: SegCtlPro
         return (
           <button
             key={opt.value}
+            type="button"
             onClick={() => onChange(opt.value)}
             className={
               "nx-focus px-3 py-1.5 text-meta uppercase tracking-[0.12em] inline-flex items-center gap-1.5 " +

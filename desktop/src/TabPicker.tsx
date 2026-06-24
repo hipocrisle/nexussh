@@ -426,47 +426,66 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
         {...contentProps}
         // Desktop card vs mobile fullscreen sheet.
         className={
-          "nx-modal-enter w-full max-w-xl overflow-hidden flex flex-col " +
+          "nx-modal-enter relative w-full max-w-xl overflow-hidden flex flex-col " +
           "max-md:max-w-none max-md:h-full max-md:rounded-none max-md:border-0 " +
           POPOVER_SURFACE
         }
       >
-        {/* Smart field — single input: filters saved hosts AND is the
-            quick-connect target. ">" prefix, autofocus. */}
-        <div className="nx-safe-top flex items-center gap-2.5 px-3.5 py-3 border-b border-nx-divider shrink-0">
-          <span className="text-nx-accent font-bold shrink-0">&gt;</span>
-          <input
-            ref={inputRef}
-            value={q}
-            onChange={(e) => {
-              setQ(e.target.value);
-              setIdx(0);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                // Выделенная сохранённая строка имеет приоритет: ↑↓ выбирают её,
-                // ↵ подключает. Быстрое подключение по ↵ — ТОЛЬКО когда среди
-                // сохранённых нет совпадений (список пуст).
-                if (activeRows.length > 0) {
-                  onKey(e);
-                } else if (quick.kind === "ready") {
-                  runQuickConnect();
-                  e.preventDefault();
-                }
-              } else {
-                onKey(e);
-              }
-            }}
-            placeholder={t("connect.search_placeholder")}
-            className="flex-1 bg-transparent border-none text-nx-text font-mono text-lead outline-none placeholder-nx-muted"
-          />
+        <span className="nx-brackets">
+          <i />
+        </span>
+
+        {/* Header — // подключение  > connect  [x] (по дизайн-хэндофу) */}
+        <div className="nx-safe-top flex items-baseline gap-3 px-[22px] pt-5 pb-4 shrink-0">
+          <span className="text-micro uppercase tracking-[0.22em] text-nx-accent">
+            // {t("connect.kicker")}
+          </span>
+          <div className="text-h2 text-nx-text font-mono">
+            <span className="text-nx-accent mr-2">&gt;</span>
+            {t("connect.title")}
+          </div>
           <button
             onClick={onClose}
             aria-label={t("picker.close") ?? "Close"}
-            className="md:hidden shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-border bg-nx-panel text-nx-text active:bg-nx-bg-2"
+            className="ml-auto p-1.5 text-nx-muted hover:text-nx-text"
           >
             <X size={14} />
           </button>
+        </div>
+
+        {/* Smart field — bordered input with ">" inside, filters hosts AND is the
+            quick-connect target. */}
+        <div className="px-[22px] shrink-0">
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-nx-accent font-bold pointer-events-none">
+              &gt;
+            </span>
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setIdx(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  // Выделенная сохранённая строка имеет приоритет: ↑↓ выбирают её,
+                  // ↵ подключает. Быстрое подключение по ↵ — ТОЛЬКО когда среди
+                  // сохранённых нет совпадений (список пуст).
+                  if (activeRows.length > 0) {
+                    onKey(e);
+                  } else if (quick.kind === "ready") {
+                    runQuickConnect();
+                    e.preventDefault();
+                  }
+                } else {
+                  onKey(e);
+                }
+              }}
+              placeholder={t("connect.search_placeholder")}
+              className="nx-focus w-full pl-7 pr-3 py-2.5 text-body bg-nx-bg border border-nx-border rounded-nx text-nx-text placeholder-nx-muted outline-none focus:border-nx-accent font-mono"
+            />
+          </div>
         </div>
 
         {/* Contextual quick-connect card — appears whenever the field is non-empty */}

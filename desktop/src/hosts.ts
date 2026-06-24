@@ -304,11 +304,15 @@ export function newHostId(): string {
 export async function renameFolder(
   oldName: string,
   newName: string,
+  synced?: boolean,
 ): Promise<void> {
   const all = await listHosts();
   const touched: HostRecord[] = [];
   const prefix = oldName + "/";
   for (const h of all) {
+    // Scope to one category (Synced/Local) so renaming a folder in one section
+    // never touches the same-named folder in the other.
+    if (synced !== undefined && !!h.sync !== synced) continue;
     if (h.group === oldName) {
       h.group = newName;
       touched.push(h);
@@ -324,11 +328,12 @@ export async function renameFolder(
  * Delete a folder — ungroups the folder AND its whole subtree. Does not delete
  * hosts. Path-aware: removes the folder plus every descendant path.
  */
-export async function deleteFolder(name: string): Promise<void> {
+export async function deleteFolder(name: string, synced?: boolean): Promise<void> {
   const all = await listHosts();
   const touched: HostRecord[] = [];
   const prefix = name + "/";
   for (const h of all) {
+    if (synced !== undefined && !!h.sync !== synced) continue; // scope to category
     if (h.group === name || (h.group && h.group.startsWith(prefix))) {
       h.group = undefined;
       touched.push(h);
@@ -339,11 +344,12 @@ export async function deleteFolder(name: string): Promise<void> {
 
 /** Delete a folder AND every host inside it (and its whole subtree), in one
  *  batched write. The other deleteFolder ungroups; this one removes the hosts. */
-export async function deleteFolderWithHosts(name: string): Promise<void> {
+export async function deleteFolderWithHosts(name: string, synced?: boolean): Promise<void> {
   const all = await readAll();
   const prefix = name + "/";
   const inFolder = (h: HostRecord) =>
-    h.group === name || (h.group !== undefined && h.group.startsWith(prefix));
+    (synced === undefined || !!h.sync === synced) && // scope to category
+    (h.group === name || (h.group !== undefined && h.group.startsWith(prefix)));
   const next = all.filter((h) => !inFolder(h));
   const syncedIds = all.filter((h) => inFolder(h) && h.sync).map((h) => h.id);
   await writeAll(next);

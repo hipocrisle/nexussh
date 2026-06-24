@@ -267,7 +267,7 @@ export function Sidebar({
   // (knownFolders) are only seeded into the Local section — a freshly-created
   // empty folder isn't synced until a synced host lands in it.
   const buildTree = useCallback(
-    (subset: HostRecord[], seedEmptyFolders: boolean) => {
+    (subset: HostRecord[], seedEmptyFolders: boolean, skipEmpty?: Set<string>) => {
       const root: FolderNode = {
         path: "",
         name: "",
@@ -295,7 +295,12 @@ export function Sidebar({
         else ungrouped.push(h);
       }
       // Empty folders the user created via "+ Folder" (may be nested paths).
-      if (seedEmptyFolders) for (const f of knownFolders) if (f.trim()) ensure(f);
+      // skipEmpty = paths that already exist as REAL (host-backed) folders in
+      // the OTHER section (e.g. a synced "nodes" folder) — don't seed a phantom
+      // empty duplicate here, that's the "two Nodes folders" glitch.
+      if (seedEmptyFolders)
+        for (const f of knownFolders)
+          if (f.trim() && !(skipEmpty && skipEmpty.has(f))) ensure(f);
       const sortRec = (n: FolderNode) => {
         n.hosts.sort((a, b) => hostCmp(a, b, sortMode));
         n.children.forEach(sortRec);
@@ -313,9 +318,19 @@ export function Sidebar({
     const syncedHosts: HostRecord[] = [];
     const localHosts: HostRecord[] = [];
     for (const h of filtered) (h.sync ? syncedHosts : localHosts).push(h);
+    const syncedTree = buildTree(syncedHosts, false);
+    // Folder paths that exist in the cloud (from synced hosts). A pinned-empty
+    // (knownFolder) with the same name must NOT spawn a duplicate in Local.
+    const syncedPaths = new Set<string>();
+    const collect = (n: FolderNode) =>
+      n.children.forEach((c) => {
+        syncedPaths.add(c.path);
+        collect(c);
+      });
+    collect(syncedTree.root);
     return {
-      synced: buildTree(syncedHosts, false),
-      local: buildTree(localHosts, true),
+      synced: syncedTree,
+      local: buildTree(localHosts, true, syncedPaths),
     };
   }, [filtered, buildTree]);
 
@@ -454,7 +469,7 @@ export function Sidebar({
     );
   }
 
-  function onFolderContextMenu(e: React.MouseEvent, path: string) {
+  function onFolderContextMenu(e: React.MouseEvent, path: string, synced: boolean) {
     e.preventDefault();
     e.stopPropagation();
     // Don't allow rename/delete on the synthetic "ungrouped" buckets (one per
@@ -489,7 +504,7 @@ export function Sidebar({
             const next = name?.trim();
             if (!next || next === leaf || next.includes("/")) return;
             const newPath = parent ? `${parent}/${next}` : next;
-            await renameFolder(path, newPath);
+            await renameFolder(path, newPath, synced);
             renameKnownFolder(path, newPath);
             refreshFolders();
             reload();
@@ -525,7 +540,7 @@ export function Sidebar({
           icon: <Trash2 size={13} />,
           onClick: async () => {
             if (!confirm(t("sidebar.delete_folder_confirm", { name: path }))) return;
-            await deleteFolder(path);
+            await deleteFolder(path, synced);
             removeKnownFolder(path);
             refreshFolders();
             reload();
@@ -538,7 +553,7 @@ export function Sidebar({
           onClick: async () => {
             if (!confirm(t("sidebar.delete_folder_hosts_confirm", { name: path })))
               return;
-            await deleteFolderWithHosts(path);
+            await deleteFolderWithHosts(path, synced);
             refreshFolders();
             reload();
           },
@@ -776,14 +791,18 @@ export function Sidebar({
     );
   };
 
-  const renderFolder = (node: FolderNode, depth: number): React.ReactNode => {
+  const renderFolder = (
+    node: FolderNode,
+    depth: number,
+    synced: boolean,
+  ): React.ReactNode => {
     const isCollapsed = collapsedGroups.has(node.path);
     return (
       <div key={"f:" + node.path} className="mb-0.5">
         <button
           data-folder-header={node.path}
           onClick={() => toggleGroup(node.path)}
-          onContextMenu={(e) => onFolderContextMenu(e, node.path)}
+          onContextMenu={(e) => onFolderContextMenu(e, node.path, synced)}
           style={{ paddingLeft: folderPad(depth) }}
           className={
             "w-full flex items-center gap-2 uppercase tracking-[0.16em] font-mono " +
@@ -809,7 +828,7 @@ export function Sidebar({
         </button>
         {!isCollapsed && (
           <>
-            {sortedChildren(node).map((c) => renderFolder(c, depth + 1))}
+            {sortedChildren(node).map((c) => renderFolder(c, depth + 1, synced))}
             {node.hosts.map((h) => renderHost(h, depth + 1))}
           </>
         )}
@@ -839,6 +858,7 @@ export function Sidebar({
     icon: React.ReactNode,
     ungroupedKeyPrefix: string,
     accent: boolean,
+    synced: boolean,
     badge?: string,
   ): React.ReactNode => {
     const ungroupedNode = makeUngroupedNode(tree.ungrouped, ungroupedKeyPrefix);
@@ -862,8 +882,8 @@ export function Sidebar({
             </span>
           )}
         </div>
-        {sortedChildren(tree.root).map((node) => renderFolder(node, 0))}
-        {tree.ungrouped.length > 0 && renderFolder(ungroupedNode, 0)}
+        {sortedChildren(tree.root).map((node) => renderFolder(node, 0, synced))}
+        {tree.ungrouped.length > 0 && renderFolder(ungroupedNode, 0, synced)}
       </div>
     );
   };
@@ -1039,6 +1059,7 @@ export function Sidebar({
             ),
             "__synced__/",
             !cloudOff, // signed out → whole section header goes muted/grey
+            true, // synced section
             cloudOff ? t("sidebar.section_cloud_off") : undefined,
           )}
         {!localEmpty &&
@@ -1048,6 +1069,7 @@ export function Sidebar({
             <HardDrive size={11} className="text-nx-muted shrink-0" />,
             "__local__/",
             false,
+            false, // local section
           )}
       </div>
 

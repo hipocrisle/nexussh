@@ -1,66 +1,112 @@
-# NexuSSH
+<div align="center">
 
-> Cross-platform SSH client with custom Matrix UI, session history, and self-hosted sync.
+# 🛰️ NexuSSH
 
-**Designed for the AI-CLI era** — no more lost Claude Code / vim / htop output when scrolling back.
+**A fast, native, cross-platform SSH client built for the AI-CLI era.**
 
-## Status
+*Never lose your Claude Code / vim / htop output when scrolling back again.*
 
-🚧 v0.0.1 — active early development. Desktop client first, mobile later.
+[![Release](https://img.shields.io/github/v/release/hipocrisle/nexussh?include_prereleases&label=release&color=2ea043)](https://github.com/hipocrisle/nexussh/releases/latest)
+[![Platforms](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-444)](#-install)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-24c8db)](https://tauri.app)
+[![SSH](https://img.shields.io/badge/SSH-pure%20Rust%20(russh)-dea584)](https://github.com/Eugeny/russh)
 
-## Install
+**English** · [Русский](README.ru.md)
 
-Download from the [latest release](https://github.com/hipocrisle/nexussh/releases/latest) and run it:
+</div>
 
-- **Windows** — `NexuSSH_*_x64-setup.exe` — double-click.
-- **Linux (any distro)** — `NexuSSH_*_amd64.AppImage` — right-click → Properties →
-  *Allow executing as program*, then double-click. No install, no dependencies
-  (the runtime is self-contained, so it works without `libfuse2`).
+---
 
-One file per OS, nothing else to set up. The in-app **"Install and restart"**
-keeps it current, in place.
+## ✨ Why NexuSSH
 
-## Why
+Termius is paywalled. Tabby is bloated Electron+Angular. NexuSSH is a **~15 MB native binary** (Tauri 2, not Electron) with a custom Matrix-style UI, end-to-end encrypted sync, an optional built-in VPN transport, and a killer feature no other client has: **it captures every byte that crosses the wire** — including alternate-screen apps like Claude Code, vim and htop — so you can scroll back, search and export your whole session.
 
-Termius is paywalled. Tabby is bloated Electron+Angular. We want:
+## 🚀 Features
 
-- **Native feel**, small binary (Tauri 2 = ~15MB vs Electron 150MB)
-- **Matrix-style dark UI** with green/cyan accents, monospace, no Material/iOS pretensions
-- **Self-hosted sync** — Syncthing default. Google Drive / Dropbox / OneDrive as alternatives for colleagues.
-- **Russian + English** UI
-- **Session History panel** — capture ALL terminal bytes including alternate-screen-buffer output (Claude Code, vim, htop). Scroll back through every byte that crossed the wire, search, export. No other client has this.
-- **Vault integration** with our `secrets_vault.age` for credentials
+### Terminal & sessions
+- 🖥️ **Full byte-capture Session History** — records *all* terminal output, including alternate-screen-buffer apps (Claude Code, vim, htop). Scroll back through everything, search it, export it. Encrypted at rest. *No other client does this.*
+- 🗂️ **Tabs done right** — rounded tabs, split-view, restore last closed tab (`Ctrl+Shift+T`), persistent layout.
+- 📊 **Status line** — live connection state at a glance.
+- 🎨 **Matrix-style dark UI** — green/cyan accents, monospace, rounded window. No Material/iOS pretensions.
 
-## Stack
+### Connecting
+- ⚡ **Quick-connect** — type `user@host` and you're in.
+- 🩺 **Host-reachability probe** — TCP-checks `host:port` *before* asking for a password (PuTTY-style), so an offline host is never mistaken for a wrong password.
+- 🔑 **TOFU host-key verification** — `known_hosts.json`, MITM-safe; SFTP verifies host keys too.
+- 🧩 **Legacy algorithm support** — connects to old Cisco IOS / ESXi gear that modern clients refuse.
+- 📁 **SFTP** — browse and transfer files over the same connection.
 
-- **Tauri 2.x** (Rust backend + WebView)
-- **React + Vite + Tailwind** (UI)
-- **xterm.js** (terminal renderer with custom byte-capture)
-- **russh** (pure Rust SSH protocol)
+### Security & secrets
+- 🔐 **Encrypted vault** for credentials (age-based), with **idle auto-lock**.
+- 🛡️ **Envelope-encrypted host saves**, an **encryptable host list**, scoped filesystem access and a strict CSP.
 
-## Built-in VPN transport
+### Sync & multi-device
+- ☁️ **Self-hosted account sync** — your hosts & settings across machines, end-to-end encrypted.
+- 🔁 **Recovery key** + **self-healing force-resync** — never get locked out, never desync.
+- 📦 **Bulk import** (100+ hosts), cross-PC export/import, transfer bundles.
 
-Reach SSH hosts from networks where the box is blocked or filtered — **without
-installing a VPN client or needing admin rights**.
+### Built-in VPN transport
+- 🌐 **Per-host "route via built-in VPN"** — reach SSH hosts from networks where they're blocked, **without installing a VPN client or admin rights**.
+- 🧅 Bundles [xray-core](https://github.com/XTLS/Xray-core): paste **your own** subscription (any VLESS / Reality / VMess / Trojan / Shadowsocks link or `…/sub/…` URL) in **Settings → VPN**, flag a host and pick an exit. That host's connection is dialed through a local SOCKS proxy egressing via your chosen node.
+- 🔒 **Userspace only** (local SOCKS, no system TUN) — looks like ordinary HTTPS, survives locked-down work machines. Subscriptions stay **local**, never written to `hosts.json` or pushed through sync.
 
-NexuSSH bundles [xray-core](https://github.com/XTLS/Xray-core). Paste **your own
-subscription** (any standard VLESS / Reality / VMess / Trojan / Shadowsocks link
-or `…/sub/…` URL) in **Settings → VPN**, then flag any host with **"route via
-built-in VPN"** and pick an exit. That host's SSH connection is dialed through a
-local SOCKS proxy that egresses via your chosen node.
+### Platform & updates
+- 🪟🐧🤖 **Windows, Linux (.deb + .rpm), Android** (signed APK).
+- 🔄 **Self-hosted auto-updater** — in-app *Install & restart*, served from a self-hosted mirror (reachable from restricted networks).
+- 🌍 **Bilingual UI** — Russian & English.
 
-- **Userspace only** — a local SOCKS proxy, not a system TUN. No admin rights,
-  no OS network changes; only NexuSSH's own traffic is routed and it looks like
-  ordinary outbound HTTPS, so it survives locked-down work machines.
-- **Bring your own** — works with any provider's subscription; nothing to set up
-  server-side (the subscription is access to a VPN that already exists).
-- **Local & private** — subscriptions are stored per-machine, never written to
-  `hosts.json` or pushed through sync.
+## 📸 Screenshots
 
-## Roadmap
+> _Drop images into `docs/screenshots/` and they'll render here._
 
-See `ROADMAP.md` for phase breakdown.
+<div align="center">
+<img src="docs/screenshots/main.png" alt="NexuSSH terminal" width="80%">
+<br><em>Main terminal — Matrix-style UI</em>
+<br><br>
+<img src="docs/screenshots/history.png" alt="Session History" width="80%">
+<br><em>Full byte-capture Session History — search &amp; export</em>
+</div>
 
-## License
+## 📥 Install
 
-MIT. Take, fork, improve.
+Grab the latest build from the **[releases page](https://github.com/hipocrisle/nexussh/releases/latest)**:
+
+| OS | File | How |
+|----|------|-----|
+| **Windows** | `NexuSSH_*_x64-setup.exe` | double-click |
+| **Linux (Debian/Ubuntu)** | `NexuSSH_*_amd64.deb` | `sudo apt install ./NexuSSH_*_amd64.deb` |
+| **Linux (Fedora/RHEL)** | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| **Android** | `NexuSSH_*.apk` | install the signed APK |
+
+Linux builds use the system WebKit (`.deb`/`.rpm`), not AppImage — no white-screen on modern distros. The in-app **Install & restart** keeps you current.
+
+## 🛠️ Build from source
+
+```bash
+git clone https://github.com/hipocrisle/nexussh.git
+cd nexussh/desktop
+npm install
+npm run tauri dev      # run in dev
+npm run tauri build    # produce installers
+```
+
+**Requirements:** Rust (stable), Node 18+, and the [Tauri 2 prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+
+## 🧱 Tech stack
+
+- **[Tauri 2](https://tauri.app)** — Rust backend + system WebView (~15 MB vs Electron's ~150 MB)
+- **React 19 + Vite + Tailwind** — UI
+- **[xterm.js](https://xtermjs.org)** — terminal renderer with custom byte-capture
+- **[russh](https://github.com/Eugeny/russh)** — pure-Rust SSH protocol
+- **age** — encryption for vault & history
+- **[xray-core](https://github.com/XTLS/Xray-core)** — bundled VPN transport
+
+## 📄 License
+
+See [LICENSE](LICENSE).
+
+---
+
+<div align="center">
+<sub>Built with ☕ and Rust · Issues &amp; PRs welcome</sub>
+</div>

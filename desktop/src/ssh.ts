@@ -118,6 +118,16 @@ export async function hostReachable(
   });
 }
 
+/** Quick-connect reachability check (connect-modal step 11): resolves to the
+ *  round-trip TCP connect time in ms, or REJECTS on timeout/refusal. */
+export async function tcpPing(
+  host: string,
+  port: number,
+  timeoutMs = 8000,
+): Promise<number> {
+  return invoke<number>("tcp_ping", { host, port, timeoutMs });
+}
+
 export async function sshSend(sessionId: string, data: Uint8Array): Promise<void> {
   await invoke("ssh_send", {
     sessionId,

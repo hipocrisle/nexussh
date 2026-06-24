@@ -154,6 +154,20 @@ pub async fn host_reachable(host: String, port: u16, timeout_secs: u64) -> bool 
     )
 }
 
+/// TCP ping for the connect-modal quick-connect flow (step 11): returns the
+/// round-trip connect time in ms, or Err on timeout/refusal so the frontend's
+/// `invoke<number>('tcp_ping')` rejects and shows the "unreachable" state.
+#[tauri::command]
+pub async fn tcp_ping(host: String, port: u16, timeout_ms: u64) -> Result<u64, String> {
+    let to = std::time::Duration::from_millis(if timeout_ms == 0 { 8000 } else { timeout_ms.min(15000) });
+    let start = std::time::Instant::now();
+    match tokio::time::timeout(to, tokio::net::TcpStream::connect((host.as_str(), port))).await {
+        Ok(Ok(_)) => Ok(start.elapsed().as_millis() as u64),
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(_) => Err("timeout".into()),
+    }
+}
+
 #[cfg(test)]
 mod reachable_tests {
     use super::host_reachable;

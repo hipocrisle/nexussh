@@ -64,6 +64,7 @@ const ru = {
     move_to_folder: "Переместить в папку...",
     menu_move_section: "переместить в папку",
     new_folder_prompt: "Имя новой папки (можно путь через /):",
+    new_folder_where: "Где создать папку?",
     new_subfolder_prompt: "Новая подпапка внутри «{{parent}}»:",
     rename_folder_prompt: "Новое имя папки:",
     delete_folder_confirm: "Удалить папку \"{{name}}\" со всеми подпапками? Хосты переместятся без папки.",

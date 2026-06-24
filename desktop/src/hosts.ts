@@ -378,11 +378,15 @@ export async function deleteAllHosts(): Promise<void> {
 export async function moveHostToFolder(
   hostId: string,
   folder: string | null,
+  synced?: boolean,
 ): Promise<void> {
   const all = await listHosts();
   const h = all.find((x) => x.id === hostId);
   if (!h) return;
   h.group = folder ?? undefined;
+  // Model "folder = category": a host adopts the category of where it lands.
+  // Dropping into the Cloud section/folder makes it synced; into Local, local.
+  if (synced !== undefined) h.sync = synced || undefined;
   await saveHost(h);
 }
 
@@ -391,6 +395,7 @@ export async function moveHostToFolder(
 export async function reorderHosts(
   orderedIds: string[],
   folder: string | null,
+  synced?: boolean,
 ): Promise<void> {
   const all = await readAll();
   orderedIds.forEach((id, i) => {
@@ -398,6 +403,7 @@ export async function reorderHosts(
     if (h) {
       h.order = i;
       h.group = folder ?? undefined;
+      if (synced !== undefined) h.sync = synced || undefined; // folder = category
     }
   });
   await writeAll(all);

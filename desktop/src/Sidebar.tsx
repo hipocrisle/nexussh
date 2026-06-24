@@ -53,7 +53,7 @@ import { HostDialog } from "./HostDialog";
 import { useIsMobile } from "./useIsMobile";
 import { accountStatus } from "./account";
 import { MenuItem } from "./ContextMenu";
-import { askPrompt } from "./dialogs";
+import { askPrompt, askChoice } from "./dialogs";
 import { FolderPicker } from "./FolderPicker";
 
 // Folders form a tree via "/"-separated group paths ("Work/Office-A/Switches").
@@ -578,6 +578,9 @@ export function Sidebar({
   // own visual feedback + drop detection.
   // ---------------------------------------------------------------------
   const [dragOverGroup, setDragOverGroup] = useState<string | null>(null);
+  // Category of the folder/section under the cursor (folder = category model):
+  // true=Cloud, false=Local, null=none. Drives sync flag on drop.
+  const [dragOverSynced, setDragOverSynced] = useState<boolean | null>(null);
   const [draggingHost, setDraggingHost] = useState<HostRecord | null>(null);
   // Cursor position for the floating drag ghost (so you can see what you hold).
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
@@ -640,6 +643,7 @@ export function Sidebar({
       setDropTarget(null);
       const folderEl = el?.closest("[data-folder-header]") as HTMLElement | null;
       setDragOverGroup(folderEl?.dataset.folderHeader ?? null);
+      setDragOverSynced(folderEl ? folderEl.dataset.synced === "1" : null);
     };
     const onUp = async () => {
       const d = dragRef.current;
@@ -663,6 +667,7 @@ export function Sidebar({
             await reorderHosts(
               list.map((h) => h.id),
               group,
+              !!tgt.sync, // adopt the target row's category (folder = category)
             );
             // Freeze the resulting order so the manual placement is what shows.
             setSortMode("manual");
@@ -670,20 +675,30 @@ export function Sidebar({
             reload();
           }
         } else if (dragOverGroup !== null) {
-          const folder =
+          const isUngrouped =
             dragOverGroup === ungroupedLabel ||
             dragOverGroup === UNGROUPED_SYNCED ||
-            dragOverGroup === UNGROUPED_LOCAL
-              ? null
-              : dragOverGroup;
-          if (folder !== (d.host.group ?? null)) {
-            await moveHostToFolder(d.host.id, folder);
+            dragOverGroup === UNGROUPED_LOCAL;
+          const folder = isUngrouped ? null : dragOverGroup;
+          // Category of the drop target: section-ungrouped buckets are explicit;
+          // a folder carries it via data-synced (dragOverSynced).
+          const toSynced =
+            dragOverGroup === UNGROUPED_SYNCED
+              ? true
+              : dragOverGroup === UNGROUPED_LOCAL
+                ? false
+                : dragOverSynced;
+          const changingFolder = folder !== (d.host.group ?? null);
+          const changingCat = toSynced !== null && !!d.host.sync !== toSynced;
+          if (changingFolder || changingCat) {
+            await moveHostToFolder(d.host.id, folder, toSynced ?? undefined);
             reload();
           }
         }
       }
       setDraggingHost(null);
       setDragOverGroup(null);
+      setDragOverSynced(null);
       setDropTarget(null);
     };
     window.addEventListener("mousemove", onMove);
@@ -692,7 +707,7 @@ export function Sidebar({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [dragOverGroup, dropTarget, hosts, sortMode, ungroupedLabel, reload]);
+  }, [dragOverGroup, dragOverSynced, dropTarget, hosts, sortMode, ungroupedLabel, reload]);
 
   function makeEmptyAreaMenu(): MenuItem[] {
     return [
@@ -704,10 +719,23 @@ export function Sidebar({
         label: t("sidebar.menu_new_folder"),
         onClick: async () => {
           const name = await askPrompt(t("sidebar.new_folder_prompt"));
-          if (name && name.trim()) {
-            addKnownFolder(name.trim(), false);
-            refreshFolders();
+          const n = name?.trim();
+          if (!n) return;
+          // If signed in to cloud sync, ask which section the folder belongs to;
+          // otherwise it's Local. (Empty folders carry their own category now.)
+          let synced = false;
+          if (!cloudOff) {
+            const where = await askChoice(t("sidebar.new_folder_where"), {
+              options: [
+                { value: "cloud", label: t("sidebar.section_synced") },
+                { value: "local", label: t("sidebar.section_local") },
+              ],
+            });
+            if (where === null) return; // cancelled
+            synced = where === "cloud";
           }
+          addKnownFolder(n, synced);
+          refreshFolders();
         },
       },
       ...(hosts.length > 0
@@ -808,6 +836,7 @@ export function Sidebar({
       <div key={"f:" + node.path} className="mb-0.5">
         <button
           data-folder-header={node.path}
+          data-synced={synced ? "1" : "0"}
           onClick={() => toggleGroup(node.path)}
           onContextMenu={(e) => onFolderContextMenu(e, node.path, synced)}
           style={{ paddingLeft: folderPad(depth) }}

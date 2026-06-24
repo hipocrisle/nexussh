@@ -262,15 +262,20 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       let auth: HostRecord["auth"];
       if (authKind === "key") {
         // path + passphrase → ЛОКАЛЬНЫЙ vault (не plaintext, НЕ синкается).
-        // Требует разблокированный vault, как и сохранённый пароль.
-        const st = await vaultStatus();
-        if (!st.unlocked) {
-          return setError(t("dialog.err_vault_locked"));
+        // ВАЖНО: перезаписываем keydata ТОЛЬКО если путь задан. Пустой путь при
+        // редактировании = поле не трогали / ещё не догрузилось из vault →
+        // сохраняем существующий ключ (иначе смена папки / быстрый save стирали
+        // путь — баг #6). Запись vault требует разблокировки, как и пароль.
+        if (keyPath.trim()) {
+          const st = await vaultStatus();
+          if (!st.unlocked) {
+            return setError(t("dialog.err_vault_locked"));
+          }
+          await vaultSet(
+            hostKeyDataKey(id),
+            JSON.stringify({ path: keyPath, passphrase: keyPass || undefined }),
+          );
         }
-        await vaultSet(
-          hostKeyDataKey(id),
-          JSON.stringify({ path: keyPath, passphrase: keyPass || undefined }),
-        );
         auth = { kind: "key" };
       } else if (authKind === "vault") {
         auth = { kind: "vault", key: vaultKey };

@@ -8,8 +8,9 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronRight, ChevronDown, Folder, FolderPlus, FolderX, X } from "lucide-react";
+import { ChevronRight, ChevronDown, Folder, FolderPlus, FolderX, X, Cloud, HardDrive } from "lucide-react";
 import { useBackdropClose } from "./useBackdropClose";
+import type { KnownFolder } from "./hosts";
 
 const POPOVER_SURFACE =
   "bg-nx-bg-2 border border-nx-border rounded-nx shadow-2xl";
@@ -77,15 +78,16 @@ function saveExpanded(s: Set<string>) {
 }
 
 interface Props {
-  /** Existing folder paths to render as the tree. */
-  paths: string[];
+  /** Existing folders + their category (Cloud/Local). */
+  paths: KnownFolder[];
   /** Currently-selected folder path; gets a check mark. null = ungrouped. */
   current?: string | null;
   /** Show the "Without folder" action at the top? Default: true. */
   allowUngroup?: boolean;
   /** Show the "+ New folder…" action? Default: true. */
   allowCreate?: boolean;
-  onPick: (path: string | null) => void;
+  /** Returns the chosen folder + its category (folder = category). */
+  onPick: (path: string | null, synced: boolean) => void;
   onClose: () => void;
   /** Modal title. Defaults to "Move to folder…". */
   title?: string;
@@ -131,7 +133,12 @@ export function FolderPicker({
     });
   }, [current]);
 
-  const tree = useMemo(() => buildTree(paths), [paths]);
+  const tree = useMemo(() => buildTree(paths.map((p) => p.path)), [paths]);
+  // path → category (Cloud=true / Local=false), for the icon + onPick.
+  const catMap = useMemo(
+    () => new Map(paths.map((p) => [p.path, p.synced])),
+    [paths],
+  );
 
   // When searching, flatten ALL folders (matching the substring) instead of
   // honoring the expand state — same UX as TabPicker.
@@ -176,7 +183,9 @@ export function FolderPicker({
       return;
     }
     const path = creating ? creating + "/" + name : name;
-    onPick(path);
+    // New folder inherits the category of its parent; a new root folder is Local.
+    const synced = creating ? (catMap.get(creating) ?? false) : false;
+    onPick(path, synced);
   }
 
   return (
@@ -220,7 +229,7 @@ export function FolderPicker({
         <div className="shrink-0">
           {allowUngroup && (
             <div
-              onClick={() => onPick(null)}
+              onClick={() => onPick(null, false)}
               className={
                 "nx-row grid grid-cols-[16px_1fr_auto] gap-2.5 items-center px-3.5 py-2 max-md:py-3 cursor-pointer text-nx-text hover:bg-nx-elevated"
               }
@@ -324,9 +333,13 @@ export function FolderPicker({
                   ) : (
                     <span />
                   )}
-                  <Folder size={12} className="text-nx-muted shrink-0" />
+                  {catMap.get(n.path) ? (
+                    <Cloud size={12} className="text-nx-accent shrink-0" />
+                  ) : (
+                    <HardDrive size={12} className="text-nx-muted shrink-0" />
+                  )}
                   <span
-                    onClick={() => onPick(n.path)}
+                    onClick={() => onPick(n.path, catMap.get(n.path) ?? false)}
                     className="truncate text-lead text-nx-text"
                   >
                     {n.name}

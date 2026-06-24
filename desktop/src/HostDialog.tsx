@@ -6,7 +6,7 @@ import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus } from
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import { HostRecord, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
+import { HostRecord, type KnownFolder, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { accountRecordTombstones, accountSyncNow } from "./account";
 import type { PortForward } from "./tunnel";
 import { FolderPicker } from "./FolderPicker";
@@ -40,8 +40,8 @@ type AuthKind = "password" | "key" | "vault";
 
 interface Props {
   initial?: HostRecord;
-  /** Existing group names from other hosts, surfaced as datalist suggestions. */
-  knownGroups?: string[];
+  /** Existing folders + their category (Cloud/Local), for the folder picker. */
+  knownGroups?: KnownFolder[];
   onClose: () => void;
   onSaved: (h: HostRecord) => void;
 }
@@ -51,7 +51,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // When caller didn't pre-compute group suggestions (e.g. opened from
   // TabPicker's "+ Новое подключение"), pull them ourselves so the folder
   // dropdown is never empty in CREATE mode.
-  const [autoGroups, setAutoGroups] = useState<string[]>([]);
+  const [autoGroups, setAutoGroups] = useState<KnownFolder[]>([]);
   // All existing hosts — used to warn about duplicate display names and ip:port.
   const [existingHosts, setExistingHosts] = useState<
     { id: string; name: string; host: string; port: number }[]
@@ -66,9 +66,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
           list.map((h) => ({ id: h.id, name: h.name, host: h.host, port: h.port })),
         );
         if (!(knownGroups && knownGroups.length > 0)) {
-          const fromHosts = (list.map((h) => h.group).filter(Boolean) as string[]);
-          const folders = loadKnownFolders().map((f) => f.path);
-          setAutoGroups(Array.from(new Set([...fromHosts, ...folders])));
+          const m = new Map<string, boolean>();
+          for (const h of list) if (h.group && !m.has(h.group)) m.set(h.group, !!h.sync);
+          for (const f of loadKnownFolders()) if (!m.has(f.path)) m.set(f.path, f.synced);
+          setAutoGroups(Array.from(m, ([path, synced]) => ({ path, synced })));
         }
       } catch {}
     })();
@@ -82,6 +83,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [port, setPort] = useState(settings.defaultPort);
   const [user, setUser] = useState(settings.defaultUser);
   const [group, setGroup] = useState("");
+  // Category (Cloud/Local) of the chosen folder — drives the host's sync flag
+  // (folder = category). Only meaningful when `group` is set.
+  const [groupSynced, setGroupSynced] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [note, setNote] = useState("");
   const [authKind, setAuthKind] = useState<AuthKind>("password");
@@ -126,6 +130,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     // don't paper over it with the local default user.
     setUser(initial.user ?? "");
     setGroup(initial.group ?? "");
+    setGroupSynced(!!initial.sync);
     setNote(initial.note ?? "");
     setAlwaysAskPassword(!!initial.alwaysAskPassword);
     setUseVpn(!!initial.useVpn);
@@ -321,7 +326,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         // Folder = category: a host in a folder keeps its category (set by where
         // it lives / moved to); the per-host toggle only applies to folder-less
         // hosts. Prevents one host dragging its whole folder into the cloud.
-        sync: (group ? !!initial?.sync : sync) || undefined,
+        sync: (group ? groupSynced : sync) || undefined,
         recordHistory:
           recordHistory === "default"
             ? undefined
@@ -478,8 +483,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 current={group || null}
                 title={t("dialog.group")}
                 onClose={() => setFolderPickerOpen(false)}
-                onPick={(path) => {
+                onPick={(path, synced) => {
                   setGroup(path ?? "");
+                  setGroupSynced(synced);
                   setFolderPickerOpen(false);
                 }}
               />
@@ -647,26 +653,22 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               ]}
             />
 
-            {/* Account-sync opt-in. OFF by default; flagged hosts (passwords
-             *  included, E2E) ride the account sync to other devices. */}
-            <div className={kicker + " mt-6 mb-3 block"}>
-              // {t("dialog.col_sync")}
-            </div>
-            {group ? (
-              // Folder = category: a host inside a folder inherits Cloud/Local
-              // from that folder. Change it by moving the host between sections
-              // (drag), not with a per-host toggle — otherwise a single host
-              // would drag its whole folder into the cloud.
-              <p className="text-nx-muted text-meta font-mono">
-                {t("dialog.sync_by_folder")}
-              </p>
-            ) : (
-              <Checkbox
-                checked={sync}
-                onChange={setSync}
-                label={t("dialog.sync_host")}
-                hint={t("dialog.sync_host_hint")}
-              />
+            {/* Account-sync opt-in — ONLY for folder-less hosts (a host inside a
+             *  folder inherits Cloud/Local from that folder; change it by moving
+             *  the host between sections). Hidden entirely when in a folder so a
+             *  single host can't drag its whole folder into the cloud. */}
+            {!group && (
+              <>
+                <div className={kicker + " mt-6 mb-3 block"}>
+                  // {t("dialog.col_sync")}
+                </div>
+                <Checkbox
+                  checked={sync}
+                  onChange={setSync}
+                  label={t("dialog.sync_host")}
+                  hint={t("dialog.sync_host_hint")}
+                />
+              </>
             )}
 
             {/* Local port forwards (ssh -L). Rows with autoStart open on connect. */}

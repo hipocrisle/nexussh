@@ -382,16 +382,16 @@ export function Sidebar({
     }
   }
 
-  const knownGroups = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...(hosts.map((h) => h.group).filter(Boolean) as string[]),
-          ...knownFolders.map((f) => f.path),
-        ]),
-      ),
-    [hosts, knownFolders],
-  );
+  // Every folder path + its category (Cloud/Local). Host-backed folders take
+  // the category of their hosts; empty (knownFolder) ones carry their own.
+  // Used by the host form's folder picker so choosing a folder also sets the
+  // host's category (no more "picked Nodes → got a duplicate Local Nodes").
+  const knownGroups = useMemo<KnownFolder[]>(() => {
+    const m = new Map<string, boolean>();
+    for (const h of hosts) if (h.group && !m.has(h.group)) m.set(h.group, !!h.sync);
+    for (const f of knownFolders) if (!m.has(f.path)) m.set(f.path, f.synced);
+    return Array.from(m, ([path, synced]) => ({ path, synced }));
+  }, [hosts, knownFolders]);
 
   function toggleGroup(g: string) {
     setCollapsedGroups((prev) => {
@@ -972,8 +972,8 @@ export function Sidebar({
             current={movingHost.group ?? null}
             title={t("sidebar.move_to_folder")}
             onClose={() => setMovingHost(null)}
-            onPick={async (path) => {
-              await moveHostToFolder(movingHost.id, path);
+            onPick={async (path, synced) => {
+              await moveHostToFolder(movingHost.id, path, synced);
               setMovingHost(null);
               reload();
             }}

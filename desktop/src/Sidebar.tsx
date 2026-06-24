@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import {
   HostRecord,
+  type KnownFolder,
   listHosts,
   deleteHost,
   renameFolder,
@@ -254,7 +255,7 @@ export function Sidebar({
   const UNGROUPED_SYNCED = "__synced__/" + ungroupedLabel;
   const UNGROUPED_LOCAL = "__local__/" + ungroupedLabel;
 
-  const [knownFolders, setKnownFolders] = useState<string[]>(() =>
+  const [knownFolders, setKnownFolders] = useState<KnownFolder[]>(() =>
     loadKnownFolders(),
   );
   const refreshFolders = useCallback(() => setKnownFolders(loadKnownFolders()), []);
@@ -267,7 +268,7 @@ export function Sidebar({
   // (knownFolders) are only seeded into the Local section — a freshly-created
   // empty folder isn't synced until a synced host lands in it.
   const buildTree = useCallback(
-    (subset: HostRecord[], seedEmptyFolders: boolean, skipEmpty?: Set<string>) => {
+    (subset: HostRecord[], seedCategory: boolean | null, skipEmpty?: Set<string>) => {
       const root: FolderNode = {
         path: "",
         name: "",
@@ -295,12 +296,18 @@ export function Sidebar({
         else ungrouped.push(h);
       }
       // Empty folders the user created via "+ Folder" (may be nested paths).
-      // skipEmpty = paths that already exist as REAL (host-backed) folders in
-      // the OTHER section (e.g. a synced "nodes" folder) — don't seed a phantom
-      // empty duplicate here, that's the "two Nodes folders" glitch.
-      if (seedEmptyFolders)
+      // seedCategory = which section this tree is (true=Synced/false=Local);
+      // only seed known-folders of THAT category. skipEmpty = paths already
+      // host-backed in the other section — don't seed a phantom duplicate
+      // (that was the "two Nodes folders" glitch).
+      if (seedCategory !== null)
         for (const f of knownFolders)
-          if (f.trim() && !(skipEmpty && skipEmpty.has(f))) ensure(f);
+          if (
+            f.synced === seedCategory &&
+            f.path.trim() &&
+            !(skipEmpty && skipEmpty.has(f.path))
+          )
+            ensure(f.path);
       const sortRec = (n: FolderNode) => {
         n.hosts.sort((a, b) => hostCmp(a, b, sortMode));
         n.children.forEach(sortRec);
@@ -318,7 +325,7 @@ export function Sidebar({
     const syncedHosts: HostRecord[] = [];
     const localHosts: HostRecord[] = [];
     for (const h of filtered) (h.sync ? syncedHosts : localHosts).push(h);
-    const syncedTree = buildTree(syncedHosts, false);
+    const syncedTree = buildTree(syncedHosts, true);
     // Folder paths that exist in the cloud (from synced hosts). A pinned-empty
     // (knownFolder) with the same name must NOT spawn a duplicate in Local.
     const syncedPaths = new Set<string>();
@@ -330,7 +337,7 @@ export function Sidebar({
     collect(syncedTree.root);
     return {
       synced: syncedTree,
-      local: buildTree(localHosts, true, syncedPaths),
+      local: buildTree(localHosts, false, syncedPaths),
     };
   }, [filtered, buildTree]);
 
@@ -380,7 +387,7 @@ export function Sidebar({
       Array.from(
         new Set([
           ...(hosts.map((h) => h.group).filter(Boolean) as string[]),
-          ...knownFolders,
+          ...knownFolders.map((f) => f.path),
         ]),
       ),
     [hosts, knownFolders],
@@ -519,7 +526,7 @@ export function Sidebar({
             );
             const sub = name?.trim();
             if (!sub) return;
-            addKnownFolder(`${path}/${sub}`);
+            addKnownFolder(`${path}/${sub}`, synced);
             // Make sure the parent is expanded so the new child is visible.
             setCollapsedGroups((prev) => {
               const nextSet = new Set(prev);
@@ -698,7 +705,7 @@ export function Sidebar({
         onClick: async () => {
           const name = await askPrompt(t("sidebar.new_folder_prompt"));
           if (name && name.trim()) {
-            addKnownFolder(name.trim());
+            addKnownFolder(name.trim(), false);
             refreshFolders();
           }
         },

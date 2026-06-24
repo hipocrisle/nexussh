@@ -67,7 +67,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         );
         if (!(knownGroups && knownGroups.length > 0)) {
           const fromHosts = (list.map((h) => h.group).filter(Boolean) as string[]);
-          const folders = loadKnownFolders();
+          const folders = loadKnownFolders().map((f) => f.path);
           setAutoGroups(Array.from(new Set([...fromHosts, ...folders])));
         }
       } catch {}

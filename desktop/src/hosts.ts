@@ -411,24 +411,49 @@ export async function reorderHosts(
 
 const KNOWN_FOLDERS_LS = "nexussh.knownFolders";
 
-export function loadKnownFolders(): string[] {
+/** A remembered (empty) folder + its category. Stored as a prefixed string:
+ *  "s:<path>" = Synced (cloud), "l:<path>" = Local. A bare "<path>" (legacy,
+ *  pre-2.4.6) is treated as Local. */
+export interface KnownFolder {
+  path: string;
+  synced: boolean;
+}
+
+export function loadKnownFolders(): KnownFolder[] {
   try {
     const raw = localStorage.getItem(KNOWN_FOLDERS_LS);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((x) => typeof x === "string")
+      .map((s: string) =>
+        s.startsWith("s:")
+          ? { path: s.slice(2), synced: true }
+          : s.startsWith("l:")
+            ? { path: s.slice(2), synced: false }
+            : { path: s, synced: false },
+      )
+      .filter((f) => f.path);
   } catch {
     return [];
   }
 }
 
-export function addKnownFolder(name: string) {
+function saveKnownFolders(list: KnownFolder[]) {
+  localStorage.setItem(
+    KNOWN_FOLDERS_LS,
+    JSON.stringify(list.map((f) => (f.synced ? "s:" : "l:") + f.path)),
+  );
+}
+
+export function addKnownFolder(name: string, synced: boolean) {
   const n = name.trim();
   if (!n) return;
   const list = loadKnownFolders();
-  if (!list.includes(n)) {
-    list.push(n);
-    localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+  if (!list.some((f) => f.path === n && f.synced === synced)) {
+    list.push({ path: n, synced });
+    saveKnownFolders(list);
   }
 }
 
@@ -438,24 +463,28 @@ export function clearKnownFolders() {
   localStorage.removeItem(KNOWN_FOLDERS_LS);
 }
 
-export function removeKnownFolder(name: string) {
+export function removeKnownFolder(name: string, synced?: boolean) {
   const prefix = name + "/";
   const list = loadKnownFolders().filter(
-    (f) => f !== name && !f.startsWith(prefix),
+    (f) =>
+      !(
+        (synced === undefined || f.synced === synced) &&
+        (f.path === name || f.path.startsWith(prefix))
+      ),
   );
-  localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+  saveKnownFolders(list);
 }
 
-export function renameKnownFolder(oldName: string, newName: string) {
+export function renameKnownFolder(oldName: string, newName: string, synced?: boolean) {
   const prefix = oldName + "/";
-  const list = loadKnownFolders().map((f) =>
-    f === oldName
-      ? newName
-      : f.startsWith(prefix)
-        ? newName + "/" + f.slice(prefix.length)
-        : f,
-  );
-  localStorage.setItem(KNOWN_FOLDERS_LS, JSON.stringify(list));
+  const list = loadKnownFolders().map((f) => {
+    if (synced !== undefined && f.synced !== synced) return f;
+    if (f.path === oldName) return { ...f, path: newName };
+    if (f.path.startsWith(prefix))
+      return { ...f, path: newName + "/" + f.path.slice(prefix.length) };
+    return f;
+  });
+  saveKnownFolders(list);
 }
 
 // --- Host-list encryption migration ----------------------------------------

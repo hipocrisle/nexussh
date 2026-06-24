@@ -1373,8 +1373,19 @@ pub async fn account_sync_now(
                 rec.insert("sync".into(), serde_json::Value::Bool(true));
                 rec.insert("id".into(), serde_json::Value::String(id.clone()));
                 match pos {
-                    Some(p) => hostlist[p] = rec, // UPSERT existing
-                    None => hostlist.push(rec),   // add new synced host
+                    Some(p) => {
+                        // vpnProfileId — device-local (стрипается при upload, см.
+                        // record_for_upload), поэтому remote-запись его не несёт.
+                        // Сохраняем локальный — иначе pull затирал бы выбранный
+                        // VPN-профиль даже на устройстве-источнике (баг 2026-06-24).
+                        if !rec.contains_key("vpnProfileId") {
+                            if let Some(v) = hostlist[p].get("vpnProfileId").cloned() {
+                                rec.insert("vpnProfileId".into(), v);
+                            }
+                        }
+                        hostlist[p] = rec; // UPSERT existing
+                    }
+                    None => hostlist.push(rec), // add new synced host
                 }
                 hostlist_dirty = true;
                 cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
@@ -2123,6 +2134,37 @@ mod tests {
         let a = hostlist.iter().find(|x| record_id(x).as_deref() == Some("a")).unwrap();
         assert!(record_is_synced(a));
         assert_eq!(a.get("host").and_then(|v| v.as_str()), Some("203.0.113.9"));
+    }
+
+    // --- PULL preserves device-local vpnProfileId on upsert -----------------
+    //
+    // vpnProfileId is stripped on upload (record_for_upload), so a pulled record
+    // never carries it. The upsert must keep the LOCAL value — else sync wipes the
+    // chosen VPN profile on the source device itself (bug 2026-06-24).
+    #[test]
+    fn pull_merge_preserves_local_vpn_profile() {
+        let mut local = rec("a", true);
+        local.insert("vpnProfileId".into(), serde_json::Value::String("vpn-local-1".into()));
+        let mut hostlist = vec![local];
+        let id = "a".to_string();
+        let remote_rec = rec("a", true); // server copy: vpnProfileId stripped
+        let pos = hostlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+        let mut r = remote_rec;
+        r.insert("sync".into(), serde_json::Value::Bool(true));
+        r.insert("id".into(), serde_json::Value::String(id.clone()));
+        match pos {
+            Some(p) => {
+                if !r.contains_key("vpnProfileId") {
+                    if let Some(v) = hostlist[p].get("vpnProfileId").cloned() {
+                        r.insert("vpnProfileId".into(), v);
+                    }
+                }
+                hostlist[p] = r;
+            }
+            None => hostlist.push(r),
+        }
+        let a = hostlist.iter().find(|x| record_id(x).as_deref() == Some("a")).unwrap();
+        assert_eq!(a.get("vpnProfileId").and_then(|v| v.as_str()), Some("vpn-local-1"));
     }
 
     // --- un-flag (sync true→false) → tombstone ------------------------------

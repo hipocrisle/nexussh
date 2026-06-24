@@ -2,10 +2,36 @@
 
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus } from "lucide-react";
+import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus,
+  User, Globe, Clock, ArrowLeftRight } from "lucide-react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+/** Bordered, header-labelled card grouping a section of the host form
+ *  (design handoff step 8). */
+function Card({
+  icon,
+  label,
+  badge,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  badge?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border border-nx-border rounded-[7px] bg-nx-bg">
+      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-nx-divider">
+        <span className="text-nx-accent">{icon}</span>
+        <span className="text-micro uppercase tracking-[0.18em] text-nx-accent">{label}</span>
+        {badge && <span className="ml-auto">{badge}</span>}
+      </div>
+      <div className="p-3.5">{children}</div>
+    </div>
+  );
+}
 import { HostRecord, type KnownFolder, saveHost, newHostId, listHosts, loadKnownFolders } from "./hosts";
 import { accountRecordTombstones, accountSyncNow } from "./account";
 import type { PortForward } from "./tunnel";
@@ -13,7 +39,6 @@ import { FolderPicker } from "./FolderPicker";
 import { ForwardEditDialog } from "./ForwardEditDialog";
 import { useIsMobile } from "./useIsMobile";
 import {
-  vaultKeys,
   vaultStatus,
   vaultGet,
   vaultSet,
@@ -96,8 +121,6 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   // Set when editing a host whose saved password lives in the vault under
   // its per-host key; lets us keep it if the user doesn't retype.
   const [savedVaultKey, setSavedVaultKey] = useState<string | null>(null);
-  const [vaultAvailable, setVaultAvailable] = useState<boolean | null>(null);
-  const [vaultKeyOptions, setVaultKeyOptions] = useState<string[]>([]);
   // Default: ask every connect. Inverted in UI as "save password" opt-in.
   const [alwaysAskPassword, setAlwaysAskPassword] = useState<boolean>(true);
   const [useVpn, setUseVpn] = useState(false);
@@ -180,20 +203,6 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       }
     }
   }, [initial]);
-
-  // Probe vault unlock state when user selects vault tab
-  useEffect(() => {
-    if (authKind !== "vault") return;
-    vaultKeys()
-      .then((keys) => {
-        setVaultAvailable(true);
-        setVaultKeyOptions(keys);
-      })
-      .catch(() => {
-        setVaultAvailable(false);
-        setVaultKeyOptions([]);
-      });
-  }, [authKind]);
 
   // Login is optional — an address-only host asks for the login on connect
   // (like quick-connect). Only the address is required.
@@ -388,14 +397,14 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         }}
         onKeyDown={onFormKeyDown}
         {...contentProps}
-        className="nx-modal-enter relative w-[720px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg p-8 pt-7 shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none max-md:p-4 max-md:pt-[calc(env(safe-area-inset-top)+16px)]"
+        className="nx-modal-enter relative w-[780px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none"
       >
         <span className="nx-brackets">
           <i />
         </span>
 
-        {/* Title */}
-        <div className="flex items-baseline gap-3 pb-4 border-b border-nx-divider mb-6">
+        {/* header */}
+        <div className="flex items-baseline gap-3 px-[22px] pt-5 pb-4 border-b border-nx-divider max-md:pt-[calc(env(safe-area-inset-top)+16px)]">
           <span className={kicker}>// {isEdit ? t("dialog.edit_kicker") : t("dialog.new_kicker")}</span>
           <div className="text-h2 text-nx-text font-mono">
             <span className="text-nx-accent mr-2">&gt;</span>
@@ -410,12 +419,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
           </button>
         </div>
 
-        {/* Two-column form */}
-        <div className="grid grid-cols-2 gap-8 max-md:grid-cols-1 max-md:gap-5">
-          {/* Identity */}
-          <div>
-            <div className={kicker + " mb-3 block"}>// {t("dialog.col_identity")}</div>
-
+        {/* body — two columns of cards */}
+        <div className="grid grid-cols-2 gap-[18px] p-[22px] max-md:grid-cols-1 max-md:gap-4">
+          {/* Left: Identity card */}
+          <Card icon={<User size={12} />} label={t("dialog.col_identity")}>
             <RowLabel>{t("dialog.display_name")}</RowLabel>
             <Input
               value={name}
@@ -498,12 +505,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               className="nx-focus w-full mt-1.5 bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text placeholder-nx-muted px-2.5 py-1.5 h-16 resize-none font-mono"
               placeholder="..."
             />
-          </div>
+          </Card>
 
-          {/* Authentication */}
-          <div>
-            <div className={kicker + " mb-3 block"}>// {t("dialog.col_auth")}</div>
-
+          {/* Right: stack of cards */}
+          <div className="flex flex-col gap-[18px]">
+            <Card icon={<Lock size={12} />} label={t("dialog.col_auth")}>
             <SegCtl value={authKind} onChange={setAuthKind} options={authOptions} />
 
             {authKind === "password" && (
@@ -563,35 +569,12 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               </div>
             )}
 
-            {authKind === "vault" && (
-              <div className="mt-4">
-                <RowLabel>{t("dialog.vault_key")}</RowLabel>
-                <Input
-                  value={vaultKey}
-                  onChange={setVaultKey}
-                  placeholder={t("dialog.vault_key_ph")}
-                  list="vault-keys"
-                />
-                <datalist id="vault-keys">
-                  {vaultKeyOptions.map((k) => (
-                    <option key={k} value={k} />
-                  ))}
-                </datalist>
-                {vaultAvailable === false && (
-                  <p className="text-nx-warning text-meta font-mono mt-2">
-                    ⚠ {t("dialog.vault_unavailable")}
-                  </p>
-                )}
-              </div>
-            )}
+            </Card>
 
-            {/* Transport — built-in VPN.
-             * Hidden on mobile: the Android APK doesn't ship the xray
-             * sidecar (per-host VPN is desktop-only for now), and there's
-             * a VPN section in Settings anyway. */}
+            {/* Network card — built-in VPN. Hidden on mobile (the APK ships no
+             *  xray sidecar; per-host VPN is desktop-only). */}
             {!isMobile && (
-              <>
-            <div className={kicker + " mt-6 mb-3 block"}>// {t("dialog.col_transport")}</div>
+            <Card icon={<Globe size={12} />} label={t("dialog.col_transport")}>
             <ToggleRow label={t("dialog.use_vpn")} value={useVpn} onChange={setUseVpn} />
             {useVpn &&
               (vpnProfiles.length === 0 ? (
@@ -631,14 +614,11 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                   )}
                 </div>
               ))}
-              </>
+            </Card>
             )}
 
-            {/* Per-host session-history override (inherits the global setting
-             *  by default). */}
-            <div className={kicker + " mt-6 mb-3 block"}>
-              // {t("dialog.col_history")}
-            </div>
+            {/* History card */}
+            <Card icon={<Clock size={12} />} label={t("dialog.col_history")}>
             <RowLabel>{t("dialog.record_history")}</RowLabel>
             <Select
               className="mt-1.5"
@@ -652,29 +632,29 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 { value: "off", label: t("dialog.record_off") },
               ]}
             />
-
-            {/* Account-sync opt-in — ONLY for folder-less hosts (a host inside a
-             *  folder inherits Cloud/Local from that folder; change it by moving
-             *  the host between sections). Hidden entirely when in a folder so a
-             *  single host can't drag its whole folder into the cloud. */}
+            {/* sync opt-in only for folder-less hosts (a host in a folder takes
+             *  the folder's category; moving between sections changes it) */}
             {!group && (
-              <>
-                <div className={kicker + " mt-6 mb-3 block"}>
-                  // {t("dialog.col_sync")}
-                </div>
-                <Checkbox
-                  checked={sync}
-                  onChange={setSync}
-                  label={t("dialog.sync_host")}
-                  hint={t("dialog.sync_host_hint")}
-                />
-              </>
+              <Checkbox
+                checked={sync}
+                onChange={setSync}
+                className="mt-3.5"
+                label={t("dialog.sync_host")}
+                hint={t("dialog.sync_host_hint")}
+              />
             )}
+            </Card>
 
-            {/* Local port forwards (ssh -L). Rows with autoStart open on connect. */}
-            <div className={kicker + " mt-6 mb-3 block"}>
-              // {t("dialog.col_forwards")}
-            </div>
+            {/* Port forwarding card */}
+            <Card
+              icon={<ArrowLeftRight size={12} />}
+              label={t("dialog.col_forwards")}
+              badge={
+                <span className="text-micro px-1.5 rounded-full bg-nx-elevated border border-nx-border text-nx-muted">
+                  {forwards.length}
+                </span>
+              }
+            >
             {forwards.length === 0 ? (
               <p className="text-meta text-nx-muted font-mono">
                 {t("dialog.forwards_empty")}
@@ -741,15 +721,16 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             >
               {t("dialog.add_forward")}
             </Button>
+            </Card>
           </div>
         </div>
 
         {error && (
-          <div className="text-nx-error text-body font-mono mt-5">✗ {error}</div>
+          <div className="text-nx-error text-body font-mono px-[22px] -mt-1 mb-3">✗ {error}</div>
         )}
 
         {/* Footer */}
-        <div className="mt-7 pt-4 border-t border-nx-divider flex items-center gap-3">
+        <div className="px-[22px] py-3.5 border-t border-nx-divider bg-nx-bg-2 flex items-center gap-3">
           <span className="text-meta text-nx-muted">
             ⌘↵ <span className="ml-1">{t("dialog.shortcut_save")}</span>
           </span>

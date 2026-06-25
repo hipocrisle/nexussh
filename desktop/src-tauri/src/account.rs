@@ -330,7 +330,17 @@ fn merge_snippets_blob(local: Option<&str>, remote: &str) -> String {
             if !by_id.contains_key(&id) {
                 order.push(id.clone());
             }
-            by_id.insert(id, v); // later (remote) wins on clash
+            let prev_deleted = by_id
+                .get(&id)
+                .and_then(|p| p.get("_deleted"))
+                .and_then(|d| d.as_bool())
+                .unwrap_or(false);
+            let cur_deleted = v.get("_deleted").and_then(|d| d.as_bool()).unwrap_or(false);
+            // delete-wins: a tombstone is never overwritten by a normal version.
+            if prev_deleted && !cur_deleted {
+                continue;
+            }
+            by_id.insert(id, v); // later (remote) wins, or an incoming tombstone wins
         }
     }
     let merged: Vec<serde_json::Value> =

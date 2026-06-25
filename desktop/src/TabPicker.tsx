@@ -250,7 +250,7 @@ function QuickConnectCard({
             <div className="text-body text-nx-error">{t("connect.unreachable")}</div>
             <div className="text-meta text-nx-muted font-mono truncate">{addr} — {t("connect.timeout", { s: 8 })}</div>
           </div>
-          <Button type="button" variant="secondary" size="sm" className="ml-auto" onClick={onCancel}>
+          <Button type="button" variant="secondary" size="sm" className="ml-auto" autoFocus onClick={onCancel}>
             {t("connect.retry")}
           </Button>
         </div>

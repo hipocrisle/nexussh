@@ -421,7 +421,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
 
         {/* body — two columns of cards */}
         <div className="grid grid-cols-2 gap-[18px] p-[22px] max-md:grid-cols-1 max-md:gap-4">
-          {/* Left: Identity card */}
+          {/* Left column: Identity + Authentication (родственные разделы вместе) */}
+          <div className="flex flex-col gap-[18px]">
           <Card icon={<User size={12} />} label={t("dialog.col_identity")}>
             <RowLabel>{t("dialog.display_name")}</RowLabel>
             <Input
@@ -498,18 +499,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               />
             )}
 
-            <RowLabel className="mt-4">{t("dialog.note")}</RowLabel>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              className="nx-focus w-full mt-1.5 bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text placeholder-nx-muted px-2.5 py-1.5 h-16 resize-none font-mono"
-              placeholder="..."
-            />
           </Card>
 
-          {/* Right: stack of cards */}
-          <div className="flex flex-col gap-[18px]">
-            <Card icon={<Lock size={12} />} label={t("dialog.col_auth")}>
+          {/* Authentication — под идентификацией, в той же (левой) колонке */}
+          <Card icon={<Lock size={12} />} label={t("dialog.col_auth")}>
             <SegCtl value={authKind} onChange={setAuthKind} options={authOptions} />
 
             {authKind === "password" && (
@@ -570,7 +563,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             )}
 
             </Card>
+          </div>
 
+          {/* Right column: Network / History / Port-forwarding / Note */}
+          <div className="flex flex-col gap-[18px]">
             {/* Network card — built-in VPN. Hidden on mobile (the APK ships no
              *  xray sidecar; per-host VPN is desktop-only). */}
             {!isMobile && (
@@ -713,6 +709,16 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
             >
               {t("dialog.add_forward")}
             </Button>
+            </Card>
+
+            {/* Note card — внизу правой колонки */}
+            <Card icon={<Pencil size={12} />} label={t("dialog.note")}>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                className="nx-focus w-full bg-nx-panel border border-nx-border rounded-nx text-body text-nx-text placeholder-nx-muted px-2.5 py-1.5 h-16 resize-none font-mono"
+                placeholder="..."
+              />
             </Card>
           </div>
         </div>

@@ -40,9 +40,11 @@ interface Props {
   activeCtx: { host?: string; user?: string; port?: number; name?: string } | null;
   /** Toast for "no active terminal". */
   onToast?: (msg: string, kind?: "error") => void;
+  /** Run an account sync now (header cloud button). Omit to hide it. */
+  onSync?: () => void;
 }
 
-export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
+export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Props) {
   const { t } = useTranslation();
   const [list, setList] = useState<Snippet[]>(() => listSnippets());
   const [q, setQ] = useState("");
@@ -255,9 +257,18 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
           <span className="text-meta text-nx-muted truncate">
             {t("snippets.count_target", { n: list.length, host: activeCtx?.name ?? "—" })}
           </span>
+          {onSync && (
+            <button
+              onClick={onSync}
+              title={t("snippets.sync_now")}
+              className="ml-auto p-1.5 text-nx-muted hover:text-nx-accent"
+            >
+              <Cloud size={14} />
+            </button>
+          )}
           <button
             onClick={onClose}
-            className="ml-auto p-1.5 text-nx-muted hover:text-nx-text"
+            className={(onSync ? "" : "ml-auto ") + "p-1.5 text-nx-muted hover:text-nx-text"}
           >
             <X size={14} />
           </button>

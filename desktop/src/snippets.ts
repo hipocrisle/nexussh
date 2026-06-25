@@ -73,10 +73,13 @@ function persist(all: Snippet[]) {
 }
 
 /** Mirror the full list into the synced vault blob + mark it dirty for sync. */
-async function mirrorToVault(all: Snippet[]) {
+async function mirrorToVault(all: Snippet[], touch = true) {
   try {
     await vaultSet(SNIPPETS_KEY, JSON.stringify(all));
-    await invoke("account_touch_snippets");
+    // Bump updated_at ONLY on a real edit — NOT on every pre-sync mirror. Else
+    // each sync makes THIS device "newest" and LWW clobbers the other side's
+    // changes → one-directional sync (Win→Ubuntu ok, Ubuntu→Win lost).
+    if (touch) await invoke("account_touch_snippets");
   } catch {
     /* vault locked / not logged in — next unlock+sync picks it up */
   }
@@ -209,7 +212,9 @@ export async function pullSnippetsToLocal() {
  *  a stale list → device drift. */
 export async function pushSnippetsToVault() {
   if (!snippetsSyncEnabled()) return;
-  await mirrorToVault(listSnippets());
+  // No touch: just make sure the vault blob holds the current list. The
+  // updated_at reflects the last real EDIT, so LWW stays correct both ways.
+  await mirrorToVault(listSnippets(), false);
 }
 
 // --- import / export -------------------------------------------------------

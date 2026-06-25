@@ -135,7 +135,7 @@ import {
   Cloud,
   CloudOff,
 } from "lucide-react";
-import { accountStatus } from "./account";
+import { accountStatus, accountSyncNow } from "./account";
 import "./App.css";
 
 // Height of the per-pane mini-toolbar (PaneHeader.tsx). Rendered only when the
@@ -3923,6 +3923,14 @@ function App() {
               : null
           }
           onToast={showToast}
+          onSync={async () => {
+            try {
+              const r = await accountSyncNow();
+              showToast(t("snippets.sync_done", { pulled: r.pulled, pushed: r.pushed }));
+            } catch {
+              showToast(t("snippets.sync_failed"), "error");
+            }
+          }}
         />
       )}
 

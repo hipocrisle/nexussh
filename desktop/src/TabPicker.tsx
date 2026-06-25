@@ -250,7 +250,7 @@ function QuickConnectCard({
             <div className="text-body text-nx-error">{t("connect.unreachable")}</div>
             <div className="text-meta text-nx-muted font-mono truncate">{addr} — {t("connect.timeout", { s: 8 })}</div>
           </div>
-          <Button type="button" variant="secondary" size="sm" className="ml-auto" onClick={onRun}>
+          <Button type="button" variant="secondary" size="sm" className="ml-auto" onClick={onCancel}>
             {t("connect.retry")}
           </Button>
         </div>
@@ -269,7 +269,9 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
   const [qcSave, setQcSave] = useState(false);
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");
-  const [idx, setIdx] = useState(0);
+  // -1 = ничего не выделено (курсор в поле) → ↵ запускает быстрое подключение.
+  // ↓ выделяет сохранённый хост → тогда ↵ подключает его.
+  const [idx, setIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Surface the quick card whenever the field is non-empty — but don't disturb
@@ -385,7 +387,8 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
       setIdx((i) => Math.min(activeRows.length - 1, i + 1));
       e.preventDefault();
     } else if (e.key === "ArrowUp") {
-      setIdx((i) => Math.max(0, i - 1));
+      // до -1 включительно — снимает выделение и возвращает «фокус» полю (↵→quick).
+      setIdx((i) => Math.max(-1, i - 1));
       e.preventDefault();
     } else if (e.key === "Enter") {
       const row = activeRows[idx];
@@ -466,14 +469,14 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
-                setIdx(0);
+                setIdx(-1); // печать = снять выделение → ↵ идёт в быстрое подключение
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
-                  // Выделенная сохранённая строка имеет приоритет: ↑↓ выбирают её,
-                  // ↵ подключает. Быстрое подключение по ↵ — ТОЛЬКО когда среди
-                  // сохранённых нет совпадений (список пуст).
-                  if (activeRows.length > 0) {
+                  // ↵ по умолчанию → быстрое подключение (можно войти под другим
+                  // логином, чем у сохранённого хоста). Если стрелками выделена
+                  // сохранённая строка (idx≥0) — подключаем именно её.
+                  if (idx >= 0 && activeRows[idx]) {
                     onKey(e);
                   } else if (quick.kind === "ready") {
                     runQuickConnect();

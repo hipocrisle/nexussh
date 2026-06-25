@@ -55,6 +55,11 @@ pub enum AuthMethod {
     Key {
         path: String,
         passphrase: Option<String>,
+        /// Private-key TEXT. Used on mobile, where the file picker returns a
+        /// content-URI that std::fs can't open — we read the key when picked and
+        /// pass the contents. When present, it wins over `path`.
+        #[serde(default)]
+        content: Option<String>,
     },
     /// Resolve credential at runtime from an external secret manager.
     /// `key` is the path the manager will look up (e.g. `tggrep.bot_token` for
@@ -665,8 +670,13 @@ pub async fn ssh_connect(
         AuthMethod::Password { password } => {
             authenticate(&mut session, &args.user, password).await?
         }
-        AuthMethod::Key { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
+        AuthMethod::Key { path, passphrase, content } => {
+            // Prefer in-memory key TEXT (mobile: file picker gives a content-URI
+            // std::fs can't open); fall back to reading the file path (desktop).
+            let key = match content.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(text) => russh::keys::decode_secret_key(text, passphrase.as_deref())?,
+                None => russh::keys::load_secret_key(path, passphrase.as_deref())?,
+            };
             session
                 .authenticate_publickey(
                     &args.user,

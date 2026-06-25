@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { X, Lock, KeyRound, ChevronDown, Folder, FolderOpen, Pencil, Plus,
   User, Globe, Clock, ArrowLeftRight } from "lucide-react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { readFile } from "@tauri-apps/plugin-fs";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -117,6 +118,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [password, setPassword] = useState("");
   const [keyPath, setKeyPath] = useState("");
   const [keyPass, setKeyPass] = useState("");
+  // Private-key TEXT — captured on mobile when the file is picked (Android file
+  // pickers hand back a content-URI the backend can't open by path).
+  const [keyContent, setKeyContent] = useState("");
   const [vaultKey, setVaultKey] = useState("");
   // Set when editing a host whose saved password lives in the vault under
   // its per-host key; lets us keep it if the user doesn't retype.
@@ -190,9 +194,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         // path + passphrase живут в ЛОКАЛЬНОМ vault (не в синкаемой записи)
         vaultGet(hostKeyDataKey(initial.id))
           .then((raw) => {
-            const d = JSON.parse(raw) as { path?: string; passphrase?: string };
+            const d = JSON.parse(raw) as { path?: string; passphrase?: string; content?: string };
             setKeyPath(d.path ?? "");
             setKeyPass(d.passphrase ?? "");
+            setKeyContent(d.content ?? "");
           })
           .catch(() => {
             setKeyPath("");
@@ -280,14 +285,19 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         // редактировании = поле не трогали / ещё не догрузилось из vault →
         // сохраняем существующий ключ (иначе смена папки / быстрый save стирали
         // путь — баг #6). Запись vault требует разблокировки, как и пароль.
-        if (keyPath.trim()) {
+        if (keyPath.trim() || keyContent.trim()) {
           const st = await vaultStatus();
           if (!st.unlocked) {
             return setError(t("dialog.err_vault_locked"));
           }
           await vaultSet(
             hostKeyDataKey(id),
-            JSON.stringify({ path: keyPath, passphrase: keyPass || undefined }),
+            JSON.stringify({
+              path: keyPath,
+              passphrase: keyPass || undefined,
+              // On mobile the key text is what actually authenticates (no file path).
+              content: keyContent || undefined,
+            }),
           );
         }
         auth = { kind: "key" };
@@ -548,7 +558,19 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                       onClick={async () => {
                         try {
                           const p = await openFileDialog({ multiple: false, title: t("dialog.key_pick_title") });
-                          if (typeof p === "string") setKeyPath(p);
+                          if (typeof p !== "string") return;
+                          setKeyPath(p);
+                          // Mobile: read the key NOW (the content-URI isn't openable
+                          // later by path); store the text so auth uses contents.
+                          if (isMobile) {
+                            try {
+                              setKeyContent(new TextDecoder().decode(await readFile(p)));
+                            } catch {
+                              /* unreadable — leave content empty, path-only */
+                            }
+                          } else {
+                            setKeyContent(""); // desktop re-reads the file each connect
+                          }
                         } catch { /* cancelled */ }
                       }}
                       className="nx-focus shrink-0 px-3 bg-nx-panel border border-nx-border rounded-nx text-nx-muted hover:text-nx-text hover:bg-nx-elevated inline-flex items-center gap-1.5 font-mono text-meta"

@@ -47,22 +47,24 @@ fn selfhost_endpoint(channel: Option<&str>) -> Option<String> {
 /// (so on-the-fly channel switches, including downgrades, work). The frontend
 /// gates the actual prompt on `version != current_version`.
 ///
-/// Endpoints are tried in order: GitHub (primary) then the self-hosted feed
-/// (fallback). A short per-request timeout makes a hung/unreachable GitHub CDN
-/// fail over to the fallback in seconds instead of hanging the whole check.
+/// Endpoints are tried in order: self-hosted feed (primary) then GitHub
+/// (fallback). The self-host is mirrored FRESH via the GitHub API, whereas the
+/// GitHub release CDN serves a STALE cached `latest.json` (fixed asset name) —
+/// trying GitHub first made the client install several older stable builds in a
+/// row before catching up. A short per-request timeout fails over quickly.
 fn build_updater(app: &AppHandle, channel: Option<&str>) -> Result<Updater, UpdateError> {
     let mut b = app
         .updater_builder()
         .version_comparator(|_current, _update| true)
         .timeout(std::time::Duration::from_secs(12));
     let mut eps: Vec<Url> = Vec::new();
-    if let Some(ep) = channel_endpoint(channel) {
+    if let Some(ep) = selfhost_endpoint(channel) {
         eps.push(
             ep.parse()
                 .map_err(|e| UpdateError::Plugin(format!("bad endpoint url: {e}")))?,
         );
     }
-    if let Some(ep) = selfhost_endpoint(channel) {
+    if let Some(ep) = channel_endpoint(channel) {
         eps.push(
             ep.parse()
                 .map_err(|e| UpdateError::Plugin(format!("bad fallback url: {e}")))?,

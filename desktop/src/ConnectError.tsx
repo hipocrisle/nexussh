@@ -36,7 +36,7 @@ export function ConnectError({ host, parsed, reconnecting, attempt, onRetry, onE
   const reason = parsed.causeKey ? t(parsed.causeKey) : parsed.reason;
 
   return (
-    <div className="h-full grid place-items-center p-8 bg-nx-bg overflow-auto">
+    <div className="h-full grid place-items-center p-8 max-md:p-3 bg-nx-bg overflow-auto">
       <div
         className="relative w-[560px] max-w-full bg-nx-panel rounded-nx-lg overflow-hidden border border-[rgba(255,107,107,0.35)]
                    shadow-[inset_0_1px_0_rgba(255,107,107,0.08),0_20px_60px_rgba(0,0,0,0.6),0_0_40px_var(--nx-error-glow)]"
@@ -116,7 +116,7 @@ export function ConnectError({ host, parsed, reconnecting, attempt, onRetry, onE
           )}
 
           {/* actions */}
-          <div className="mt-[18px] flex items-center gap-2">
+          <div className="mt-[18px] flex items-center gap-2 flex-wrap">
             <Button variant="primary" leadingIcon={<RotateCcw size={13} />} onClick={onRetry}>
               {t("connect_err.retry")}
             </Button>

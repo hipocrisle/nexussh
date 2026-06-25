@@ -849,7 +849,9 @@ export function Sidebar({
     depth: number,
     synced: boolean,
   ): React.ReactNode => {
-    const isCollapsed = collapsedGroups.has(node.path);
+    // While searching, force every folder open so a match inside a collapsed
+    // folder is actually visible (the filter already pruned non-matches).
+    const isCollapsed = collapsedGroups.has(node.path) && !filter.trim();
     return (
       <div key={"f:" + node.path} className="mb-0.5">
         <button

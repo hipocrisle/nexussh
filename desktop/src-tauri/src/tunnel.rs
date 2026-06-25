@@ -153,8 +153,11 @@ async fn connect_and_auth(
             .authenticate_password(&args.user, password)
             .await?
             .success(),
-        AuthMethod::Key { path, passphrase } => {
-            let key = russh::keys::load_secret_key(path, passphrase.as_deref())?;
+        AuthMethod::Key { path, passphrase, content } => {
+            let key = match content.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(text) => russh::keys::decode_secret_key(text, passphrase.as_deref())?,
+                None => russh::keys::load_secret_key(path, passphrase.as_deref())?,
+            };
             session
                 .authenticate_publickey(
                     &args.user,

@@ -7,7 +7,7 @@ import { vaultGet, hostKeyDataKey } from "./vault";
 
 export type AuthMethod =
   | { kind: "password"; password: string }
-  | { kind: "key"; path: string; passphrase?: string }
+  | { kind: "key"; path: string; passphrase?: string; content?: string }
   | { kind: "vault"; key: string };
 
 /** Persisted host-record auth (key has NO secrets — they live in the vault). */
@@ -24,8 +24,13 @@ export async function resolveAuth(auth: StoredAuth, hostId: string): Promise<Aut
   if (auth.kind !== "key") return auth;
   try {
     const raw = await vaultGet(hostKeyDataKey(hostId));
-    const d = JSON.parse(raw) as { path?: string; passphrase?: string };
-    return { kind: "key", path: d.path ?? "", passphrase: d.passphrase || undefined };
+    const d = JSON.parse(raw) as { path?: string; passphrase?: string; content?: string };
+    return {
+      kind: "key",
+      path: d.path ?? "",
+      passphrase: d.passphrase || undefined,
+      content: d.content || undefined,
+    };
   } catch {
     return { kind: "key", path: "", passphrase: undefined };
   }

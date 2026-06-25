@@ -3381,13 +3381,6 @@ function App() {
           <span className="text-micro text-nx-muted font-mono">v{version}</span>
         </div>
 
-        <span
-          data-tauri-drag-region
-          className="text-meta italic text-nx-muted font-mono hidden md:inline"
-        >
-          — {t("app.tagline")}
-        </span>
-
         {/* Prompt-style breadcrumb of the focused pane's session */}
         {activeSession && !isMobile && (
           <div className="ml-1 flex items-center gap-1.5 px-2.5 py-0.5 border border-nx-border rounded-nx bg-nx-panel text-meta font-mono min-w-0">

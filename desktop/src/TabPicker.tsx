@@ -344,12 +344,13 @@ export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Prop
   const flatFiltered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return [] as HostRecord[];
+    // Поиск ТОЛЬКО по хосту (имя + адрес + логин). По имени папки НЕ ищем —
+    // такого кейса нет, а матч по группе давал ложные совпадения на коротких буквах.
     return hosts.filter(
       (h) =>
         h.name.toLowerCase().includes(needle) ||
         h.host.toLowerCase().includes(needle) ||
-        h.user.toLowerCase().includes(needle) ||
-        (h.group?.toLowerCase() ?? "").includes(needle),
+        h.user.toLowerCase().includes(needle),
     );
   }, [hosts, q]);
 

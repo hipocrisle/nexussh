@@ -9,6 +9,7 @@ import {
   History as HistoryIcon,
   Network as NetworkIcon,
   Search,
+  Server,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -2256,6 +2257,7 @@ function App() {
         const tag = w.panes.length > 1 ? ` · ${w.panes.length} ⊟` : "";
         items.push({
           label: title + tag,
+          icon: <Server size={13} />,
           onClick: () => mergeWorkspace(wsId, w.id),
         });
       }
@@ -2275,7 +2277,14 @@ function App() {
       disabled: workspaces.length <= 1,
       destructive: true,
     });
-    setMenu({ x, y, items });
+    setMenu({
+      x,
+      y,
+      items,
+      title: focusedHost
+        ? { main: focusedHost.name, sub: `${focusedHost.user}@${focusedHost.host}` }
+        : undefined,
+    });
   }
 
   // Prompt to rename the workspace tab title. Empty string clears it (back to

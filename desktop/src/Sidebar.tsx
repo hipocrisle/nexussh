@@ -19,6 +19,8 @@ import {
   Play,
   Folder,
   FolderPlus,
+  FolderMinus,
+  ChevronsDownUp,
   Edit2,
   Copy,
   Trash2,
@@ -539,12 +541,18 @@ export function Sidebar({
         },
         {
           label: t("sidebar.menu_collapse_group"),
+          icon: <ChevronsDownUp size={13} />,
           onClick: () => toggleGroup(path),
         },
         { separator: true, label: "" },
         {
           label: t("sidebar.menu_delete_folder"),
-          icon: <Trash2 size={13} />,
+          icon: <FolderMinus size={13} />,
+          trailing: (
+            <span className="text-[10px] text-nx-muted whitespace-nowrap">
+              {t("sidebar.menu_delete_folder_note")}
+            </span>
+          ),
           onClick: async () => {
             if (!confirm(t("sidebar.delete_folder_confirm", { name: path }))) return;
             await deleteFolder(path, synced);

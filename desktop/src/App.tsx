@@ -898,7 +898,7 @@ function App() {
     x: number;
     y: number;
     items: MenuItem[];
-    title?: { kicker?: string; main?: string };
+    title?: { kicker?: string; main?: string; sub?: string };
   } | null>(null);
   // Mobile shell: collapse sidebar into a drawer + adapt header + show
   // SmartKeyBar above the on-screen keyboard. Toggled via media query.

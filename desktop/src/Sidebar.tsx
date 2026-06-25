@@ -116,7 +116,7 @@ interface Props {
     x: number,
     y: number,
     items: MenuItem[],
-    title?: { kicker?: string; main?: string },
+    title?: { kicker?: string; main?: string; sub?: string },
   ) => void;
   /** From settings: 'connect' = single click connects, 'select' = single
    *  click selects and shows info, double-click connects. */

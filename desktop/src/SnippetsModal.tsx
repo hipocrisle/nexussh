@@ -16,6 +16,7 @@ import {
   deleteSnippet,
   reorderSnippets,
   addCategory,
+  removeCategory,
   exportSnippets,
   importSnippets,
   expandPlaceholders,
@@ -57,6 +58,35 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
   useEffect(() => onSnippetsChanged(() => setList(listSnippets())), []);
   // Reset grid selection whenever the visible set changes (search / category).
   useEffect(() => setSelIdx(-1), [q, cat]);
+
+  // Pointer-based drag-reorder. HTML5 `draggable` doesn't fire reliably in
+  // Tauri/webkit, so we grab on the grip (onDragStart sets dragId) and track
+  // the pointer over tiles via elementFromPoint + [data-snippet-id].
+  const overIdRef = useRef<string | null>(null);
+  overIdRef.current = overId;
+  useEffect(() => {
+    if (!dragId) return;
+    const onMove = (e: PointerEvent) => {
+      const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
+        "[data-snippet-id]",
+      );
+      const id = el?.getAttribute("data-snippet-id") ?? null;
+      setOverId(id && id !== dragId ? id : null);
+    };
+    const onUp = () => {
+      const target = overIdRef.current;
+      if (target) onDrop(target);
+      else setDragId(null);
+      setOverId(null);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragId]);
 
   const categories = listCategories();
   const needle = q.trim().toLowerCase();
@@ -261,6 +291,12 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
               count={list.filter((s) => s.category === c).length}
               prefix
               onClick={() => setCat(c)}
+              onDelete={async () => {
+                if (await askConfirm(t("snippets.delete_category", { name: c }))) {
+                  removeCategory(c);
+                  if (cat === c) setCat("all");
+                }
+              }}
             >
               {c}
             </CatChip>
@@ -296,12 +332,6 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
                       deleteSnippet(s.id);
                   }}
                   onDragStart={() => setDragId(s.id)}
-                  onDragOver={() => setOverId(s.id)}
-                  onDrop={() => onDrop(s.id)}
-                  onDragEnd={() => {
-                    setDragId(null);
-                    setOverId(null);
-                  }}
                 />
               ))}
             </div>
@@ -374,18 +404,20 @@ function CatChip({
   prefix,
   children,
   onClick,
+  onDelete,
 }: {
   active: boolean;
   count: number;
   prefix?: boolean;
   children: React.ReactNode;
   onClick: () => void;
+  onDelete?: () => void;
 }) {
   return (
-    <button
+    <span
       onClick={onClick}
       className={[
-        "inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-full border text-meta transition-colors duration-[80ms]",
+        "group inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-full border text-meta transition-colors duration-[80ms] cursor-pointer",
         active
           ? "border-nx-accent text-nx-accent bg-nx-elevated shadow-[0_0_12px_var(--nx-accent-glow)]"
           : "border-nx-border text-nx-muted bg-nx-bg hover:text-nx-text hover:border-nx-dim",
@@ -401,7 +433,19 @@ function CatChip({
       >
         {count}
       </span>
-    </button>
+      {onDelete && (
+        <span
+          role="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="opacity-0 group-hover:opacity-100 -mr-0.5 ml-0.5 inline-flex text-nx-muted hover:text-nx-error transition-opacity"
+        >
+          <X size={11} />
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -414,9 +458,6 @@ function SnippetTile({
   onEdit,
   onDelete,
   onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
 }: {
   s: Snippet;
   selected: boolean;
@@ -426,31 +467,12 @@ function SnippetTile({
   onEdit: () => void;
   onDelete: () => void;
   onDragStart: () => void;
-  onDragOver: () => void;
-  onDrop: () => void;
-  onDragEnd: () => void;
 }) {
   const { t } = useTranslation();
   return (
     <div
-      draggable
+      data-snippet-id={s.id}
       onClick={onRun}
-      onDragStart={(e) => {
-        // webkit/Tauri only starts a drag once dataTransfer carries something.
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", s.id);
-        onDragStart();
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        onDragOver();
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        onDrop();
-      }}
-      onDragEnd={onDragEnd}
       className={[
         "group relative border rounded-[7px] bg-nx-bg p-[13px_14px] min-h-[104px] flex flex-col gap-2 cursor-pointer",
         "transition-[border-color,box-shadow,background,transform] duration-90",
@@ -497,7 +519,15 @@ function SnippetTile({
       </div>
 
       <div className="text-lead text-nx-accent font-medium flex items-center gap-1.5 pr-16">
-        <GripVertical size={13} className="text-nx-muted opacity-0 group-hover:opacity-50 cursor-grab shrink-0" />
+        <GripVertical
+          size={13}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => {
+            e.stopPropagation(); // don't trigger run; start a pointer-drag
+            onDragStart();
+          }}
+          className="text-nx-muted opacity-40 group-hover:opacity-70 cursor-grab shrink-0 hover:text-nx-accent"
+        />
         <span className="truncate">{s.name}</span>
       </div>
 

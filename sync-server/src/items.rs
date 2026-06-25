@@ -41,6 +41,7 @@ const KNOWN_TYPES: &[&str] = &[
     "ssh-key",
     "setting",
     "folder",
+    "snippets",
 ];
 
 fn type_is_known(t: &str) -> bool {

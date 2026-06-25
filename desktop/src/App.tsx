@@ -182,6 +182,12 @@ interface Session {
   /** Set when a connect/reconnect attempt fails — shown in the pane with a
    *  Retry button instead of the tab silently vanishing. */
   error?: string;
+  /** True while an AUTO-reconnect attempt is in flight: the ConnectError card
+   *  stays visible (error kept) and shows a "reconnecting…" badge instead of
+   *  flickering away on every retry. */
+  reconnecting?: boolean;
+  /** 1-based auto-reconnect attempt number, for the badge. */
+  reconnectAttempt?: number;
   /** Lazy-connect on restore: a restored host that would trigger an interactive
    *  password prompt is left dormant (tab present, NO SSH connection, no prompt)
    *  unless it's the active tab. Activating the tab connects it then. Avoids a
@@ -629,6 +635,8 @@ function App() {
                   id: newSessionId,
                   status,
                   error: undefined,
+                  reconnecting: false,
+                  reconnectAttempt: undefined,
                 },
               }
             : p,
@@ -2026,7 +2034,7 @@ function App() {
     });
   }
 
-  async function restartSession(sessionId: string) {
+  async function restartSession(sessionId: string, silent = false) {
     const found = findPane(sessionId);
     if (!found) return;
     const { pane } = found;
@@ -2040,6 +2048,13 @@ function App() {
     let auth: AuthMethod = await resolveAuth(host.auth, host.id);
     let user = host.user;
     if (host.auth.kind === "password") {
+      if (silent) {
+        // Auto-reconnect can't prompt; an ask-each-time password host has nothing
+        // to reuse → stop retrying and leave the error card up (manual Retry asks).
+        clearReconnect(sessionId);
+        updateSession(sessionId, (s) => ({ ...s, reconnecting: false }));
+        return;
+      }
       const creds = await askPassword(host);
       if (!creds) return;
       user = creds.user;
@@ -2051,7 +2066,10 @@ function App() {
     updateSession(sessionId, (s) => ({
       ...s,
       status: "connecting",
-      error: undefined,
+      // Manual retry clears the error (fresh start); auto-reconnect KEEPS the
+      // error so the ConnectError card stays visible with a "reconnecting" badge.
+      error: silent ? s.error : undefined,
+      reconnecting: silent,
     }));
     try {
       const hist = historyArgsFor(host);
@@ -2084,6 +2102,7 @@ function App() {
         ...s,
         status: "closed",
         error: String(e),
+        reconnecting: false,
       }));
       if (settings.autoReconnect) {
         // schedule a retry; use the session as it now exists (still keyed
@@ -2831,7 +2850,8 @@ function App() {
     const delay = RECONNECT_DELAYS[prev.attempts];
     const timer = window.setTimeout(() => {
       prev.attempts += 1;
-      restartSession(session.id);
+      updateSession(session.id, (s) => ({ ...s, reconnectAttempt: prev.attempts }));
+      restartSession(session.id, true); // silent — keep the ConnectError card up
     }, delay);
     reconnectRef.current.set(session.id, {
       attempts: prev.attempts,
@@ -3138,6 +3158,8 @@ function App() {
                   <ConnectError
                     host={p.session.host.host}
                     parsed={parseConnectError(p.session.error)}
+                    reconnecting={!!p.session.reconnecting}
+                    attempt={p.session.reconnectAttempt}
                     onRetry={() => restartSession(p.session.id)}
                     onEditHost={() => {
                       const id = p.session.host.id;
@@ -3147,7 +3169,10 @@ function App() {
                         )
                         .catch(() => setEditHost(p.session.host));
                     }}
-                    onClose={() => closePane(ws.id, p.id)}
+                    onClose={() => {
+                      clearReconnect(p.session.id); // stop background retries
+                      closePane(ws.id, p.id);
+                    }}
                   />
                 </div>
               )}

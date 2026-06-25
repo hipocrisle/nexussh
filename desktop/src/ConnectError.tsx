@@ -3,19 +3,22 @@
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle, X, ChevronRight, Copy, Check, RotateCcw, SquarePen } from "lucide-react";
+import { AlertTriangle, X, ChevronRight, Copy, Check, RotateCcw, SquarePen, Loader2 } from "lucide-react";
 import { Button } from "./components/primitives";
 import { ParsedError } from "./connect-error";
 
 interface Props {
   host: string;
   parsed: ParsedError;
+  /** Background auto-reconnect in flight — shows a stable badge, no flicker. */
+  reconnecting?: boolean;
+  attempt?: number;
   onRetry: () => void;
   onEditHost: () => void;
   onClose: () => void;
 }
 
-export function ConnectError({ host, parsed, onRetry, onEditHost, onClose }: Props) {
+export function ConnectError({ host, parsed, reconnecting, attempt, onRetry, onEditHost, onClose }: Props) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -103,6 +106,14 @@ export function ConnectError({ host, parsed, onRetry, onEditHost, onClose }: Pro
               </div>
             )}
           </div>
+
+          {/* background auto-reconnect badge — stable, no flicker */}
+          {reconnecting && (
+            <div className="mt-3 flex items-center gap-2 text-meta text-nx-warning">
+              <Loader2 size={13} className="animate-spin shrink-0" />
+              <span>{t("connect_err.reconnecting", { n: attempt ?? 1 })}</span>
+            </div>
+          )}
 
           {/* actions */}
           <div className="mt-[18px] flex items-center gap-2">

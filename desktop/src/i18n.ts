@@ -374,6 +374,7 @@ const ru = {
     save: "сохранить",
     confirm_run: "Запустить «{{name}}» на активном хосте?",
     delete_confirm: "Удалить сниппет «{{name}}»?",
+    delete_category: "Удалить категорию «{{name}}»? Сниппеты останутся (без категории).",
     import_done: "Импортировано: {{added}}, пропущено: {{skipped}}",
     export_done: "Сниппеты экспортированы",
     empty_title: "Пока нет сниппетов",
@@ -397,6 +398,7 @@ const ru = {
     cause_timeout: "таймаут соединения",
     cause_auth: "неверный логин, пароль или ключ",
     cause_hostkey: "изменился host key сервера",
+    reconnecting: "переподключаюсь… (попытка {{n}})",
   },
   bundle: {
     title: "Экспорт бандла",
@@ -1477,6 +1479,7 @@ const en = {
     save: "save",
     confirm_run: 'Run "{{name}}" on the active host?',
     delete_confirm: 'Delete snippet "{{name}}"?',
+    delete_category: 'Delete category "{{name}}"? Snippets stay (uncategorised).',
     import_done: "Imported: {{added}}, skipped: {{skipped}}",
     export_done: "Snippets exported",
     empty_title: "No snippets yet",
@@ -1500,6 +1503,7 @@ const en = {
     cause_timeout: "connection timed out",
     cause_auth: "wrong login, password or key",
     cause_hostkey: "server host key changed",
+    reconnecting: "reconnecting… (attempt {{n}})",
   },
   bundle: {
     title: "Export bundle",

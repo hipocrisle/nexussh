@@ -10,7 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { notifyHostsChanged } from "./hosts";
-import { pullSnippetsToLocal, pushSnippetsToVault } from "./snippets";
+import { pullSnippetsToLocal, pushSnippetsToVault, pushSnippetsTouched } from "./snippets";
 
 /** Snapshot of account + sync state (no secrets). */
 export interface AccountStatus {
@@ -152,8 +152,15 @@ export async function accountSyncNow(): Promise<SyncReport> {
   // Nudge the UI to re-read so the tree updates WITHOUT a client restart
   // (fixes: synced node only appeared after restart).
   notifyHostsChanged();
-  // Snippets ride a global vault blob — pull it back into localStorage.
-  await pullSnippetsToLocal();
+  // Snippets ride a global vault blob (union-merged on pull). If the merge grew
+  // our list (gained the other device's snippets), push the union as newest +
+  // sync once more so the OTHER device also converges to the full set.
+  const grew = await pullSnippetsToLocal();
+  if (grew) {
+    await pushSnippetsTouched();
+    await invoke<SyncReport>("account_sync_now");
+    await pullSnippetsToLocal();
+  }
   return report;
 }
 

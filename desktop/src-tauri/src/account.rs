@@ -311,6 +311,33 @@ pub fn item_type_for_key(key: &str) -> &'static str {
     }
 }
 
+/// Union-merge two snippet JSON-array blobs by `id` (local order first, then any
+/// new remote ids; remote wins on a same-id clash). Falls back to remote on bad
+/// JSON. Used so snippet sync never discards either device's additions.
+fn merge_snippets_blob(local: Option<&str>, remote: &str) -> String {
+    use std::collections::BTreeMap;
+    let parse = |s: &str| serde_json::from_str::<Vec<serde_json::Value>>(s).unwrap_or_default();
+    let loc = local.map(parse).unwrap_or_default();
+    let rem = parse(remote);
+    if loc.is_empty() && rem.is_empty() {
+        return remote.to_string();
+    }
+    let mut by_id: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for v in loc.into_iter().chain(rem.into_iter()) {
+        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+            let id = id.to_string();
+            if !by_id.contains_key(&id) {
+                order.push(id.clone());
+            }
+            by_id.insert(id, v); // later (remote) wins on clash
+        }
+    }
+    let merged: Vec<serde_json::Value> =
+        order.into_iter().filter_map(|id| by_id.remove(&id)).collect();
+    serde_json::to_string(&merged).unwrap_or_else(|_| remote.to_string())
+}
+
 /// Extract the `<id>` from a `host.<id>` item_id (the record item, not a secret).
 /// Returns None for password/known-host/other ids.
 fn host_id_from_item(item_id: &str) -> Option<&str> {
@@ -1459,6 +1486,25 @@ pub async fn account_sync_now(
         let plaintext = ac::decrypt_item(&ct, &user_key)?;
         let remote_value = String::from_utf8_lossy(&plaintext).into_owned();
         let local_value = vault::get_opt(&vault_state, key);
+
+        // Snippets: UNION-merge by id, never LWW-replace. Whole-blob LWW would
+        // discard the "older" device's additions (one-directional-sync bug) —
+        // merging keeps both sides; remote wins only on a same-id clash.
+        if itype == ITEM_TYPE_SNIPPETS {
+            let merged = merge_snippets_blob(local_value.as_deref(), &remote_value);
+            let changed = local_value.as_deref() != Some(merged.as_str());
+            vault::put_key(&vault_state, key, merged)?;
+            cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
+            cfg.tombstones.remove(key);
+            cfg.synced_item_ids.insert(key.clone(), 1);
+            if changed {
+                report.pulled += 1;
+            }
+            cfg.item_revs.insert(key.clone(), item.rev);
+            report.latest_rev = report.latest_rev.max(item.rev);
+            continue;
+        }
+
         let apply_remote = match &local_value {
             None => true,
             Some(lv) => lv != &remote_value && remote_updated >= local_updated,

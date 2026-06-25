@@ -182,18 +182,22 @@ export function setSnippetsSyncEnabled(on: boolean) {
 }
 
 /** After an account sync, read the pulled blob back into localStorage. */
-export async function pullSnippetsToLocal() {
-  if (!snippetsSyncEnabled()) return;
+export async function pullSnippetsToLocal(): Promise<boolean> {
+  if (!snippetsSyncEnabled()) return false;
   try {
     const raw = await vaultGet(SNIPPETS_KEY);
-    if (!raw) return;
+    if (!raw) return false;
     const remote = JSON.parse(raw);
-    if (!Array.isArray(remote) || remote.length === 0) return;
+    if (!Array.isArray(remote) || remote.length === 0) return false;
     // Merge by id — remote wins on conflict, but local-only snippets are KEPT.
     // Never silently drop what the user added locally just because the synced
     // blob is stale (this caused "export shows only the first 3" data-loss).
     const byId = new Map<string, Snippet>();
-    for (const s of listSnippets()) byId.set(s.id, s);
+    const before = new Set<string>();
+    for (const s of listSnippets()) {
+      byId.set(s.id, s);
+      before.add(s.id);
+    }
     for (const r of remote as Snippet[]) if (r?.id) byId.set(r.id, r);
     const merged = Array.from(byId.values()).map((s, i) => ({
       ...s,
@@ -201,9 +205,17 @@ export async function pullSnippetsToLocal() {
     }));
     localStorage.setItem(LS, JSON.stringify(merged));
     window.dispatchEvent(new Event(EVT));
+    return merged.some((s) => !before.has(s.id)); // grew = gained new ids
   } catch {
-    /* vault locked or key absent — nothing to pull */
+    return false;
   }
+}
+
+/** Mirror current list + TOUCH (mark newest) so a grown union propagates to the
+ *  other device on the next push. */
+export async function pushSnippetsTouched() {
+  if (!snippetsSyncEnabled()) return;
+  await mirrorToVault(listSnippets(), true);
 }
 
 /** Mirror the CURRENT list into the vault blob + touch, awaited — call right

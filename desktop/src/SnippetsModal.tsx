@@ -70,6 +70,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
   overIdRef.current = overId;
   const pendingRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const draggedRef = useRef(false);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
 
   // Arm-to-drag: watch for movement past the threshold after a tile mousedown.
   useEffect(() => {
@@ -93,10 +94,12 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
     };
   }, [dragId]);
 
-  // Active drag: track the hovered tile + drop on mouseup.
+  // Active drag: track the hovered tile + a floating preview; drop on mouseup.
   useEffect(() => {
     if (!dragId) return;
+    document.body.style.userSelect = "none"; // no text selection while dragging
     const onMove = (e: MouseEvent) => {
+      setDragPos({ x: e.clientX, y: e.clientY });
       const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
         "[data-snippet-id]",
       );
@@ -112,6 +115,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
     return () => {
+      document.body.style.userSelect = "";
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
     };
@@ -289,7 +293,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
             <button
               onClick={onSync}
               title={t("snippets.sync_now")}
-              className="ml-auto p-1.5 text-nx-muted hover:text-nx-accent"
+              className="ml-auto inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-accent/50 bg-[rgba(0,255,149,0.10)] text-nx-accent hover:bg-[rgba(0,255,149,0.18)] hover:border-nx-accent shadow-[0_0_10px_var(--nx-accent-glow)]"
             >
               <Cloud size={14} />
             </button>
@@ -379,6 +383,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
                   }}
                   onMouseDownTile={(e) => {
                     if (e.button !== 0) return; // left-button only
+                    e.preventDefault(); // don't begin a text selection on drag
                     pendingRef.current = { id: s.id, x: e.clientX, y: e.clientY };
                     draggedRef.current = false;
                   }}
@@ -444,6 +449,16 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
           </div>
         </div>
       </div>
+
+      {/* floating drag preview — clearly shows WHAT you're dragging */}
+      {dragId && dragPos && (
+        <div
+          className="fixed z-[200] pointer-events-none px-2.5 py-1.5 rounded-nx bg-nx-panel border border-nx-accent text-nx-accent text-meta font-mono shadow-[0_8px_24px_rgba(0,0,0,0.6),0_0_16px_var(--nx-accent-glow)]"
+          style={{ left: dragPos.x + 12, top: dragPos.y + 12 }}
+        >
+          {list.find((s) => s.id === dragId)?.name ?? ""}
+        </div>
+      )}
     </div>
   );
 }

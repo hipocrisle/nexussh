@@ -1050,10 +1050,10 @@ export function TerminalView({
       )}
       {findOpen && (
         <div
-          className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono"
+          className="absolute top-1.5 right-3 z-20 flex items-center gap-1 px-1.5 py-1 bg-nx-panel border border-nx-border rounded-nx shadow-elev-modal font-mono max-md:left-2 max-md:right-2 max-md:gap-1.5 max-md:px-2 max-md:py-1.5"
           onMouseDown={(e) => e.stopPropagation()}
         >
-          <Search size={12} className="text-nx-muted shrink-0" />
+          <Search size={12} className="text-nx-muted shrink-0 max-md:hidden" />
           <input
             ref={findInputRef}
             value={findQuery}
@@ -1077,7 +1077,7 @@ export function TerminalView({
               }
             }}
             placeholder={t("terminal.find_placeholder")}
-            className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none"
+            className="w-44 bg-transparent text-meta text-nx-text placeholder:text-nx-muted outline-none max-md:flex-1 max-md:w-auto max-md:text-[15px] max-md:py-1"
           />
           <span className="shrink-0 text-micro tabular-nums text-nx-muted min-w-[2.5rem] text-right">
             {findInfo.count > 0
@@ -1088,24 +1088,25 @@ export function TerminalView({
           </span>
           <button
             onClick={() => runFind(false)}
-            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5 max-md:px-3 max-md:py-0.5 max-md:text-2xl max-md:leading-none"
             title={t("history.panel.find_prev")}
           >
             ‹
           </button>
           <button
             onClick={() => runFind(true)}
-            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5"
+            className="shrink-0 text-nx-muted hover:text-nx-text px-0.5 max-md:px-3 max-md:py-0.5 max-md:text-2xl max-md:leading-none"
             title={t("history.panel.find_next")}
           >
             ›
           </button>
           <button
             onClick={closeFind}
-            className="shrink-0 text-nx-muted hover:text-nx-error"
+            className="shrink-0 text-nx-muted hover:text-nx-error max-md:p-1.5"
             title={t("history.panel.clear_search")}
           >
-            <X size={12} />
+            <X size={12} className="max-md:hidden" />
+            <X size={20} className="hidden max-md:block" />
           </button>
         </div>
       )}

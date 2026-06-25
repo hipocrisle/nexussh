@@ -54,6 +54,8 @@ export function PopoverItem({
       className={[
         "group relative w-full grid grid-cols-[18px_1fr_auto] gap-[11px] items-center",
         "px-[13px] py-[7px] text-left text-[12.5px] transition-colors duration-[70ms]",
+        // Finger-sized rows on mobile (the dense desktop rows were hard to tap).
+        "max-md:py-3 max-md:px-4 max-md:text-[15px] max-md:gap-3",
         disabled
           ? "text-nx-muted opacity-45 cursor-not-allowed"
           : destructive

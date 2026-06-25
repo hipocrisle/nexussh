@@ -349,6 +349,8 @@ const ru = {
   snippets: {
     btn: "Сниппеты",
     kicker: "сниппеты",
+    edit: "Изменить",
+    delete: "Удалить",
     count_target: "{{n}} сниппетов · отправка в {{host}}",
     filter: "фильтр по имени или команде…",
     autorun: "авто-запуск",
@@ -1457,6 +1459,8 @@ const en = {
   snippets: {
     btn: "Snippets",
     kicker: "snippets",
+    edit: "Edit",
+    delete: "Delete",
     count_target: "{{n}} snippets · sends to {{host}}",
     filter: "filter by name or command…",
     autorun: "auto-run",

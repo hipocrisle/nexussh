@@ -42,9 +42,12 @@ interface Props {
   onToast?: (msg: string, kind?: "error") => void;
   /** Run an account sync now (header cloud button). Omit to hide it. */
   onSync?: () => void;
+  /** Manage-only mode (mobile): clicking a tile EDITS it instead of running it
+   *  into a terminal; 1–9 run is disabled. Quick-run lives in the SmartKeyBar. */
+  manageOnly?: boolean;
 }
 
-export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Props) {
+export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, manageOnly }: Props) {
   const { t } = useTranslation();
   const [list, setList] = useState<Snippet[]>(() => listSnippets());
   const [q, setQ] = useState("");
@@ -159,7 +162,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
       }
       const empty = !q.trim();
       const n = parseInt(e.key, 10);
-      if (empty && n >= 1 && n <= 9) {
+      if (!manageOnly && empty && n >= 1 && n <= 9) {
         const s = list.find((x) => x.hotkey === n);
         if (s) {
           e.preventDefault();
@@ -182,7 +185,8 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
       }
       if (e.key === "Enter" && selIdx >= 0 && filtered[selIdx]) {
         e.preventDefault();
-        void run(filtered[selIdx]);
+        if (manageOnly) setEditing(filtered[selIdx]);
+        else void run(filtered[selIdx]);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -374,7 +378,9 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
                       draggedRef.current = false;
                       return;
                     }
-                    run(s);
+                    // Manage-only (mobile): tap edits; running is via SmartKeyBar.
+                    if (manageOnly) setEditing(s);
+                    else run(s);
                   }}
                   onEdit={() => setEditing(s)}
                   onDelete={async () => {
@@ -505,9 +511,10 @@ function CatChip({
             e.stopPropagation();
             onDelete();
           }}
-          className="opacity-0 group-hover:opacity-100 -mr-0.5 ml-0.5 inline-flex text-nx-muted hover:text-nx-error transition-opacity"
+          className="opacity-0 group-hover:opacity-100 -mr-0.5 ml-0.5 inline-flex text-nx-muted hover:text-nx-error transition-opacity max-md:opacity-100 max-md:ml-1 max-md:p-0.5 max-md:text-nx-error"
         >
-          <X size={11} />
+          <X size={11} className="max-md:hidden" />
+          <X size={16} className="hidden max-md:block" />
         </span>
       )}
     </span>
@@ -562,25 +569,30 @@ function SnippetTile({
         {s.hotkey ?? "·"}
       </span>
 
-      {/* hover actions */}
-      <div className="absolute top-2.5 right-11 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+      {/* actions — hover on desktop, ALWAYS visible + finger-sized on mobile
+          (the tiny hover-only crosses were impossible to tap). */}
+      <div className="absolute top-2 right-11 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity max-md:opacity-100 max-md:gap-1.5">
         <button
           onClick={(e) => {
             e.stopPropagation();
             onEdit();
           }}
-          className="p-1 bg-nx-elevated rounded text-nx-muted hover:text-nx-accent"
+          aria-label={t("snippets.edit")}
+          className="p-1 max-md:p-2.5 bg-nx-elevated rounded text-nx-muted hover:text-nx-accent max-md:border max-md:border-nx-border max-md:bg-nx-bg-2"
         >
-          <SquarePen size={13} />
+          <SquarePen size={13} className="max-md:hidden" />
+          <SquarePen size={18} className="hidden max-md:block" />
         </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
             onDelete();
           }}
-          className="p-1 bg-nx-elevated rounded text-nx-muted hover:text-nx-error"
+          aria-label={t("snippets.delete")}
+          className="p-1 max-md:p-2.5 bg-nx-elevated rounded text-nx-muted hover:text-nx-error max-md:border max-md:border-nx-border max-md:bg-nx-bg-2 max-md:text-nx-error"
         >
-          <Trash2 size={13} />
+          <Trash2 size={13} className="max-md:hidden" />
+          <Trash2 size={18} className="hidden max-md:block" />
         </button>
       </div>
 

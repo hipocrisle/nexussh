@@ -47,6 +47,10 @@ import { askPrompt } from "./dialogs";
 interface Props {
   /** Resolve a host to ConnectArgs (handles "always ask" auth). null = cancelled. */
   resolveArgs: (h: HostRecord) => Promise<ConnectArgs | null>;
+  /** When set, auto-open this host (from a tab's "SFTP files" action). Cleared
+   *  via onOpened once consumed. */
+  openHostId?: string;
+  onOpened?: () => void;
 }
 
 function joinPath(dir: string, name: string): string {
@@ -68,7 +72,7 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-export function MobileFiles({ resolveArgs }: Props) {
+export function MobileFiles({ resolveArgs, openHostId, onOpened }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [sftpId, setSftpId] = useState<string | null>(null);
@@ -188,6 +192,16 @@ export function MobileFiles({ resolveArgs }: Props) {
     setError(null);
     exitSelect();
   }
+
+  // Auto-open a host requested elsewhere (tab context → "SFTP files"). Only when
+  // idle, so we never yank an already-open browser to a different host.
+  useEffect(() => {
+    if (!openHostId || !hosts.length || idRef.current) return;
+    const h = hosts.find((x) => x.id === openHostId);
+    onOpened?.();
+    if (h) void connect(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openHostId, hosts]);
 
   async function runTransfer(
     name: string,

@@ -22,6 +22,7 @@ import {
   X,
   Plus,
   Copy,
+  FileCode2,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -934,6 +935,8 @@ function App() {
   // works). Hosts ⇄ Sessions are the two persistent content views.
   const [mobileTab, setMobileTab] = useState<MobileTab>("hosts");
   const FILES_TAB_ENABLED = true;
+  // Host to auto-open in the mobile Files tab (set by openSftp on mobile).
+  const [mobileFilesHostId, setMobileFilesHostId] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   // Transient tab-switch flash (Ctrl+Tab): tab id to pulse on. Cleared by
@@ -1922,6 +1925,13 @@ function App() {
   }
 
   async function openSftp(h: HostRecord) {
+    // Mobile: SFTP lives in the bottom Files tab (MobileFiles owns its own
+    // connection + auth flow). Route there instead of the desktop dual-pane.
+    if (isMobile) {
+      setMobileFilesHostId(h.id);
+      setMobileTab("files");
+      return;
+    }
     let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
@@ -2773,23 +2783,28 @@ function App() {
           onClick: () => restartSession(sid),
           disabled: pane.session.status === "connecting",
         },
-        {
-          label: t("tabmenu.split_right"),
-          icon: <SplitSquareHorizontal size={13} />,
-          onClick: () => {
-            // Re-focus this pane first so the split lands next to it.
-            setFocusedPane(wsId, paneId);
-            splitFocusedPane(wsId, "row");
-          },
-        },
-        {
-          label: t("tabmenu.split_down"),
-          icon: <SplitSquareVertical size={13} />,
-          onClick: () => {
-            setFocusedPane(wsId, paneId);
-            splitFocusedPane(wsId, "col");
-          },
-        },
+        // Splits are desktop-only (no split panes on phones).
+        ...(!isMobile
+          ? [
+              {
+                label: t("tabmenu.split_right"),
+                icon: <SplitSquareHorizontal size={13} />,
+                onClick: () => {
+                  // Re-focus this pane first so the split lands next to it.
+                  setFocusedPane(wsId, paneId);
+                  splitFocusedPane(wsId, "row");
+                },
+              },
+              {
+                label: t("tabmenu.split_down"),
+                icon: <SplitSquareVertical size={13} />,
+                onClick: () => {
+                  setFocusedPane(wsId, paneId);
+                  splitFocusedPane(wsId, "col");
+                },
+              },
+            ]
+          : []),
         {
           label: t("sidebar.menu_sftp"),
           icon: <Folder size={13} />,
@@ -3332,9 +3347,19 @@ function App() {
                   <CloudOff size={20} className="text-nx-muted" />
                 )}
               </button>
-            ) : mobileTab === "sessions" && activeSession ? (
+            ) : mobileTab === "sessions" ? (
               <div className="flex items-center gap-0.5 shrink-0">
-                {activeId && (
+                {/* Snippets MANAGER (CRUD + sync) — always available, even with no
+                    active connection. Quick-run lives in the SmartKeyBar ⚡. */}
+                <button
+                  type="button"
+                  onClick={() => setSnippetsOpen(true)}
+                  aria-label={t("snippets.btn")}
+                  className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated"
+                >
+                  <FileCode2 size={19} className="text-nx-soft" />
+                </button>
+                {activeSession && activeId && (
                   <button
                     type="button"
                     onClick={() =>
@@ -3348,14 +3373,6 @@ function App() {
                     <Search size={19} className="text-nx-soft" />
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setSnippetsOpen(true)}
-                  aria-label={t("snippets.btn")}
-                  className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated"
-                >
-                  <Zap size={19} className="text-nx-soft" />
-                </button>
               </div>
             ) : undefined
           }
@@ -3662,7 +3679,11 @@ function App() {
           {isMobile && mobileTab === "files" && (
             <div className="absolute inset-0 z-40 bg-nx-bg">
               <Suspense fallback={null}>
-                <MobileFiles resolveArgs={resolveSftpArgs} />
+                <MobileFiles
+                  resolveArgs={resolveSftpArgs}
+                  openHostId={mobileFilesHostId ?? undefined}
+                  onOpened={() => setMobileFilesHostId(null)}
+                />
               </Suspense>
             </div>
           )}
@@ -3943,6 +3964,9 @@ function App() {
               : null
           }
           onToast={showToast}
+          // On mobile this modal is the MANAGER only (CRUD + sync); running into
+          // the terminal is the SmartKeyBar ⚡. So a tap edits, never sends.
+          manageOnly={isMobile}
           onSync={async () => {
             try {
               const r = await accountSyncNow();

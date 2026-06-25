@@ -110,7 +110,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
     id: string | null;
     name: string;
     command: string;
-    enter: boolean;
+    autoRun: boolean;
   } | null>(null);
 
   // Load snippets when the ⚡ panel opens and live-update on changes.
@@ -124,7 +124,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
   }, [panel]);
 
   function runSnippet(s: Snippet) {
-    onSend(s.command + (s.enter ? "\r" : ""));
+    onSend(s.command + (s.autoRun ? "\r" : ""));
     setPanel(null);
   }
   function saveSnipForm() {
@@ -133,9 +133,10 @@ export function SmartKeyBar({ onSend, visible }: Props) {
     if (!command.trim()) return;
     const name = snipForm.name.trim() || command.trim().slice(0, 24);
     if (snipForm.id) {
-      updateSnippet({ id: snipForm.id, name, command, enter: snipForm.enter });
+      const ex = snips.find((x) => x.id === snipForm.id);
+      if (ex) updateSnippet({ ...ex, name, command, autoRun: snipForm.autoRun });
     } else {
-      addSnippet({ name, command, enter: snipForm.enter });
+      addSnippet({ name, command, autoRun: snipForm.autoRun, confirm: false });
     }
     setSnipForm(null);
   }
@@ -362,7 +363,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
                       id: s.id,
                       name: s.name,
                       command: s.command,
-                      enter: s.enter,
+                      autoRun: s.autoRun,
                     })
                   }
                 >
@@ -400,9 +401,9 @@ export function SmartKeyBar({ onSend, visible }: Props) {
               <label className="flex items-center gap-2 px-1 text-[13px] text-nx-soft">
                 <input
                   type="checkbox"
-                  checked={snipForm.enter}
+                  checked={snipForm.autoRun}
                   onChange={(e) =>
-                    setSnipForm({ ...snipForm, enter: e.target.checked })
+                    setSnipForm({ ...snipForm, autoRun: e.target.checked })
                   }
                 />
                 Выполнить сразу (Enter после команды)
@@ -429,7 +430,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
               type="button"
               className="h-11 text-[14px] font-mono rounded-nx border border-dashed border-nx-border text-nx-muted active:bg-nx-bg-2"
               onClick={() =>
-                setSnipForm({ id: null, name: "", command: "", enter: true })
+                setSnipForm({ id: null, name: "", command: "", autoRun: true })
               }
             >
               ＋ Добавить сниппет

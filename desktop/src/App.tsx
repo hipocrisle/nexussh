@@ -10,6 +10,7 @@ import {
   Network as NetworkIcon,
   Search,
   Server,
+  Zap,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -38,6 +39,7 @@ const TunnelsPanel = lazy(() =>
 import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
+import { SnippetsModal } from "./SnippetsModal";
 const UpdatePanel = lazy(() =>
   import("./UpdatePanel").then((m) => ({ default: m.UpdatePanel })),
 );
@@ -912,6 +914,7 @@ function App() {
   const [mobileTab, setMobileTab] = useState<MobileTab>("hosts");
   const FILES_TAB_ENABLED = true;
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [snippetsOpen, setSnippetsOpen] = useState(false);
   // Transient tab-switch flash (Ctrl+Tab): tab id to pulse on. Cleared by
   // CSS animation completion via this state being reset after the animation.
   const [switchPulseId, setSwitchPulseId] = useState<string | null>(null);
@@ -1463,6 +1466,12 @@ function App() {
         } else if (activeSession) {
           openSftp(activeSession);
         }
+      } else if (meta && e.shiftKey && !e.altKey && code === "KeyX") {
+        // Ctrl/Cmd+Shift+X — toggle snippets modal (single Ctrl+X is reserved
+        // for the terminal, so the binding is Shift-gated).
+        e.preventDefault();
+        e.stopPropagation();
+        setSnippetsOpen((v) => !v);
       } else if (meta && !e.shiftKey && code === "KeyT") {
         // Ctrl/Cmd+T — open host picker (new tab).
         e.preventDefault();
@@ -3479,6 +3488,12 @@ function App() {
             />
           )}
           <HeaderButton
+            icon={<Zap size={12} />}
+            onClick={() => setSnippetsOpen(true)}
+            title={t("snippets.btn") + " (Ctrl+Shift+X)"}
+            active={snippetsOpen}
+          />
+          <HeaderButton
             icon={<HelpCircle size={12} />}
             onClick={() => setShortcutsOpen(true)}
             title={t("shortcuts.open_title") + " (?)"}
@@ -3844,6 +3859,26 @@ function App() {
 
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+      )}
+
+      {snippetsOpen && (
+        <SnippetsModal
+          onClose={() => setSnippetsOpen(false)}
+          onRun={(data) => {
+            if (activeId) sshSend(activeId, new TextEncoder().encode(data));
+          }}
+          activeCtx={
+            focusedSession
+              ? {
+                  host: focusedSession.host.host,
+                  user: focusedSession.host.user,
+                  port: focusedSession.host.port,
+                  name: focusedSession.host.name,
+                }
+              : null
+          }
+          onToast={showToast}
+        />
       )}
 
       {selectedHost && !editHost && !createHostOpen && (

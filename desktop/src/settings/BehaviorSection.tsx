@@ -207,6 +207,10 @@ export function BehaviorSection({ s, set, t }: Props) {
         />
       </Row>
 
+      {/* History — desktop only: there's no UI to VIEW recordings on the phone,
+          just a toggle, so hide the whole block on mobile. */}
+      {!isMobile && (
+        <>
       <Row
         label={tr("settings.behavior.history")}
         hint={tr("settings.behavior.history_hint")}
@@ -262,6 +266,8 @@ export function BehaviorSection({ s, set, t }: Props) {
               </button>
             </div>
           </Row>
+        </>
+      )}
         </>
       )}
 

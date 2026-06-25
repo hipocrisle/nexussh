@@ -3332,6 +3332,31 @@ function App() {
                   <CloudOff size={20} className="text-nx-muted" />
                 )}
               </button>
+            ) : mobileTab === "sessions" && activeSession ? (
+              <div className="flex items-center gap-0.5 shrink-0">
+                {activeId && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("nx:find", { detail: { sessionId: activeId } }),
+                      )
+                    }
+                    aria-label={t("terminal.find_title")}
+                    className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated"
+                  >
+                    <Search size={19} className="text-nx-soft" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSnippetsOpen(true)}
+                  aria-label={t("snippets.btn")}
+                  className="shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated"
+                >
+                  <Zap size={19} className="text-nx-soft" />
+                </button>
+              </div>
             ) : undefined
           }
           items={[
@@ -3758,8 +3783,10 @@ function App() {
             }}
           />
         )}
-        {sftpEntry && activeId && (
+        {sftpEntry && activeId && !isMobile && (
           <SFTPPanel
+            // Desktop only — on mobile the Files tab (MobileFiles) owns SFTP, so
+            // the dual-pane desktop panel must NOT also render (was doubling up).
             // Key on the session id so switching tabs remounts the panel for the
             // newly-focused session. Per-session remote/local paths are seeded
             // back via initial*Path so the remount resumes where it left off.

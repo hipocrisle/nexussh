@@ -1067,6 +1067,7 @@ function App() {
       !!tunnelsPanel?.open ||
       historyPanelOpen ||
       !!selectedHost ||
+      snippetsOpen ||
       mobileTab !== "hosts";
     if (anyOpen) {
       if (history.state?.nxOverlay !== true) {
@@ -1088,6 +1089,7 @@ function App() {
     tunnelsPanel,
     historyPanelOpen,
     selectedHost,
+    snippetsOpen,
     mobileTab,
   ]);
   // Keep refs current so the popstate handler always sees the latest snapshot.
@@ -1102,6 +1104,7 @@ function App() {
     historyPanelOpen;
   (backRef.current as { selectedHostOpen?: boolean }).selectedHostOpen =
     !!selectedHost;
+  (backRef.current as { snippetsOpen?: boolean }).snippetsOpen = snippetsOpen;
   useEffect(() => {
     if (!isMobile) return;
     const onPop = () => {
@@ -1112,9 +1115,12 @@ function App() {
         tunnelsPanelOpen?: boolean;
         historyPanelOpen?: boolean;
         selectedHostOpen?: boolean;
+        snippetsOpen?: boolean;
       };
-      // Drill-down order: deepest/newest first.
-      if (b.sftpOpen) closeSftp();
+      // Drill-down order: deepest/newest first. The snippets manager is a
+      // full-screen modal over the Sessions tab → close it before anything else.
+      if (b.snippetsOpen) setSnippetsOpen(false);
+      else if (b.sftpOpen) closeSftp();
       else if (b.updatePanelOpen) setUpdatePanel(null);
       else if (b.syncPanelOpen) setSyncPanelOpen(false);
       else if (b.tunnelsPanelOpen) setTunnelsPanel(null);

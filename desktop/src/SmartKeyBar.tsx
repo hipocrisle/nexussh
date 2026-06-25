@@ -21,9 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { readClipboard } from "./clipboard";
 import {
   listSnippets,
-  addSnippet,
-  updateSnippet,
-  deleteSnippet,
+  listCategories,
   onSnippetsChanged,
   type Snippet,
 } from "./snippets";
@@ -105,40 +103,26 @@ export function SmartKeyBar({ onSend, visible }: Props) {
   const [panel, setPanel] = useState<null | "fn" | "more" | "pw" | "snip">(null);
   const [pw, setPw] = useState<PwState>({ status: "idle", items: [] });
   const [snips, setSnips] = useState<Snippet[]>([]);
-  // null = not editing; otherwise the add/edit form (id null = adding new).
-  const [snipForm, setSnipForm] = useState<{
-    id: string | null;
-    name: string;
-    command: string;
-    autoRun: boolean;
-  } | null>(null);
+  const [cats, setCats] = useState<string[]>([]);
+  // Active category filter in the quick panel ("all" = everything).
+  const [snipCat, setSnipCat] = useState<string>("all");
 
-  // Load snippets when the ⚡ panel opens and live-update on changes.
+  // Load snippets when the ⚡ panel opens and live-update on changes. The quick
+  // panel is RUN-ONLY — creating/editing/deleting lives in the manager modal
+  // (the FileCode2 button in the Sessions header), so we never mutate here.
   useEffect(() => {
-    if (panel !== "snip") {
-      setSnipForm(null);
-      return;
-    }
-    setSnips(listSnippets());
-    return onSnippetsChanged(() => setSnips(listSnippets()));
+    if (panel !== "snip") return;
+    const refresh = () => {
+      setSnips(listSnippets());
+      setCats(listCategories());
+    };
+    refresh();
+    return onSnippetsChanged(refresh);
   }, [panel]);
 
   function runSnippet(s: Snippet) {
     onSend(s.command + (s.autoRun ? "\r" : ""));
     setPanel(null);
-  }
-  function saveSnipForm() {
-    if (!snipForm) return;
-    const command = snipForm.command;
-    if (!command.trim()) return;
-    const name = snipForm.name.trim() || command.trim().slice(0, 24);
-    if (snipForm.id) {
-      const ex = snips.find((x) => x.id === snipForm.id);
-      if (ex) updateSnippet({ ...ex, name, command, autoRun: snipForm.autoRun });
-    } else {
-      addSnippet({ name, command, autoRun: snipForm.autoRun, confirm: false });
-    }
-    setSnipForm(null);
   }
 
   // The "✱✱✱" panel lists hosts that have a password saved IN THE VAULT, so the
@@ -334,107 +318,58 @@ export function SmartKeyBar({ onSend, visible }: Props) {
 
       {/* Snippets panel — saved commands, fired into the terminal on tap. */}
       {panel === "snip" && (
-        <div className="flex flex-col gap-1.5 px-2 pt-2 pb-2 border-b border-nx-border max-h-[46vh] overflow-y-auto">
-          {snips.length === 0 && !snipForm && (
-            <div className="px-1 py-2 text-[13px] text-nx-muted">
-              Нет сниппетов. Добавь часто используемую команду.
-            </div>
-          )}
-          {!snipForm &&
-            snips.map((s) => (
-              <div key={s.id} className="flex gap-1.5 items-stretch">
-                <button
-                  type="button"
-                  className="flex-1 min-w-0 h-11 px-3 flex items-center gap-2 text-left text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text active:bg-nx-bg-2"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    runSnippet(s);
-                  }}
-                >
-                  <span className="text-nx-accent shrink-0">⚡</span>
-                  <span className="truncate">{s.name}</span>
-                </button>
-                <button
-                  type="button"
-                  title="Изменить"
-                  className="w-11 h-11 shrink-0 rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
-                  onClick={() =>
-                    setSnipForm({
-                      id: s.id,
-                      name: s.name,
-                      command: s.command,
-                      autoRun: s.autoRun,
-                    })
-                  }
-                >
-                  ✎
-                </button>
-                <button
-                  type="button"
-                  title="Удалить"
-                  className="w-11 h-11 shrink-0 rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
-                  onClick={() => deleteSnippet(s.id)}
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-
-          {snipForm ? (
-            <div className="flex flex-col gap-1.5">
-              <input
-                value={snipForm.name}
-                onChange={(e) =>
-                  setSnipForm({ ...snipForm, name: e.target.value })
-                }
-                placeholder="Название (необязательно)"
-                className="h-11 px-3 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text placeholder:text-nx-muted outline-none focus:border-nx-accent"
-              />
-              <input
-                value={snipForm.command}
-                onChange={(e) =>
-                  setSnipForm({ ...snipForm, command: e.target.value })
-                }
-                placeholder="Команда, напр. sudo systemctl restart nginx"
-                className="h-11 px-3 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text placeholder:text-nx-muted outline-none focus:border-nx-accent"
-              />
-              <label className="flex items-center gap-2 px-1 text-[13px] text-nx-soft">
-                <input
-                  type="checkbox"
-                  checked={snipForm.autoRun}
-                  onChange={(e) =>
-                    setSnipForm({ ...snipForm, autoRun: e.target.checked })
-                  }
-                />
-                Выполнить сразу (Enter после команды)
-              </label>
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  className="flex-1 h-11 text-[14px] font-mono rounded-nx border bg-[var(--nx-accent)]/15 border-nx-accent text-nx-accent active:bg-nx-bg-2"
-                  onClick={saveSnipForm}
-                >
-                  Сохранить
-                </button>
-                <button
-                  type="button"
-                  className="flex-1 h-11 text-[14px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-muted active:bg-nx-bg-2"
-                  onClick={() => setSnipForm(null)}
-                >
-                  Отмена
-                </button>
-              </div>
+        <div className="flex flex-col gap-2 px-2 pt-2 pb-2 border-b border-nx-border max-h-[46vh] overflow-y-auto">
+          {snips.length === 0 ? (
+            <div className="px-1 py-2 text-[13px] text-nx-muted leading-relaxed">
+              Нет сниппетов. Добавьте их через{" "}
+              <span className="text-nx-soft">управление сниппетами</span> — значок в
+              шапке вкладки «Сессии».
             </div>
           ) : (
-            <button
-              type="button"
-              className="h-11 text-[14px] font-mono rounded-nx border border-dashed border-nx-border text-nx-muted active:bg-nx-bg-2"
-              onClick={() =>
-                setSnipForm({ id: null, name: "", command: "", autoRun: true })
-              }
-            >
-              ＋ Добавить сниппет
-            </button>
+            <>
+              {/* RUN-ONLY tiles, two columns. Editing/deleting lives in the
+                  manager modal — no destructive controls here to mis-tap. */}
+              <div className="grid grid-cols-2 gap-1.5">
+                {(snipCat === "all"
+                  ? snips
+                  : snips.filter((s) => s.category === snipCat)
+                ).map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="h-11 px-2.5 min-w-0 flex items-center gap-1.5 text-left text-[13px] font-mono rounded-nx border bg-nx-panel border-nx-border text-nx-text active:bg-nx-bg-2"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      runSnippet(s);
+                    }}
+                  >
+                    <span className="text-nx-accent shrink-0">{s.autoRun ? "⚡" : "›"}</span>
+                    <span className="truncate">{s.name}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Category FILTER (not management) — only when categories exist. */}
+              {cats.length > 0 && (
+                <div className="flex gap-1.5 flex-wrap pt-1.5 border-t border-nx-divider">
+                  {["all", ...cats].map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setSnipCat(c)}
+                      className={[
+                        "h-9 px-3 text-[13px] font-mono rounded-full border active:bg-nx-bg-2",
+                        snipCat === c
+                          ? "border-nx-accent text-nx-accent bg-[rgba(0,255,149,0.10)]"
+                          : "border-nx-border text-nx-muted",
+                      ].join(" ")}
+                    >
+                      {c === "all" ? "все" : c}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

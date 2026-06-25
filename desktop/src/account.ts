@@ -10,7 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { notifyHostsChanged } from "./hosts";
-import { pullSnippetsToLocal } from "./snippets";
+import { pullSnippetsToLocal, pushSnippetsToVault } from "./snippets";
 
 /** Snapshot of account + sync state (no secrets). */
 export interface AccountStatus {
@@ -144,6 +144,9 @@ export async function accountTotpDisable(code: string): Promise<void> {
 /** Run a full sync now (pull-then-push, last-writer-wins). Requires logged in +
  *  vault unlocked. */
 export async function accountSyncNow(): Promise<SyncReport> {
+  // Push the latest snippets into the vault blob FIRST (awaited), so the sync
+  // below carries them — avoids the async-mirror race that drifted devices.
+  await pushSnippetsToVault();
   const report = await invoke<SyncReport>("account_sync_now");
   // Sync may have pulled new hosts / applied tombstones into the Rust store.
   // Nudge the UI to re-read so the tree updates WITHOUT a client restart

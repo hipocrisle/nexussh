@@ -429,7 +429,7 @@ export function Sidebar({
         {
           label: t("sidebar.menu_connect"),
           icon: <Play size={13} />,
-          shortcut: "↵",
+          checked: true, // primary action — постоянный accent (по дизайн-спеке)
           onClick: () => onConnect(h),
         },
         {
@@ -472,7 +472,7 @@ export function Sidebar({
           destructive: true,
         },
       ],
-      { kicker: h.group || undefined, main: `${h.user}@${h.host}` },
+      { kicker: h.group || undefined, main: h.name, sub: `${h.user}@${h.host}` },
     );
   }
 

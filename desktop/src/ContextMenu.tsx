@@ -18,8 +18,9 @@ export interface MenuItem {
   onClick?: () => void;
   /** Optional icon (lucide-react component, sized in container) */
   icon?: React.ReactNode;
-  /** Optional right-aligned shortcut hint (e.g. "⌘D", "↵"). */
-  shortcut?: string;
+  /** Optional right-aligned trailing element (e.g. a folder country-code chip).
+   *  No keyboard-shortcut hints in menus (they live in the Shortcuts window). */
+  trailing?: React.ReactNode;
   /** Marks the item as destructive (red text). */
   destructive?: boolean;
   /** Disabled state. */
@@ -35,13 +36,14 @@ export interface MenuItem {
 interface Props {
   x: number;
   y: number;
-  /** Optional header — kicker + main line shown above the items. */
-  title?: { kicker?: string; main?: string };
+  /** Optional header — kicker + main line (+ sub) shown above the items. */
+  title?: { kicker?: string; main?: React.ReactNode; sub?: React.ReactNode };
   items: MenuItem[];
+  width?: number;
   onClose: () => void;
 }
 
-export function ContextMenu({ x, y, title, items, onClose }: Props) {
+export function ContextMenu({ x, y, title, items, width = 264, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export function ContextMenu({ x, y, title, items, onClose }: Props) {
   }, [onClose]);
 
   // Clamp to viewport
-  const W = 240;
+  const W = width;
   const H = items.length * 32 + (title ? 48 : 0) + 16;
   const safeX = Math.min(x, window.innerWidth - W - 8);
   const safeY = Math.min(y, window.innerHeight - H - 8);
@@ -84,7 +86,10 @@ export function ContextMenu({ x, y, title, items, onClose }: Props) {
               </div>
             )}
             {title.main && (
-              <div className="text-body text-nx-text mt-0.5 truncate">{title.main}</div>
+              <div className="text-[12px] text-nx-soft mt-[3px] truncate">{title.main}</div>
+            )}
+            {title.sub && (
+              <div className="text-[11px] text-nx-muted mt-[1px] truncate">{title.sub}</div>
             )}
           </div>
           <PopoverDivider />
@@ -98,7 +103,7 @@ export function ContextMenu({ x, y, title, items, onClose }: Props) {
           <PopoverItem
             key={`${i}-${it.label}`}
             icon={it.icon}
-            shortcut={it.shortcut}
+            trailing={it.trailing}
             destructive={it.destructive}
             active={it.checked}
             disabled={it.disabled}

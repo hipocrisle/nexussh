@@ -61,11 +61,39 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
   // Reset grid selection whenever the visible set changes (search / category).
   useEffect(() => setSelIdx(-1), [q, cat]);
 
-  // Pointer-based drag-reorder. HTML5 `draggable` doesn't fire reliably in
-  // Tauri/webkit, so we grab on the grip (onDragStart sets dragId) and track
-  // the pointer over tiles via elementFromPoint + [data-snippet-id].
+  // Mouse drag-reorder over the WHOLE tile. HTML5 `draggable` doesn't fire
+  // reliably in Tauri/webkit, so: mousedown anywhere on a tile arms a pending
+  // drag; once the pointer moves past a threshold it becomes a real drag (so a
+  // plain click still runs the snippet); we track the hovered tile via
+  // elementFromPoint + [data-snippet-id] and reorder on mouseup.
   const overIdRef = useRef<string | null>(null);
   overIdRef.current = overId;
+  const pendingRef = useRef<{ id: string; x: number; y: number } | null>(null);
+  const draggedRef = useRef(false);
+
+  // Arm-to-drag: watch for movement past the threshold after a tile mousedown.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const p = pendingRef.current;
+      if (!p || dragId) return;
+      if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 6) {
+        draggedRef.current = true; // suppress the click-to-run that follows
+        setDragId(p.id);
+        pendingRef.current = null;
+      }
+    };
+    const onUp = () => {
+      pendingRef.current = null;
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [dragId]);
+
+  // Active drag: track the hovered tile + drop on mouseup.
   useEffect(() => {
     if (!dragId) return;
     const onMove = (e: MouseEvent) => {
@@ -336,13 +364,24 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync }: Pr
                   selected={selIdx === i}
                   dragging={dragId === s.id}
                   over={overId === s.id}
-                  onRun={() => run(s)}
+                  onRun={() => {
+                    // A drag just happened on this tile → swallow the click.
+                    if (draggedRef.current) {
+                      draggedRef.current = false;
+                      return;
+                    }
+                    run(s);
+                  }}
                   onEdit={() => setEditing(s)}
                   onDelete={async () => {
                     if (await askConfirm(t("snippets.delete_confirm", { name: s.name })))
                       deleteSnippet(s.id);
                   }}
-                  onDragStart={() => setDragId(s.id)}
+                  onMouseDownTile={(e) => {
+                    if (e.button !== 0) return; // left-button only
+                    pendingRef.current = { id: s.id, x: e.clientX, y: e.clientY };
+                    draggedRef.current = false;
+                  }}
                 />
               ))}
             </div>
@@ -468,7 +507,7 @@ function SnippetTile({
   onRun,
   onEdit,
   onDelete,
-  onDragStart,
+  onMouseDownTile,
 }: {
   s: Snippet;
   selected: boolean;
@@ -477,15 +516,16 @@ function SnippetTile({
   onRun: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  onDragStart: () => void;
+  onMouseDownTile: (e: React.MouseEvent) => void;
 }) {
   const { t } = useTranslation();
   return (
     <div
       data-snippet-id={s.id}
+      onMouseDown={onMouseDownTile}
       onClick={onRun}
       className={[
-        "group relative border rounded-[7px] bg-nx-bg p-[13px_14px] min-h-[104px] flex flex-col gap-2 cursor-pointer",
+        "group relative border rounded-[7px] bg-nx-bg p-[13px_14px] min-h-[104px] flex flex-col gap-2 cursor-grab active:cursor-grabbing",
         "transition-[border-color,box-shadow,background,transform] duration-90",
         dragging ? "opacity-40" : "",
         over
@@ -532,13 +572,7 @@ function SnippetTile({
       <div className="text-lead text-nx-accent font-medium flex items-center gap-1.5 pr-16">
         <GripVertical
           size={13}
-          onClick={(e) => e.stopPropagation()}
-          onMouseDown={(e) => {
-            e.stopPropagation(); // don't trigger run; start a mouse-drag
-            e.preventDefault();
-            onDragStart();
-          }}
-          className="text-nx-muted opacity-40 group-hover:opacity-70 cursor-grab shrink-0 hover:text-nx-accent"
+          className="text-nx-muted opacity-40 group-hover:opacity-70 shrink-0"
         />
         <span className="truncate">{s.name}</span>
       </div>

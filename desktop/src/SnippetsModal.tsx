@@ -25,6 +25,11 @@ import {
 } from "./snippets";
 import { Button, Input, Checkbox, Toggle, RowLabel } from "./components/primitives";
 import { useBackdropClose } from "./useBackdropClose";
+import { askPrompt, askConfirm } from "./dialogs";
+import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+
+const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   onClose: () => void;
@@ -45,10 +50,13 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
   const [syncOn, setSyncOn] = useState(snippetsSyncEnabled());
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [selIdx, setSelIdx] = useState(-1);
   const fileRef = useRef<HTMLInputElement>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
   useEffect(() => onSnippetsChanged(() => setList(listSnippets())), []);
+  // Reset grid selection whenever the visible set changes (search / category).
+  useEffect(() => setSelIdx(-1), [q, cat]);
 
   const categories = listCategories();
   const needle = q.trim().toLowerCase();
@@ -62,18 +70,22 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
 
   const hasTerminal = !!activeCtx;
 
-  function run(s: Snippet) {
+  async function run(s: Snippet) {
     if (!hasTerminal) {
       onToast?.(t("snippets.no_terminal"), "error");
       return;
     }
-    if (s.confirm && !window.confirm(t("snippets.confirm_run", { name: s.name }))) return;
+    if (s.confirm && !(await askConfirm(t("snippets.confirm_run", { name: s.name })))) return;
     const cmd = expandPlaceholders(s.command, activeCtx);
     onRun(cmd + (s.autoRun ? "\r" : ""));
     onClose();
   }
 
-  // In-modal hotkeys: 1–9 run the matching snippet, Esc closes (unless editing).
+  // In-modal keyboard. Поиск всегда в фокусе, поэтому:
+  //  • поле ПУСТОЕ → цифры 1–9 запускают сниппет с этим хоткеем (пусто=хоткеи);
+  //  • есть текст → цифры идут в фильтр (печать=поиск), запуск ↵ по выделенному;
+  //  • ←→↑↓ двигают выделение по гриду (2 кол), ↵ запускает выделенную плитку;
+  //  • Esc закрывает.
   useEffect(() => {
     if (editing) return;
     const onKey = (e: KeyboardEvent) => {
@@ -81,19 +93,37 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
         onClose();
         return;
       }
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      const empty = !q.trim();
       const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= 9) {
+      if (empty && n >= 1 && n <= 9) {
         const s = list.find((x) => x.hotkey === n);
         if (s) {
           e.preventDefault();
-          run(s);
+          void run(s);
         }
+        return;
+      }
+      if (["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        if (filtered.length === 0) return;
+        e.preventDefault();
+        const cols = 2;
+        setSelIdx((i) => {
+          if (i < 0) return 0;
+          if (e.key === "ArrowRight") return Math.min(filtered.length - 1, i + 1);
+          if (e.key === "ArrowLeft") return Math.max(0, i - 1);
+          if (e.key === "ArrowDown") return Math.min(filtered.length - 1, i + cols);
+          return Math.max(0, i - cols); // ArrowUp
+        });
+        return;
+      }
+      if (e.key === "Enter" && selIdx >= 0 && filtered[selIdx]) {
+        e.preventDefault();
+        void run(filtered[selIdx]);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [list, editing, hasTerminal, activeCtx]);
+  }, [list, filtered, selIdx, editing, hasTerminal, activeCtx, q]);
 
   function onDrop(targetId: string) {
     if (!dragId || dragId === targetId) {
@@ -113,14 +143,46 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
     setOverId(null);
   }
 
-  function exportFile() {
-    const blob = new Blob([exportSnippets()], { type: "application/json" });
+  async function exportFile() {
+    const json = exportSnippets();
+    if (HAS_TAURI) {
+      // Tauri: ask WHERE to save (browser <a download> silently dumps to Downloads).
+      try {
+        const path = await saveFileDialog({
+          defaultPath: "nexussh-snippets.json",
+          filters: [{ name: "JSON", extensions: ["json"] }],
+        });
+        if (!path) return; // cancelled
+        await writeTextFile(path, json);
+        onToast?.(t("snippets.export_done"));
+      } catch {
+        /* cancelled / fs error */
+      }
+      return;
+    }
+    // Web fallback: browser download.
+    const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
     a.download = "nexussh-snippets.json";
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function importTauri() {
+    try {
+      const path = await openFileDialog({
+        multiple: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (typeof path !== "string") return;
+      const txt = await readTextFile(path);
+      const { added, skipped } = importSnippets(txt);
+      onToast?.(t("snippets.import_done", { added, skipped }));
+    } catch {
+      /* cancelled / fs error */
+    }
   }
 
   function importFile(file: File) {
@@ -204,8 +266,8 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
             </CatChip>
           ))}
           <button
-            onClick={() => {
-              const n = window.prompt(t("snippets.new_category"));
+            onClick={async () => {
+              const n = await askPrompt(t("snippets.new_category"));
               if (n?.trim()) addCategory(n.trim());
             }}
             className="inline-flex items-center gap-1.5 px-2.5 py-[5px] rounded-full border border-dashed border-nx-border text-nx-soft text-meta hover:text-nx-accent hover:border-nx-accent"
@@ -220,16 +282,17 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
             <SnippetEmpty onCreate={() => setEditing("new")} hasAny={list.length > 0} />
           ) : (
             <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
-              {filtered.map((s) => (
+              {filtered.map((s, i) => (
                 <SnippetTile
                   key={s.id}
                   s={s}
+                  selected={selIdx === i}
                   dragging={dragId === s.id}
                   over={overId === s.id}
                   onRun={() => run(s)}
                   onEdit={() => setEditing(s)}
-                  onDelete={() => {
-                    if (window.confirm(t("snippets.delete_confirm", { name: s.name })))
+                  onDelete={async () => {
+                    if (await askConfirm(t("snippets.delete_confirm", { name: s.name })))
                       deleteSnippet(s.id);
                   }}
                   onDragStart={() => setDragId(s.id)}
@@ -256,7 +319,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
             {t("snippets.add")}
           </Button>
           <button
-            onClick={() => fileRef.current?.click()}
+            onClick={() => (HAS_TAURI ? importTauri() : fileRef.current?.click())}
             className="inline-flex items-center gap-1.5 text-meta text-nx-muted hover:text-nx-text"
           >
             <Download size={13} /> {t("snippets.import")}
@@ -344,6 +407,7 @@ function CatChip({
 
 function SnippetTile({
   s,
+  selected,
   dragging,
   over,
   onRun,
@@ -355,6 +419,7 @@ function SnippetTile({
   onDragEnd,
 }: {
   s: Snippet;
+  selected: boolean;
   dragging: boolean;
   over: boolean;
   onRun: () => void;
@@ -370,9 +435,15 @@ function SnippetTile({
     <div
       draggable
       onClick={onRun}
-      onDragStart={onDragStart}
+      onDragStart={(e) => {
+        // webkit/Tauri only starts a drag once dataTransfer carries something.
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", s.id);
+        onDragStart();
+      }}
       onDragOver={(e) => {
         e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
         onDragOver();
       }}
       onDrop={(e) => {
@@ -384,7 +455,11 @@ function SnippetTile({
         "group relative border rounded-[7px] bg-nx-bg p-[13px_14px] min-h-[104px] flex flex-col gap-2 cursor-pointer",
         "transition-[border-color,box-shadow,background,transform] duration-90",
         dragging ? "opacity-40" : "",
-        over ? "border-dashed border-nx-accent bg-[rgba(0,255,149,0.04)]" : "border-nx-border hover:border-nx-accent hover:shadow-[0_0_0_1px_var(--nx-accent-glow)]",
+        over
+          ? "border-dashed border-nx-accent bg-[rgba(0,255,149,0.04)]"
+          : selected
+            ? "border-nx-accent bg-[linear-gradient(180deg,rgba(0,255,149,0.06),transparent)] shadow-[0_0_0_1px_var(--nx-accent),0_0_24px_var(--nx-accent-glow)]"
+            : "border-nx-border hover:border-nx-accent hover:shadow-[0_0_0_1px_var(--nx-accent-glow)]",
       ].join(" ")}
     >
       {/* hotkey chip */}
@@ -571,8 +646,8 @@ function SnippetEditor({
                 </button>
               ))}
               <button
-                onClick={() => {
-                  const n = window.prompt(t("snippets.new_category"));
+                onClick={async () => {
+                  const n = await askPrompt(t("snippets.new_category"));
                   const nn = n?.trim();
                   if (nn) {
                     addCategory(nn);

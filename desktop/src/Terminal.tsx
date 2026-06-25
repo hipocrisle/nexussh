@@ -989,6 +989,9 @@ export function TerminalView({
       if (ce.detail?.sessionId !== sessionId) return;
       termRef.current?.clearSelection();
       setHandles(null);
+      // Snippet/paste sent → return focus to the terminal so the user can keep
+      // typing without a mouse click (desktop only — focus pops the mobile kbd).
+      if (!isMobileRef.current) termRef.current?.focus();
     };
     window.addEventListener("nx:input", onInput);
     return () => window.removeEventListener("nx:input", onInput);

@@ -3865,7 +3865,14 @@ function App() {
         <SnippetsModal
           onClose={() => setSnippetsOpen(false)}
           onRun={(data) => {
-            if (activeId) sshSend(activeId, new TextEncoder().encode(data));
+            if (activeId) {
+              sshSend(activeId, new TextEncoder().encode(data));
+              // Nudge the terminal to clear selection + take focus (so the user
+              // can type right after a snippet, no mouse click needed).
+              window.dispatchEvent(
+                new CustomEvent("nx:input", { detail: { sessionId: activeId } }),
+              );
+            }
           }}
           activeCtx={
             focusedSession

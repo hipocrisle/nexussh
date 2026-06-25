@@ -11,6 +11,17 @@ import {
   Search,
   Server,
   Zap,
+  RotateCcw,
+  SplitSquareHorizontal,
+  SplitSquareVertical,
+  ArrowLeftRight,
+  SquarePen,
+  XSquare,
+  FolderInput,
+  Folder,
+  X,
+  Plus,
+  Copy,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -40,6 +51,8 @@ import { StatusLine } from "./StatusLine";
 import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
+import { ConnectError } from "./ConnectError";
+import { parseConnectError } from "./connectError";
 const UpdatePanel = lazy(() =>
   import("./UpdatePanel").then((m) => ({ default: m.UpdatePanel })),
 );
@@ -2171,6 +2184,7 @@ function App() {
     const items: MenuItem[] = [
       {
         label: t("tabmenu.restart"),
+        icon: <RotateCcw size={13} />,
         onClick: () => {
           if (focusedSid) restartSession(focusedSid);
         },
@@ -2181,6 +2195,7 @@ function App() {
       // don't re-prompt; alwaysAsk hosts prompt as usual).
       {
         label: t("tabmenu.duplicate"),
+        icon: <Copy size={13} />,
         onClick: () => {
           if (focusedHost) openHost(focusedHost);
         },
@@ -2192,11 +2207,13 @@ function App() {
         ? [
             {
               label: t("tabmenu.split_right"),
+              icon: <SplitSquareHorizontal size={13} />,
               onClick: () => splitFocusedPane(wsId, "row"),
               disabled: !hasPanes,
             },
             {
               label: t("tabmenu.split_down"),
+              icon: <SplitSquareVertical size={13} />,
               onClick: () => splitFocusedPane(wsId, "col"),
               disabled: !hasPanes,
             },
@@ -2204,6 +2221,7 @@ function App() {
         : []),
       {
         label: t("sidebar.menu_sftp"),
+        icon: <Folder size={13} />,
         onClick: () => {
           if (focusedHost) openSftp(focusedHost);
         },
@@ -2211,6 +2229,7 @@ function App() {
       },
       {
         label: t("sidebar.menu_tunnel"),
+        icon: <ArrowLeftRight size={13} />,
         onClick: () => {
           if (focusedHost) openTunnelFor(focusedHost);
         },
@@ -2225,6 +2244,7 @@ function App() {
           ? [
               {
                 label: t("tabmenu.save_host"),
+                icon: <Plus size={13} />,
                 onClick: () =>
                   setPrefillHost({
                     id: newHostId(),
@@ -2240,6 +2260,7 @@ function App() {
           : [
               {
                 label: t("tabmenu.edit_host"),
+                icon: <SquarePen size={13} />,
                 onClick: () => {
                   // Edit the live saved record (the session holds a snapshot
                   // that may be stale after edits elsewhere).
@@ -2274,6 +2295,7 @@ function App() {
     items.push({ separator: true, label: "" });
     items.push({
       label: t("tabmenu.close_current_tab"),
+      icon: <X size={13} />,
       onClick: () => {
         if (focused) closePane(wsId, focused.id);
       },
@@ -2282,6 +2304,7 @@ function App() {
     });
     items.push({
       label: t("tabmenu.close_others"),
+      icon: <XSquare size={13} />,
       onClick: () => closeOtherWorkspaces(wsId),
       disabled: workspaces.length <= 1,
       destructive: true,
@@ -2727,11 +2750,13 @@ function App() {
       items: [
         {
           label: t("tabmenu.restart"),
+          icon: <RotateCcw size={13} />,
           onClick: () => restartSession(sid),
           disabled: pane.session.status === "connecting",
         },
         {
           label: t("tabmenu.split_right"),
+          icon: <SplitSquareHorizontal size={13} />,
           onClick: () => {
             // Re-focus this pane first so the split lands next to it.
             setFocusedPane(wsId, paneId);
@@ -2740,6 +2765,7 @@ function App() {
         },
         {
           label: t("tabmenu.split_down"),
+          icon: <SplitSquareVertical size={13} />,
           onClick: () => {
             setFocusedPane(wsId, paneId);
             splitFocusedPane(wsId, "col");
@@ -2747,20 +2773,24 @@ function App() {
         },
         {
           label: t("sidebar.menu_sftp"),
+          icon: <Folder size={13} />,
           onClick: () => openSftp(host),
         },
         {
           label: t("sidebar.menu_tunnel"),
+          icon: <ArrowLeftRight size={13} />,
           onClick: () => openTunnelFor(host),
         },
         { separator: true, label: "" },
         {
           label: t("tabmenu.move_to_new_tab"),
+          icon: <FolderInput size={13} />,
           onClick: () => extractPaneToNewWorkspace(wsId, paneId),
           disabled: !canExtract,
         },
         {
           label: t("tabmenu.close_current_tab"),
+          icon: <X size={13} />,
           onClick: () => closePane(wsId, paneId),
           destructive: true,
         },
@@ -3104,38 +3134,21 @@ function App() {
                 </div>
               )}
               {p.session.error && (
-                <div
-                  style={{ ...cs, zIndex: 16 }}
-                  className="flex items-center justify-center p-6"
-                >
-                  <div
-                    className="max-w-2xl font-mono text-sm border rounded-nx p-4"
-                    style={{
-                      borderColor: theme.error,
-                      background: theme.bgPanel,
+                <div style={{ ...cs, zIndex: 16 }}>
+                  <ConnectError
+                    host={p.session.host.host}
+                    parsed={parseConnectError(p.session.error)}
+                    onRetry={() => restartSession(p.session.id)}
+                    onEditHost={() => {
+                      const id = p.session.host.id;
+                      listHosts()
+                        .then((all) =>
+                          setEditHost(all.find((h) => h.id === id) ?? p.session.host),
+                        )
+                        .catch(() => setEditHost(p.session.host));
                     }}
-                  >
-                    <div className="mb-2" style={{ color: theme.error }}>
-                      ✗{" "}
-                      {t("terminal.connect_failed", {
-                        host: p.session.host.host,
-                      })}
-                    </div>
-                    <pre
-                      className="mb-3 whitespace-pre-wrap break-words max-h-72 overflow-auto text-meta leading-relaxed"
-                      style={{ color: theme.textSoft, userSelect: "text" }}
-                    >
-                      {p.session.error}
-                    </pre>
-                    <button
-                      type="button"
-                      onClick={() => restartSession(p.session.id)}
-                      className="px-3 py-1 rounded-nx-sm border cursor-pointer hover:opacity-80"
-                      style={{ borderColor: theme.border, color: theme.accent }}
-                    >
-                      {t("terminal.retry")}
-                    </button>
-                  </div>
+                    onClose={() => closePane(ws.id, p.id)}
+                  />
                 </div>
               )}
             </Fragment>

@@ -330,6 +330,11 @@ html[data-os="linux"][data-squared] #root > main {
   .nx-brackets::after  { top: 0;    right: 0;   border-width: 1px 1px 0 0; }
   .nx-brackets > i::before { bottom: 0; left: 0;  border-width: 0 0 1px 1px; }
   .nx-brackets > i::after  { bottom: 0; right: 0; border-width: 0 1px 1px 0; }
+  /* Error variant — red corner brackets for the connect-error card (step 13). */
+  .nx-brackets--error::before,
+  .nx-brackets--error::after,
+  .nx-brackets--error > i::before,
+  .nx-brackets--error > i::after { border-color: var(--nx-error); }
 
   /* Selected list row — left accent bar + soft gradient.
      Apply with className="nx-row" data-active={isSelected}. */

@@ -52,7 +52,7 @@ import type { ConnectArgs } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import { ConnectError } from "./ConnectError";
-import { parseConnectError } from "./connectError";
+import { parseConnectError } from "./connect-error";
 const UpdatePanel = lazy(() =>
   import("./UpdatePanel").then((m) => ({ default: m.UpdatePanel })),
 );

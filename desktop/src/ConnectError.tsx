@@ -5,7 +5,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, X, ChevronRight, Copy, Check, RotateCcw, SquarePen } from "lucide-react";
 import { Button } from "./components/primitives";
-import { ParsedError } from "./connectError";
+import { ParsedError } from "./connect-error";
 
 interface Props {
   host: string;

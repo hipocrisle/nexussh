@@ -10,6 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { notifyHostsChanged } from "./hosts";
+import { pullSnippetsToLocal } from "./snippets";
 
 /** Snapshot of account + sync state (no secrets). */
 export interface AccountStatus {
@@ -148,6 +149,8 @@ export async function accountSyncNow(): Promise<SyncReport> {
   // Nudge the UI to re-read so the tree updates WITHOUT a client restart
   // (fixes: synced node only appeared after restart).
   notifyHostsChanged();
+  // Snippets ride a global vault blob — pull it back into localStorage.
+  await pullSnippetsToLocal();
   return report;
 }
 

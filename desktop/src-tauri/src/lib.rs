@@ -309,6 +309,8 @@ pub fn run() {
             account::account_totp_disable,
             account::account_sync_now,
             account::account_record_tombstones,
+            account::account_touch_snippets,
+            account::account_tombstone_snippets,
             updater::check_for_update,
             updater::install_update,
             android_updater::android_install_apk,

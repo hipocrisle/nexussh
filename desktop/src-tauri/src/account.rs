@@ -269,6 +269,11 @@ const USER_KEY_VAULT_KEY: &str = "__account_user_key__";
 const ITEM_TYPE_HOST: &str = "host";
 const ITEM_TYPE_HOST_PASSWORD: &str = "host-password";
 const ITEM_TYPE_KNOWN_HOST: &str = "known_host";
+const ITEM_TYPE_SNIPPETS: &str = "snippets";
+
+/// Global vault key holding the JSON snippets blob. Synced as a single item
+/// (item_id == this key) when the device opts in (frontend writes the blob here).
+pub const SNIPPETS_KEY: &str = "nexussh.snippets";
 
 /// Synthetic item_id for a host record. NOT a vault key (the record lives inside
 /// `__hostlist__`); we coin it so the server can store the record per-host.
@@ -292,7 +297,9 @@ fn known_host_key(id: &str) -> String {
 /// `.password` suffix is the record itself; `host.<id>.password` is the password
 /// secret; `nexussh.known_hosts.<id>` is a host-key pin.
 pub fn item_type_for_key(key: &str) -> &'static str {
-    if key.starts_with("nexussh.known_hosts.") {
+    if key == SNIPPETS_KEY {
+        ITEM_TYPE_SNIPPETS
+    } else if key.starts_with("nexussh.known_hosts.") {
         ITEM_TYPE_KNOWN_HOST
     } else if key.starts_with("host.") && key.ends_with(".password") {
         ITEM_TYPE_HOST_PASSWORD
@@ -1050,6 +1057,29 @@ pub async fn account_record_tombstones(app: AppHandle, host_ids: Vec<String>) ->
     Ok(())
 }
 
+/// Bump the snippets blob's content timestamp so the next sync pushes it.
+/// Frontend calls this after writing SNIPPETS_KEY (a snippet was edited while
+/// snippet-sync is on), so LWW detects the change.
+#[tauri::command]
+pub async fn account_touch_snippets(app: AppHandle) -> Result<()> {
+    let mut cfg = load_config(&app)?;
+    cfg.updated_at.insert(SNIPPETS_KEY.to_string(), now_ms());
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
+/// Record an explicit tombstone for the global snippets blob (sync toggle turned
+/// OFF). Explicit-only, like host deletions — never inferred — so an empty/locked
+/// vault can't mass-delete snippets across devices.
+#[tauri::command]
+pub async fn account_tombstone_snippets(app: AppHandle) -> Result<()> {
+    let mut cfg = load_config(&app)?;
+    cfg.tombstones.entry(SNIPPETS_KEY.to_string()).or_insert(now_ms());
+    cfg.synced_item_ids.remove(SNIPPETS_KEY);
+    save_config(&app, &cfg)?;
+    Ok(())
+}
+
 // ===========================================================================
 // TOTP enroll / verify
 // ===========================================================================
@@ -1398,8 +1428,11 @@ pub async fn account_sync_now(
             continue;
         }
 
-        // ---- secret items (password / known_host) → vault per-key ----------
-        if itype != ITEM_TYPE_HOST_PASSWORD && itype != ITEM_TYPE_KNOWN_HOST {
+        // ---- secret/blob items (password / known_host / snippets) → vault ---
+        if itype != ITEM_TYPE_HOST_PASSWORD
+            && itype != ITEM_TYPE_KNOWN_HOST
+            && itype != ITEM_TYPE_SNIPPETS
+        {
             // Not a host-owned item (e.g. a stale `__hostlist__`/`other`); ignore.
             cfg.item_revs.insert(key.clone(), item.rev);
             report.latest_rev = report.latest_rev.max(item.rev);
@@ -1600,6 +1633,30 @@ fn build_push_changes(
                     base_rev: s_base,
                 });
             }
+        }
+    }
+
+    // --- global snippets blob (opt-in) ----------------------------------
+    // The frontend writes the JSON snippets array into SNIPPETS_KEY when the
+    // device's snippet-sync toggle is on, and bumps updated_at via
+    // `account_touch_snippets` on every edit. We push it as ONE item. When the
+    // toggle goes off, the frontend records an explicit tombstone (never diffed).
+    if let Some(value) = vault::get_opt(vault_state, SNIPPETS_KEY) {
+        flagged_now.insert(SNIPPETS_KEY.to_string(), 1);
+        let g_updated = *cfg.updated_at.entry(SNIPPETS_KEY.to_string()).or_insert_with(now_ms);
+        let g_base = cfg.item_revs.get(SNIPPETS_KEY).copied().unwrap_or(0);
+        let g_changed =
+            !cfg.did_initial_push || g_base == 0 || g_updated > cfg.last_sync_at.unwrap_or(0);
+        if g_changed {
+            let ct = ac::encrypt_item(value.as_bytes(), user_key)?;
+            changes.push(PushChange {
+                item_id: SNIPPETS_KEY.to_string(),
+                r#type: ITEM_TYPE_SNIPPETS.to_string(),
+                ciphertext: B64.encode(&ct),
+                updated_at: g_updated,
+                deleted: false,
+                base_rev: g_base,
+            });
         }
     }
 
@@ -1880,6 +1937,15 @@ mod tests {
         assert_eq!(item_type_for_key("some.random.key"), "other");
         // __hostlist__ is NEVER a syncable item type.
         assert_eq!(item_type_for_key("__hostlist__"), "other");
+    }
+
+    #[test]
+    fn type_for_snippets() {
+        // The global snippets blob is its own syncable type, not "other".
+        assert_eq!(item_type_for_key(SNIPPETS_KEY), "snippets");
+        assert_eq!(item_type_for_key("nexussh.snippets"), "snippets");
+        // Doesn't collide with host items.
+        assert_eq!(item_type_for_key("host.x"), "host");
     }
 
     #[test]

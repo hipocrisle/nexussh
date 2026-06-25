@@ -28,7 +28,7 @@ import { Button, Input, Checkbox, Toggle, RowLabel } from "./components/primitiv
 import { useBackdropClose } from "./useBackdropClose";
 import { askPrompt, askConfirm } from "./dialogs";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
+import { readFile, writeFile } from "@tauri-apps/plugin-fs";
 
 const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -66,7 +66,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
   overIdRef.current = overId;
   useEffect(() => {
     if (!dragId) return;
-    const onMove = (e: PointerEvent) => {
+    const onMove = (e: MouseEvent) => {
       const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
         "[data-snippet-id]",
       );
@@ -79,11 +79,11 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
       else setDragId(null);
       setOverId(null);
     };
-    document.addEventListener("pointermove", onMove);
-    document.addEventListener("pointerup", onUp);
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
     return () => {
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragId]);
@@ -183,7 +183,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
           filters: [{ name: "JSON", extensions: ["json"] }],
         });
         if (!path) return; // cancelled
-        await writeTextFile(path, json);
+        await writeFile(path, new TextEncoder().encode(json));
         onToast?.(t("snippets.export_done"));
       } catch {
         /* cancelled / fs error */
@@ -207,7 +207,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast }: Props) {
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (typeof path !== "string") return;
-      const txt = await readTextFile(path);
+      const txt = new TextDecoder().decode(await readFile(path));
       const { added, skipped } = importSnippets(txt);
       onToast?.(t("snippets.import_done", { added, skipped }));
     } catch {
@@ -522,8 +522,9 @@ function SnippetTile({
         <GripVertical
           size={13}
           onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => {
-            e.stopPropagation(); // don't trigger run; start a pointer-drag
+          onMouseDown={(e) => {
+            e.stopPropagation(); // don't trigger run; start a mouse-drag
+            e.preventDefault();
             onDragStart();
           }}
           className="text-nx-muted opacity-40 group-hover:opacity-70 cursor-grab shrink-0 hover:text-nx-accent"

@@ -60,8 +60,18 @@
 |----|------|-----|
 | Windows | `NexuSSH_*_x64-setup.exe` | двойной клик |
 | Linux (Debian/Ubuntu) | `NexuSSH_*_amd64.deb` | `sudo apt install ./NexuSSH_*_amd64.deb` |
-| Linux (Fedora/RHEL) | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| Linux (Fedora) | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| Linux (RHEL/Rocky/Alma/Oracle/CentOS) | `NexuSSH_*.x86_64.rpm` | **сначала EPEL** → `sudo dnf install -y epel-release`, затем `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
 | Android | `NexuSSH_*.apk` | установить подписанный APK |
+
+> ⚠️ **RHEL-семейство (Rocky / AlmaLinux / Oracle / CentOS): сначала подключите EPEL.**
+> rpm требует `webkit2gtk4.1`, который в enterprise-Linux есть **только в EPEL**:
+> ```
+> sudo dnf install -y epel-release
+> sudo dnf install ./NexuSSH_*.x86_64.rpm
+> ```
+> После подключения EPEL rpm ставится и двойным кликом. (В Fedora `webkit2gtk4.1`
+> в базовых репозиториях — EPEL не нужен.)
 
 Linux-сборки используют системный WebKit (`.deb`/`.rpm`), не AppImage. Встроенное
 **Установить и перезапустить** держит версию актуальной.

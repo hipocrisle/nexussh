@@ -60,8 +60,18 @@ From the **[releases page](https://github.com/hipocrisle/nexussh/releases/latest
 |----|------|-----|
 | Windows | `NexuSSH_*_x64-setup.exe` | double-click |
 | Linux (Debian/Ubuntu) | `NexuSSH_*_amd64.deb` | `sudo apt install ./NexuSSH_*_amd64.deb` |
-| Linux (Fedora/RHEL) | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| Linux (Fedora) | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| Linux (RHEL/Rocky/Alma/Oracle/CentOS) | `NexuSSH_*.x86_64.rpm` | **EPEL first** → `sudo dnf install -y epel-release`, then `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
 | Android | `NexuSSH_*.apk` | install the signed APK |
+
+> ⚠️ **RHEL-family (Rocky / AlmaLinux / Oracle / CentOS Stream): enable EPEL first.**
+> The rpm needs `webkit2gtk4.1`, which on enterprise Linux ships **only via EPEL**:
+> ```
+> sudo dnf install -y epel-release
+> sudo dnf install ./NexuSSH_*.x86_64.rpm
+> ```
+> After EPEL is enabled the rpm installs by double-click too. (Fedora has
+> `webkit2gtk4.1` in base repos — no EPEL needed there.)
 
 Linux builds use the system WebKit (`.deb`/`.rpm`), not AppImage. The in-app
 **Install & restart** keeps it current.

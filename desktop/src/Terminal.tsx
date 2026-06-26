@@ -289,8 +289,17 @@ export function TerminalView({
     term.loadAddon(searchAddon);
     searchAddonRef.current = searchAddon;
     const searchResultsDisposable = searchAddon.onDidChangeResults(
-      ({ resultIndex, resultCount }) =>
-        setFindInfo({ idx: resultIndex, count: resultCount }),
+      ({ resultIndex, resultCount }) => {
+        setFindInfo({ idx: resultIndex, count: resultCount });
+        // The search addon SELECTS the active match to navigate to it. On
+        // Linux/WebKit a selection bleeds into the PRIMARY/clipboard buffer, and
+        // the addon re-runs on every new output — so a freshly-printed line that
+        // contains the query would auto-select+copy it (the reported bug: pressing
+        // Enter in the terminal copies the matched text). The decoration border
+        // already marks the active match, so we drop the selection. Gated on find
+        // being open → real user drag-selections are never touched.
+        if (findOpenRef.current) term.clearSelection();
+      },
     );
     term.open(containerRef.current);
     fitIfVisible(containerRef.current, fit);

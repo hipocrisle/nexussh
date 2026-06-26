@@ -30,6 +30,7 @@
 
 use age::secrecy::ExposeSecret;
 use age::x25519::{Identity, Recipient};
+use rayon::prelude::*;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -314,26 +315,36 @@ pub async fn history_list(
 ) -> Result<Vec<SessionMeta>, HistoryError> {
     let identity = load_identity(&app, &vault_state)?;
     let dir = history_dir(&app)?;
-    let mut out = vec![];
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let path = e.path();
-            if path.extension().and_then(|x| x.to_str()) == Some("meta") {
-                // Skip a recording whose meta won't decrypt rather than failing
-                // the whole list.
-                if let Ok(m) = read_meta(&path, &identity) {
-                    // Hide phantom recordings whose data file is missing or empty
-                    // (nothing was ever flushed) — they'd show as "N KB, no output".
-                    let has_data = std::fs::metadata(rec_path(&dir, &m.id))
-                        .map(|md| md.len() > 0)
-                        .unwrap_or(false);
-                    if has_data {
-                        out.push(m);
-                    }
-                }
+    // Collect .meta paths first, then decrypt them IN PARALLEL. age-decrypt is
+    // CPU-bound; doing all recordings serially made the first open slow (seconds
+    // for ~500 records). rayon spreads the work across cores — the age identity
+    // is shared read-only, so this is safe.
+    let paths: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("meta"))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut out: Vec<SessionMeta> = paths
+        .par_iter()
+        .filter_map(|path| {
+            // Skip a recording whose meta won't decrypt rather than failing the
+            // whole list.
+            let m = read_meta(path, &identity).ok()?;
+            // Hide phantom recordings whose data file is missing or empty
+            // (nothing was ever flushed) — they'd show as "N KB, no output".
+            let has_data = std::fs::metadata(rec_path(&dir, &m.id))
+                .map(|md| md.len() > 0)
+                .unwrap_or(false);
+            if has_data {
+                Some(m)
+            } else {
+                None
             }
-        }
-    }
+        })
+        .collect();
     out.sort_by(|a, b| b.start.cmp(&a.start));
     Ok(out)
 }

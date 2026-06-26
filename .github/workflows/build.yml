@@ -160,10 +160,11 @@ jobs:
             | **Windows** | запустить `NexuSSH_*_x64-setup.exe` |
             | **Debian/Ubuntu** | `sudo apt install ./NexuSSH_*_amd64.deb` |
             | **Fedora** | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
-            | **RHEL / Rocky / Alma / Oracle / CentOS** | ⚠️ сначала EPEL (см. ниже) |
+            | **RHEL / Rocky / Alma / Oracle / CentOS 10** | ⚠️ сначала EPEL (см. ниже) |
 
-            > ⚠️ **RHEL-семейство (Rocky / Alma / Oracle / CentOS): сначала подключите EPEL.**
-            > rpm требует `webkit2gtk4.1`, который в enterprise-Linux есть **только в EPEL**:
+            > ⚠️ **RHEL-семейство — поддерживается только версия 10.** На EL10
+            > `webkit2gtk4.1` есть в EPEL; версии **8 и 9 его НЕ имеют** (там только
+            > старый webkit 4.0, Tauri 2 его не умеет). Установка на EL10:
             > ```
             > sudo dnf install -y epel-release
             > sudo dnf install ./NexuSSH_*.x86_64.rpm

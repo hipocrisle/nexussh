@@ -61,11 +61,13 @@ From the **[releases page](https://github.com/hipocrisle/nexussh/releases/latest
 | Windows | `NexuSSH_*_x64-setup.exe` | double-click |
 | Linux (Debian/Ubuntu) | `NexuSSH_*_amd64.deb` | `sudo apt install ./NexuSSH_*_amd64.deb` |
 | Linux (Fedora) | `NexuSSH_*.x86_64.rpm` | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
-| Linux (RHEL/Rocky/Alma/Oracle/CentOS) | `NexuSSH_*.x86_64.rpm` | **EPEL first** → `sudo dnf install -y epel-release`, then `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
+| Linux (RHEL/Rocky/Alma/Oracle/CentOS **10**) | `NexuSSH_*.x86_64.rpm` | **EPEL first** → `sudo dnf install -y epel-release`, then `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
 | Android | `NexuSSH_*.apk` | install the signed APK |
 
-> ⚠️ **RHEL-family (Rocky / AlmaLinux / Oracle / CentOS Stream): enable EPEL first.**
-> The rpm needs `webkit2gtk4.1`, which on enterprise Linux ships **only via EPEL**:
+> ⚠️ **RHEL-family — only version 10 is supported.** RHEL/Rocky/Alma/Oracle/CentOS
+> **10** have `webkit2gtk4.1` in EPEL; versions **8 and 9 do NOT have it at all**
+> (base, EPEL or CRB) — only the older 4.0 webkit, which Tauri 2 can't use. So the
+> rpm installs on **EL10 only**:
 > ```
 > sudo dnf install -y epel-release
 > sudo dnf install ./NexuSSH_*.x86_64.rpm

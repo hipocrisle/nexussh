@@ -232,6 +232,10 @@ export function TerminalView({
   searchOptsRef.current = searchOpts;
   // Refs so the mount-once key handler / window listener get fresh setters.
   const findOpenRef = useRef(false);
+  // Set true right before an intentional search (typing query / Next / Prev) so
+  // onDidChangeResults keeps that match selected for navigation; auto re-search
+  // on new output leaves it false → selection is cleared (no clipboard bleed).
+  const userFindRef = useRef(false);
   findOpenRef.current = findOpen;
   const openFindRef = useRef<() => void>(() => {});
   openFindRef.current = () => {
@@ -255,6 +259,7 @@ export function TerminalView({
   function runFind(forward: boolean) {
     const a = searchAddonRef.current;
     if (!a || !findQuery) return;
+    userFindRef.current = true; // intentional navigation — keep the match selected
     if (forward) a.findNext(findQuery, searchOptsRef.current);
     else a.findPrevious(findQuery, searchOptsRef.current);
   }
@@ -291,14 +296,19 @@ export function TerminalView({
     const searchResultsDisposable = searchAddon.onDidChangeResults(
       ({ resultIndex, resultCount }) => {
         setFindInfo({ idx: resultIndex, count: resultCount });
-        // The search addon SELECTS the active match to navigate to it. On
-        // Linux/WebKit a selection bleeds into the PRIMARY/clipboard buffer, and
-        // the addon re-runs on every new output — so a freshly-printed line that
-        // contains the query would auto-select+copy it (the reported bug: pressing
-        // Enter in the terminal copies the matched text). The decoration border
-        // already marks the active match, so we drop the selection. Gated on find
-        // being open → real user drag-selections are never touched.
-        if (findOpenRef.current) term.clearSelection();
+        // The search addon SELECTS the active match. KEEP that selection for an
+        // intentional search action (typing the query / Next / Prev) so findNext
+        // can navigate from it — otherwise clearing it broke stepping through
+        // matches. But the addon ALSO re-runs on every new terminal output, and
+        // that auto-select bleeds into the PRIMARY/clipboard buffer (bug: Enter in
+        // the terminal "copies" a matched line). For that case only (no pending
+        // user action) we drop the selection; the decoration border still marks
+        // matches.
+        if (userFindRef.current) {
+          userFindRef.current = false;
+        } else if (findOpenRef.current) {
+          term.clearSelection();
+        }
       },
     );
     term.open(containerRef.current);
@@ -1070,7 +1080,10 @@ export function TerminalView({
               const q = e.target.value;
               setFindQuery(q);
               const a = searchAddonRef.current;
-              if (a && q) a.findNext(q, searchOptsRef.current);
+              if (a && q) {
+                userFindRef.current = true; // typing the query is an intentional search
+                a.findNext(q, searchOptsRef.current);
+              }
               else if (a) {
                 a.clearDecorations?.();
                 setFindInfo({ idx: -1, count: 0 });

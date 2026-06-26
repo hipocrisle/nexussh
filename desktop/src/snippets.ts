@@ -1,13 +1,16 @@
 // Snippets — saved commands fired into the active SSH terminal with one click
-// or a 1–9 hotkey. Stored in localStorage (not secrets). Optional account-sync
-// rides the same encrypted channel as hosts when the per-device toggle is on:
-// the whole list is mirrored into vault key SNIPPETS_KEY (one blob), which the
-// Rust sync engine pushes/pulls; on pull we read the blob back into localStorage.
+// or a 1–9 hotkey. Stored in localStorage (not secrets). Optional account-sync:
+// the list is mirrored into the vault transport blob SNIPPETS_KEY, and the Rust
+// engine slices it into PER-SNIPPET `snippet.<id>` items (exactly like hosts) —
+// so add/edit/delete sync reliably first-try, no whole-blob LWW races. Each
+// snippet carries `updatedAt` (epoch-ms) as the per-item LWW key; deletions are
+// explicit per-item tombstones (account_record_snippet_tombstones).
 
 import { invoke } from "@tauri-apps/api/core";
 import { vaultGet, vaultSet, vaultDelete } from "./vault";
 
-/** Must match account.rs SNIPPETS_KEY (the global synced blob item). */
+/** Local transport blob — Rust slices it into snippet.<id> items. Must match
+ *  account.rs SNIPPETS_KEY. */
 const SNIPPETS_KEY = "nexussh.snippets";
 
 export interface Snippet {
@@ -24,10 +27,8 @@ export interface Snippet {
   category?: string;
   /** Manual drag-reorder position. */
   order: number;
-  /** Soft-delete tombstone — kept in the synced blob so deletions propagate
-   *  (union-merge can't drop ids). Filtered out of listSnippets(). */
-  _deleted?: boolean;
-  _deletedAt?: number;
+  /** epoch-ms of the last edit — per-item LWW key (like host updatedAt). */
+  updatedAt?: number;
 }
 
 const LS = "nexussh.snippets.v1";
@@ -42,60 +43,55 @@ interface LegacySnippet {
   enter?: boolean;
 }
 
-/** ALL entries incl. soft-deleted tombstones (internal — for persist/sync). */
-function rawSnippets(): Snippet[] {
+const now = () => Date.now();
+
+function listSnippetsRaw(): Snippet[] {
   try {
     const raw = localStorage.getItem(LS);
     if (!raw) return [];
     const arr = JSON.parse(raw) as (Snippet | LegacySnippet)[];
     if (!Array.isArray(arr)) return [];
-    // Migrate legacy {enter} → {autoRun, confirm, order}.
-    return arr.map((s, i) => ({
-      id: s.id,
-      name: s.name,
-      command: s.command,
-      autoRun: "autoRun" in s ? !!s.autoRun : !!(s as LegacySnippet).enter,
-      confirm: "confirm" in s ? !!s.confirm : false,
-      hotkey: "hotkey" in s ? (s as Snippet).hotkey : undefined,
-      category: "category" in s ? (s as Snippet).category : undefined,
-      order: "order" in s && typeof (s as Snippet).order === "number" ? (s as Snippet).order : i,
-      _deleted: "_deleted" in s ? !!(s as Snippet)._deleted : undefined,
-      _deletedAt: "_deletedAt" in s ? (s as Snippet)._deletedAt : undefined,
-    }));
+    // Migrate legacy {enter} → {autoRun, confirm, order}; drop stale soft-delete
+    // tombstones from the old blob scheme (_deleted) — deletions are per-item now.
+    return arr
+      .filter((s) => s && s.id && !(s as { _deleted?: boolean })._deleted)
+      .map((s, i) => ({
+        id: s.id,
+        name: s.name,
+        command: s.command,
+        autoRun: "autoRun" in s ? !!s.autoRun : !!(s as LegacySnippet).enter,
+        confirm: "confirm" in s ? !!s.confirm : false,
+        hotkey: "hotkey" in s ? (s as Snippet).hotkey : undefined,
+        category: "category" in s ? (s as Snippet).category : undefined,
+        order: "order" in s && typeof (s as Snippet).order === "number" ? (s as Snippet).order : i,
+        updatedAt: "updatedAt" in s ? (s as Snippet).updatedAt : undefined,
+      }));
   } catch {
     return [];
   }
 }
 
-/** Active snippets (tombstones filtered out), ordered — for UI + callers. */
+/** Active snippets, ordered — for UI + callers. */
 export function listSnippets(): Snippet[] {
-  return rawSnippets()
-    .filter((s) => !s._deleted)
-    .sort((a, b) => a.order - b.order);
+  return listSnippetsRaw().sort((a, b) => a.order - b.order);
 }
 
-function persist(active: Snippet[]) {
-  // Re-pack active order contiguously, then KEEP soft-delete tombstones so
-  // deletions keep propagating through sync.
-  const tombstones = rawSnippets().filter((s) => s._deleted);
-  const packed = active
+function persist(all: Snippet[]) {
+  // Re-pack order contiguously, write back, mirror into the vault transport blob.
+  const packed = all
     .slice()
     .sort((a, b) => a.order - b.order)
     .map((s, i) => ({ ...s, order: i }));
-  const all = [...packed, ...tombstones];
-  localStorage.setItem(LS, JSON.stringify(all));
+  localStorage.setItem(LS, JSON.stringify(packed));
   window.dispatchEvent(new Event(EVT));
-  if (snippetsSyncEnabled()) void mirrorToVault(all);
+  if (snippetsSyncEnabled()) void mirrorToVault(packed);
 }
 
-/** Mirror the full list into the synced vault blob + mark it dirty for sync. */
-async function mirrorToVault(all: Snippet[], touch = true) {
+/** Mirror the full list into the vault transport blob. The Rust engine reads it
+ *  and pushes each snippet as its own snippet.<id> item (LWW by updatedAt). */
+async function mirrorToVault(all: Snippet[]) {
   try {
     await vaultSet(SNIPPETS_KEY, JSON.stringify(all));
-    // Bump updated_at ONLY on a real edit — NOT on every pre-sync mirror. Else
-    // each sync makes THIS device "newest" and LWW clobbers the other side's
-    // changes → one-directional sync (Win→Ubuntu ok, Ubuntu→Win lost).
-    if (touch) await invoke("account_touch_snippets");
   } catch {
     /* vault locked / not logged in — next unlock+sync picks it up */
   }
@@ -103,9 +99,12 @@ async function mirrorToVault(all: Snippet[], touch = true) {
 
 export function addSnippet(s: Omit<Snippet, "id" | "order">): Snippet {
   const all = listSnippets();
-  const ns: Snippet = { ...s, id: crypto.randomUUID(), order: all.length };
-  // Hotkey steal: clear the digit on any other snippet that held it.
-  const cleaned = ns.hotkey ? all.map((x) => (x.hotkey === ns.hotkey ? { ...x, hotkey: undefined } : x)) : all;
+  const ns: Snippet = { ...s, id: crypto.randomUUID(), order: all.length, updatedAt: now() };
+  // Hotkey steal: clear the digit on any other snippet that held it (bump its ts
+  // too, so the change syncs).
+  const cleaned = ns.hotkey
+    ? all.map((x) => (x.hotkey === ns.hotkey ? { ...x, hotkey: undefined, updatedAt: now() } : x))
+    : all;
   persist([...cleaned, ns]);
   return ns;
 }
@@ -113,32 +112,31 @@ export function addSnippet(s: Omit<Snippet, "id" | "order">): Snippet {
 export function updateSnippet(s: Snippet) {
   const all = listSnippets();
   const next = all.map((x) => {
-    if (x.id === s.id) return s;
+    if (x.id === s.id) return { ...s, updatedAt: now() };
     // Hotkey steal from others.
-    if (s.hotkey && x.hotkey === s.hotkey) return { ...x, hotkey: undefined };
+    if (s.hotkey && x.hotkey === s.hotkey) return { ...x, hotkey: undefined, updatedAt: now() };
     return x;
   });
   persist(next);
 }
 
 export function deleteSnippet(id: string) {
-  // Soft-delete: keep a tombstone so the deletion propagates via sync (union
-  // merge can't drop ids). Filtered out of listSnippets() so the UI hides it.
-  const all = rawSnippets().map((x) =>
-    x.id === id ? { ...x, _deleted: true, _deletedAt: Date.now() } : x,
-  );
-  localStorage.setItem(LS, JSON.stringify(all));
-  window.dispatchEvent(new Event(EVT));
-  if (snippetsSyncEnabled()) void mirrorToVault(all);
+  // Hard delete locally + explicit per-item tombstone so the deletion propagates
+  // to other devices (mirrors how host deletion works — never inferred).
+  persist(listSnippets().filter((x) => x.id !== id));
+  if (snippetsSyncEnabled()) {
+    invoke("account_record_snippet_tombstones", { ids: [id] }).catch(() => {});
+  }
 }
 
-/** Reorder: move snippet `id` to sit at `targetIndex` in the visible order. */
+/** Reorder: move snippets into `orderedIds` order; bump updatedAt so the new
+ *  positions sync per-item. */
 export function reorderSnippets(orderedIds: string[]) {
   const byId = new Map(listSnippets().map((s) => [s.id, s]));
   const next = orderedIds
     .map((id, i) => {
       const s = byId.get(id);
-      return s ? { ...s, order: i } : null;
+      return s ? { ...s, order: i, updatedAt: now() } : null;
     })
     .filter(Boolean) as Snippet[];
   persist(next);
@@ -183,7 +181,7 @@ export function removeCategory(name: string) {
     /* ignore */
   }
   const cleared = listSnippets().map((s) =>
-    s.category === name ? { ...s, category: undefined } : s,
+    s.category === name ? { ...s, category: undefined, updatedAt: now() } : s,
   );
   persist(cleared); // persists + dispatches EVT (+ mirrors to vault when synced)
 }
@@ -195,78 +193,47 @@ export function snippetsSyncEnabled(): boolean {
 export function setSnippetsSyncEnabled(on: boolean) {
   localStorage.setItem(LS_SYNC, on ? "1" : "0");
   if (on) {
-    void mirrorToVault(rawSnippets());
+    void mirrorToVault(listSnippets());
   } else {
-    // explicit tombstone (never inferred) + drop the local blob copy
-    invoke("account_tombstone_snippets").catch(() => {});
+    // Sync OFF → explicit per-item tombstones for every snippet (so they leave
+    // the server) + drop the local transport blob. Explicit-only, never inferred.
+    const ids = listSnippets().map((s) => s.id);
+    if (ids.length) invoke("account_record_snippet_tombstones", { ids }).catch(() => {});
     vaultDelete(SNIPPETS_KEY).catch(() => {});
   }
   window.dispatchEvent(new Event(EVT));
 }
 
-/** After an account sync, read the pulled blob back into localStorage. */
+/** After an account sync, read the reconstructed transport blob (the Rust engine
+ *  merged the per-snippet items into it) back into localStorage. */
 export async function pullSnippetsToLocal(): Promise<boolean> {
   if (!snippetsSyncEnabled()) return false;
   try {
     const raw = await vaultGet(SNIPPETS_KEY);
     if (!raw) return false;
-    const remote = JSON.parse(raw);
-    if (!Array.isArray(remote)) return false;
-    // Union-merge by id over RAW entries (incl. tombstones), so additions AND
-    // deletions both propagate. Rules per id: a tombstone on EITHER side keeps
-    // it deleted (delete-wins); otherwise remote wins on a normal clash; local-
-    // only snippets are kept.
-    const beforeRaw = JSON.stringify(rawSnippets());
-    const byId = new Map<string, Snippet>();
-    for (const s of rawSnippets()) byId.set(s.id, s);
-    for (const r of remote as Snippet[]) {
-      if (!r?.id) continue;
-      const cur = byId.get(r.id);
-      if (cur?._deleted || r._deleted) {
-        const base = r._deleted ? r : (cur as Snippet);
-        byId.set(r.id, {
-          ...base,
-          _deleted: true,
-          _deletedAt: Math.max(cur?._deletedAt ?? 0, r._deletedAt ?? 0) || Date.now(),
-        });
-      } else {
-        byId.set(r.id, r);
-      }
-    }
-    const merged = Array.from(byId.values());
-    const mergedStr = JSON.stringify(merged);
-    localStorage.setItem(LS, mergedStr);
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return false;
+    const before = localStorage.getItem(LS);
+    const str = JSON.stringify(arr);
+    localStorage.setItem(LS, str);
     window.dispatchEvent(new Event(EVT));
-    // Changed (gained items OR newly-applied tombstone) → re-push so the other
-    // device converges to the same set.
-    return mergedStr !== beforeRaw;
+    return str !== before;
   } catch {
     return false;
   }
 }
 
-/** Mirror current list + TOUCH (mark newest) so a grown union propagates to the
- *  other device on the next push. */
-export async function pushSnippetsTouched() {
-  if (!snippetsSyncEnabled()) return;
-  await mirrorToVault(rawSnippets(), true);
-}
-
-/** Mirror the CURRENT list into the vault blob + touch, awaited — call right
- *  before a sync so the push always carries the latest snippets. Fixes the
- *  async-mirror race (persist's mirror is fire-and-forget) that let a sync push
- *  a stale list → device drift. */
+/** Mirror the current list into the vault transport blob, awaited — call right
+ *  before a sync so the push carries the latest snippets. */
 export async function pushSnippetsToVault() {
   if (!snippetsSyncEnabled()) return;
-  // No touch: just make sure the vault blob holds the current list. The
-  // updated_at reflects the last real EDIT, so LWW stays correct both ways.
-  await mirrorToVault(rawSnippets(), false);
+  await mirrorToVault(listSnippets());
 }
 
 // --- import / export -------------------------------------------------------
-/** Export JSON array (strip id/order — regenerated on import). */
+/** Export JSON array (strip id/order/updatedAt — regenerated on import). */
 export function exportSnippets(): string {
-  const list = listSnippets().map(({ id: _id, order: _order, ...rest }) => rest);
+  const list = listSnippets().map(({ id: _id, order: _order, updatedAt: _u, ...rest }) => rest);
   return JSON.stringify(list, null, 2);
 }
 
@@ -280,7 +247,7 @@ export function importSnippets(json: string): { added: number; skipped: number }
   }
   if (!Array.isArray(parsed)) return { added: 0, skipped: 0 };
   const existing = listSnippets();
-  const seen = new Set(existing.map((s) => `${s.name} ${s.command}`));
+  const seen = new Set(existing.map((s) => `${s.name} ${s.command}`));
   let added = 0;
   let skipped = 0;
   let order = existing.length;
@@ -290,7 +257,7 @@ export function importSnippets(json: string): { added: number; skipped: number }
       skipped++;
       continue;
     }
-    const key = `${raw.name} ${raw.command}`;
+    const key = `${raw.name} ${raw.command}`;
     if (seen.has(key)) {
       skipped++;
       continue;
@@ -305,6 +272,7 @@ export function importSnippets(json: string): { added: number; skipped: number }
       hotkey: undefined, // don't import hotkeys — avoid clashes
       category: typeof raw.category === "string" ? raw.category : undefined,
       order: order++,
+      updatedAt: now(),
     });
     added++;
   }

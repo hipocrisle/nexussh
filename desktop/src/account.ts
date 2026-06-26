@@ -10,7 +10,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { notifyHostsChanged } from "./hosts";
-import { pullSnippetsToLocal, pushSnippetsToVault, pushSnippetsTouched } from "./snippets";
+import { pullSnippetsToLocal, pushSnippetsToVault } from "./snippets";
 
 /** Snapshot of account + sync state (no secrets). */
 export interface AccountStatus {
@@ -144,23 +144,16 @@ export async function accountTotpDisable(code: string): Promise<void> {
 /** Run a full sync now (pull-then-push, last-writer-wins). Requires logged in +
  *  vault unlocked. */
 export async function accountSyncNow(): Promise<SyncReport> {
-  // Push the latest snippets into the vault blob FIRST (awaited), so the sync
-  // below carries them — avoids the async-mirror race that drifted devices.
+  // Mirror current snippets into the vault transport blob FIRST (awaited), so the
+  // sync below slices them into per-snippet items.
   await pushSnippetsToVault();
   const report = await invoke<SyncReport>("account_sync_now");
   // Sync may have pulled new hosts / applied tombstones into the Rust store.
-  // Nudge the UI to re-read so the tree updates WITHOUT a client restart
-  // (fixes: synced node only appeared after restart).
+  // Nudge the UI to re-read so the tree updates WITHOUT a client restart.
   notifyHostsChanged();
-  // Snippets ride a global vault blob (union-merged on pull). If the merge grew
-  // our list (gained the other device's snippets), push the union as newest +
-  // sync once more so the OTHER device also converges to the full set.
-  const grew = await pullSnippetsToLocal();
-  if (grew) {
-    await pushSnippetsTouched();
-    await invoke<SyncReport>("account_sync_now");
-    await pullSnippetsToLocal();
-  }
+  // Snippets now sync PER-ITEM (snippet.<id>, like hosts) — the engine merged the
+  // incoming items into the transport blob. Just read it back; no 2-pass needed.
+  await pullSnippetsToLocal();
   return report;
 }
 

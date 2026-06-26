@@ -269,11 +269,21 @@ const USER_KEY_VAULT_KEY: &str = "__account_user_key__";
 const ITEM_TYPE_HOST: &str = "host";
 const ITEM_TYPE_HOST_PASSWORD: &str = "host-password";
 const ITEM_TYPE_KNOWN_HOST: &str = "known_host";
-const ITEM_TYPE_SNIPPETS: &str = "snippets";
+const ITEM_TYPE_SNIPPET: &str = "snippet";
 
-/// Global vault key holding the JSON snippets blob. Synced as a single item
-/// (item_id == this key) when the device opts in (frontend writes the blob here).
+/// Local vault TRANSPORT blob holding the JSON snippets array. NOT synced as one
+/// item — the engine slices it into per-snippet `snippet.<id>` items (like hosts)
+/// on push, and reconstructs it from those items on pull.
 pub const SNIPPETS_KEY: &str = "nexussh.snippets";
+
+/// Synthetic item_id for one snippet record (sliced out of SNIPPETS_KEY).
+fn snippet_item_id(id: &str) -> String {
+    format!("snippet.{id}")
+}
+/// Extract the snippet id from a `snippet.<id>` item_id.
+fn snippet_id_from_item(item_id: &str) -> Option<&str> {
+    item_id.strip_prefix("snippet.")
+}
 
 /// Synthetic item_id for a host record. NOT a vault key (the record lives inside
 /// `__hostlist__`); we coin it so the server can store the record per-host.
@@ -297,8 +307,8 @@ fn known_host_key(id: &str) -> String {
 /// `.password` suffix is the record itself; `host.<id>.password` is the password
 /// secret; `nexussh.known_hosts.<id>` is a host-key pin.
 pub fn item_type_for_key(key: &str) -> &'static str {
-    if key == SNIPPETS_KEY {
-        ITEM_TYPE_SNIPPETS
+    if key.starts_with("snippet.") {
+        ITEM_TYPE_SNIPPET
     } else if key.starts_with("nexussh.known_hosts.") {
         ITEM_TYPE_KNOWN_HOST
     } else if key.starts_with("host.") && key.ends_with(".password") {
@@ -311,42 +321,10 @@ pub fn item_type_for_key(key: &str) -> &'static str {
     }
 }
 
-/// Union-merge two snippet JSON-array blobs by `id` (local order first, then any
-/// new remote ids; remote wins on a same-id clash). Falls back to remote on bad
-/// JSON. Used so snippet sync never discards either device's additions.
-fn merge_snippets_blob(local: Option<&str>, remote: &str) -> String {
-    use std::collections::BTreeMap;
-    let parse = |s: &str| serde_json::from_str::<Vec<serde_json::Value>>(s).unwrap_or_default();
-    let loc = local.map(parse).unwrap_or_default();
-    let rem = parse(remote);
-    if loc.is_empty() && rem.is_empty() {
-        return remote.to_string();
-    }
-    let mut by_id: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    let mut order: Vec<String> = Vec::new();
-    for v in loc.into_iter().chain(rem.into_iter()) {
-        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
-            let id = id.to_string();
-            if !by_id.contains_key(&id) {
-                order.push(id.clone());
-            }
-            let prev_deleted = by_id
-                .get(&id)
-                .and_then(|p| p.get("_deleted"))
-                .and_then(|d| d.as_bool())
-                .unwrap_or(false);
-            let cur_deleted = v.get("_deleted").and_then(|d| d.as_bool()).unwrap_or(false);
-            // delete-wins: a tombstone is never overwritten by a normal version.
-            if prev_deleted && !cur_deleted {
-                continue;
-            }
-            by_id.insert(id, v); // later (remote) wins, or an incoming tombstone wins
-        }
-    }
-    let merged: Vec<serde_json::Value> =
-        order.into_iter().filter_map(|id| by_id.remove(&id)).collect();
-    serde_json::to_string(&merged).unwrap_or_else(|_| remote.to_string())
-}
+// Snippets sync PER-ITEM now (snippet.<id>, like hosts) — the old whole-blob
+// union-merge is gone. parse_hostlist/serialize_hostlist/record_id/
+// record_updated_at are generic over "array of {id,...,updatedAt}" objects and
+// are reused for the snippets transport blob.
 
 /// Extract the `<id>` from a `host.<id>` item_id (the record item, not a secret).
 /// Returns None for password/known-host/other ids.
@@ -1094,25 +1072,23 @@ pub async fn account_record_tombstones(app: AppHandle, host_ids: Vec<String>) ->
     Ok(())
 }
 
-/// Bump the snippets blob's content timestamp so the next sync pushes it.
-/// Frontend calls this after writing SNIPPETS_KEY (a snippet was edited while
-/// snippet-sync is on), so LWW detects the change.
+/// Record explicit per-snippet tombstones (a snippet was deleted, or snippet-sync
+/// was toggled OFF for all of them). Like `account_record_tombstones` for hosts —
+/// explicit-only, never inferred, so an empty/locked vault can't mass-delete
+/// snippets across devices. Recording a tombstone for a never-synced snippet is
+/// harmless (the server no-ops the delete).
 #[tauri::command]
-pub async fn account_touch_snippets(app: AppHandle) -> Result<()> {
+pub async fn account_record_snippet_tombstones(app: AppHandle, ids: Vec<String>) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
     let mut cfg = load_config(&app)?;
-    cfg.updated_at.insert(SNIPPETS_KEY.to_string(), now_ms());
-    save_config(&app, &cfg)?;
-    Ok(())
-}
-
-/// Record an explicit tombstone for the global snippets blob (sync toggle turned
-/// OFF). Explicit-only, like host deletions — never inferred — so an empty/locked
-/// vault can't mass-delete snippets across devices.
-#[tauri::command]
-pub async fn account_tombstone_snippets(app: AppHandle) -> Result<()> {
-    let mut cfg = load_config(&app)?;
-    cfg.tombstones.entry(SNIPPETS_KEY.to_string()).or_insert(now_ms());
-    cfg.synced_item_ids.remove(SNIPPETS_KEY);
+    let ts = now_ms();
+    for id in ids {
+        let k = snippet_item_id(&id);
+        cfg.tombstones.entry(k.clone()).or_insert(ts);
+        cfg.synced_item_ids.remove(&k);
+    }
     save_config(&app, &cfg)?;
     Ok(())
 }
@@ -1372,12 +1348,70 @@ pub async fn account_sync_now(
     // the pull loop. Secret items (password/known_host) write per-key immediately.
     let mut hostlist = parse_hostlist(vault::get_opt(&vault_state, HOSTLIST_KEY).as_deref());
     let mut hostlist_dirty = false;
+    // Same pattern for snippets: merge incoming `snippet.<id>` items into the
+    // transport blob in-memory, write it back ONCE after the loop.
+    let mut snippetlist = parse_hostlist(vault::get_opt(&vault_state, SNIPPETS_KEY).as_deref());
+    let mut snippetlist_dirty = false;
 
     for item in &pull.items {
         let key = &item.item_id;
         let itype = item_type_for_key(key);
         let local_updated = cfg.updated_at.get(key).copied().unwrap_or(0);
         let remote_updated = item.updated_at.unwrap_or(0);
+
+        // ---- snippet RECORD item (lives inside the SNIPPETS_KEY blob) --------
+        if itype == ITEM_TYPE_SNIPPET {
+            let id = match snippet_id_from_item(key) {
+                Some(i) => i.to_string(),
+                None => continue,
+            };
+            let pos = snippetlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+            if item.deleted {
+                if let Some(p) = pos {
+                    let local_ts = record_updated_at(&snippetlist[p]).max(local_updated);
+                    if local_ts <= remote_updated || remote_updated == 0 {
+                        snippetlist.remove(p);
+                        snippetlist_dirty = true;
+                        report.deleted_locally += 1;
+                    }
+                }
+                cfg.updated_at.remove(key);
+                cfg.tombstones.remove(key);
+                cfg.synced_item_ids.remove(key);
+                cfg.item_revs.insert(key.clone(), item.rev);
+                report.latest_rev = report.latest_rev.max(item.rev);
+                report.pulled += 1;
+                continue;
+            }
+            let ct = B64.decode(&item.ciphertext)?;
+            let plaintext = ac::decrypt_item(&ct, &user_key)?;
+            let remote_rec: serde_json::Map<String, serde_json::Value> =
+                match serde_json::from_slice(&plaintext) {
+                    Ok(serde_json::Value::Object(m)) => m,
+                    _ => continue,
+                };
+            let apply_remote = match pos {
+                None => true,
+                Some(p) => {
+                    let local_ts = record_updated_at(&snippetlist[p]).max(local_updated);
+                    remote_updated >= local_ts
+                }
+            };
+            if apply_remote {
+                match pos {
+                    Some(p) => snippetlist[p] = remote_rec,
+                    None => snippetlist.push(remote_rec),
+                }
+                snippetlist_dirty = true;
+                cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
+                cfg.tombstones.remove(key);
+                cfg.synced_item_ids.insert(key.clone(), 1);
+                report.pulled += 1;
+            }
+            cfg.item_revs.insert(key.clone(), item.rev);
+            report.latest_rev = report.latest_rev.max(item.rev);
+            continue;
+        }
 
         // ---- host RECORD item (lives inside __hostlist__) -------------------
         if itype == ITEM_TYPE_HOST {
@@ -1466,11 +1500,8 @@ pub async fn account_sync_now(
         }
 
         // ---- secret/blob items (password / known_host / snippets) → vault ---
-        if itype != ITEM_TYPE_HOST_PASSWORD
-            && itype != ITEM_TYPE_KNOWN_HOST
-            && itype != ITEM_TYPE_SNIPPETS
-        {
-            // Not a host-owned item (e.g. a stale `__hostlist__`/`other`); ignore.
+        if itype != ITEM_TYPE_HOST_PASSWORD && itype != ITEM_TYPE_KNOWN_HOST {
+            // Not a host-owned secret (e.g. a stale `__hostlist__`/`other`); ignore.
             cfg.item_revs.insert(key.clone(), item.rev);
             report.latest_rev = report.latest_rev.max(item.rev);
             continue;
@@ -1497,24 +1528,6 @@ pub async fn account_sync_now(
         let remote_value = String::from_utf8_lossy(&plaintext).into_owned();
         let local_value = vault::get_opt(&vault_state, key);
 
-        // Snippets: UNION-merge by id, never LWW-replace. Whole-blob LWW would
-        // discard the "older" device's additions (one-directional-sync bug) —
-        // merging keeps both sides; remote wins only on a same-id clash.
-        if itype == ITEM_TYPE_SNIPPETS {
-            let merged = merge_snippets_blob(local_value.as_deref(), &remote_value);
-            let changed = local_value.as_deref() != Some(merged.as_str());
-            vault::put_key(&vault_state, key, merged)?;
-            cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
-            cfg.tombstones.remove(key);
-            cfg.synced_item_ids.insert(key.clone(), 1);
-            if changed {
-                report.pulled += 1;
-            }
-            cfg.item_revs.insert(key.clone(), item.rev);
-            report.latest_rev = report.latest_rev.max(item.rev);
-            continue;
-        }
-
         let apply_remote = match &local_value {
             None => true,
             Some(lv) => lv != &remote_value && remote_updated >= local_updated,
@@ -1534,6 +1547,9 @@ pub async fn account_sync_now(
     // replace; we mutated a per-record copy that still holds all local hosts.
     if hostlist_dirty {
         vault::put_key(&vault_state, HOSTLIST_KEY, serialize_hostlist(&hostlist))?;
+    }
+    if snippetlist_dirty {
+        vault::put_key(&vault_state, SNIPPETS_KEY, serialize_hostlist(&snippetlist))?;
     }
     cfg.last_sync_rev = report.latest_rev.max(pull.latest_rev);
 
@@ -1692,26 +1708,36 @@ fn build_push_changes(
         }
     }
 
-    // --- global snippets blob (opt-in) ----------------------------------
-    // The frontend writes the JSON snippets array into SNIPPETS_KEY when the
-    // device's snippet-sync toggle is on, and bumps updated_at via
-    // `account_touch_snippets` on every edit. We push it as ONE item. When the
-    // toggle goes off, the frontend records an explicit tombstone (never diffed).
-    if let Some(value) = vault::get_opt(vault_state, SNIPPETS_KEY) {
-        flagged_now.insert(SNIPPETS_KEY.to_string(), 1);
-        let g_updated = *cfg.updated_at.entry(SNIPPETS_KEY.to_string()).or_insert_with(now_ms);
-        let g_base = cfg.item_revs.get(SNIPPETS_KEY).copied().unwrap_or(0);
-        let g_changed =
-            !cfg.did_initial_push || g_base == 0 || g_updated > cfg.last_sync_at.unwrap_or(0);
-        if g_changed {
-            let ct = ac::encrypt_item(value.as_bytes(), user_key)?;
+    // --- snippets, sliced PER-ITEM from the transport blob (opt-in) -----
+    // The frontend mirrors the JSON snippets array into SNIPPETS_KEY when the
+    // device's snippet-sync toggle is on. We slice it into one `snippet.<id>`
+    // item each (LWW by the snippet's `updatedAt`), exactly like host records —
+    // so add/edit/delete sync reliably first-try, no whole-blob LWW races.
+    // Deletions come via explicit per-item tombstones (account_record_snippet_tombstones).
+    for snip in parse_hostlist(vault::get_opt(vault_state, SNIPPETS_KEY).as_deref()) {
+        let id = match record_id(&snip) {
+            Some(i) => i,
+            None => continue,
+        };
+        let item_id = snippet_item_id(&id);
+        flagged_now.insert(item_id.clone(), 1);
+        let bytes = serde_json::to_vec(&serde_json::Value::Object(snip.clone()))?;
+        let tracked = *cfg.updated_at.entry(item_id.clone()).or_insert_with(now_ms);
+        let updated_at = record_updated_at(&snip).max(tracked);
+        let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
+        let changed = !cfg.did_initial_push
+            || base_rev == 0
+            || updated_at > cfg.last_sync_at.unwrap_or(0);
+        if changed {
+            cfg.updated_at.insert(item_id.clone(), updated_at);
+            let ct = ac::encrypt_item(&bytes, user_key)?;
             changes.push(PushChange {
-                item_id: SNIPPETS_KEY.to_string(),
-                r#type: ITEM_TYPE_SNIPPETS.to_string(),
+                item_id: item_id.clone(),
+                r#type: ITEM_TYPE_SNIPPET.to_string(),
                 ciphertext: B64.encode(&ct),
-                updated_at: g_updated,
+                updated_at,
                 deleted: false,
-                base_rev: g_base,
+                base_rev,
             });
         }
     }
@@ -1773,6 +1799,10 @@ async fn resolve_conflict(
     // vault key. (Secrets fall through to the generic per-key path below.)
     if item_type_for_key(key) == ITEM_TYPE_HOST {
         return resolve_host_conflict(vault_state, user_key, cfg, srv, server_url, token, report)
+            .await;
+    }
+    if item_type_for_key(key) == ITEM_TYPE_SNIPPET {
+        return resolve_snippet_conflict(vault_state, user_key, cfg, srv, server_url, token, report)
             .await;
     }
 
@@ -1893,6 +1923,80 @@ async fn resolve_host_conflict(
     Ok(())
 }
 
+/// Conflict resolution for a `snippet.<id>` record — like resolve_host_conflict
+/// but against the SNIPPETS_KEY transport blob (no `sync` flag; payload is the
+/// record as-is). Preserves all other snippets (per-record merge).
+async fn resolve_snippet_conflict(
+    vault_state: &State<'_, VaultState>,
+    user_key: &[u8; 32],
+    cfg: &mut AccountConfig,
+    srv: &RemoteItem,
+    server_url: &str,
+    token: &str,
+    report: &mut SyncReport,
+) -> Result<()> {
+    let key = &srv.item_id;
+    let id = match snippet_id_from_item(key) {
+        Some(i) => i.to_string(),
+        None => return Ok(()),
+    };
+    let remote_updated = srv.updated_at.unwrap_or(0);
+    let local_updated = cfg.updated_at.get(key).copied().unwrap_or(0);
+    let mut list = parse_hostlist(vault::get_opt(vault_state, SNIPPETS_KEY).as_deref());
+    let pos = list.iter().position(|r| record_id(r).as_deref() == Some(&id));
+
+    if srv.deleted {
+        match pos {
+            Some(p) if local_updated > remote_updated => {
+                let ct = ac::encrypt_item(
+                    &serde_json::to_vec(&serde_json::Value::Object(list[p].clone()))?,
+                    user_key,
+                )?;
+                push_single(cfg, server_url, token, key, ITEM_TYPE_SNIPPET, &B64.encode(&ct), local_updated, false, report).await?;
+            }
+            Some(p) => {
+                list.remove(p);
+                vault::put_key(vault_state, SNIPPETS_KEY, serialize_hostlist(&list))?;
+                report.deleted_locally += 1;
+                cfg.updated_at.remove(key);
+                cfg.synced_item_ids.remove(key);
+            }
+            None => {}
+        }
+        return Ok(());
+    }
+
+    let ct = B64.decode(&srv.ciphertext)?;
+    let remote_rec: serde_json::Map<String, serde_json::Value> =
+        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key)?) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => return Ok(()),
+        };
+    let local_wins = match pos {
+        Some(p) => record_updated_at(&list[p]).max(local_updated) > remote_updated,
+        None => false,
+    };
+    if local_wins {
+        if let Some(p) = pos {
+            let ct = ac::encrypt_item(
+                &serde_json::to_vec(&serde_json::Value::Object(list[p].clone()))?,
+                user_key,
+            )?;
+            push_single(cfg, server_url, token, key, ITEM_TYPE_SNIPPET, &B64.encode(&ct), local_updated, false, report).await?;
+        }
+    } else {
+        match pos {
+            Some(p) => list[p] = remote_rec,
+            None => list.push(remote_rec),
+        }
+        vault::put_key(vault_state, SNIPPETS_KEY, serialize_hostlist(&list))?;
+        cfg.updated_at.insert(key.clone(), remote_updated.max(local_updated));
+        cfg.synced_item_ids.insert(key.clone(), 1);
+        report.pulled += 1;
+    }
+    Ok(())
+}
+
 /// Push a single change (used by conflict retry) with an explicit base_rev taken
 /// from the freshly-learned server rev. One retry only — if the server conflicts
 /// again we record it and move on (the next manual sync resolves it).
@@ -1997,11 +2101,14 @@ mod tests {
 
     #[test]
     fn type_for_snippets() {
-        // The global snippets blob is its own syncable type, not "other".
-        assert_eq!(item_type_for_key(SNIPPETS_KEY), "snippets");
-        assert_eq!(item_type_for_key("nexussh.snippets"), "snippets");
+        // Per-item snippets: each is `snippet.<id>`. The transport blob key
+        // (nexussh.snippets / SNIPPETS_KEY) is NOT synced as one item → "other".
+        assert_eq!(item_type_for_key("snippet.abc123"), "snippet");
+        assert_eq!(item_type_for_key(SNIPPETS_KEY), "other");
+        assert_eq!(item_type_for_key("nexussh.snippets"), "other");
         // Doesn't collide with host items.
         assert_eq!(item_type_for_key("host.x"), "host");
+        assert_eq!(snippet_id_from_item("snippet.xyz"), Some("xyz"));
     }
 
     #[test]

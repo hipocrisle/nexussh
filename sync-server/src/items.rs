@@ -41,7 +41,8 @@ const KNOWN_TYPES: &[&str] = &[
     "ssh-key",
     "setting",
     "folder",
-    "snippets",
+    "snippets", // legacy whole-blob (pre-2.5.5 clients) — kept for back-compat
+    "snippet",  // per-item snippet (snippet.<id>), 2.5.5+
 ];
 
 fn type_is_known(t: &str) -> bool {

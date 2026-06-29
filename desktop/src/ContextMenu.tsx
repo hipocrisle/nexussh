@@ -3,7 +3,7 @@
 // Closes on outside click or Escape. Shares its visual surface with
 // TabPicker via Popover.tsx.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   POPOVER_SURFACE,
   PopoverItem,
@@ -45,6 +45,19 @@ interface Props {
 
 export function ContextMenu({ x, y, title, items, width = 264, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // Measure the REAL rendered size and clamp into the viewport. Height estimates
+  // under-counted (title card + section labels + tall touch rows) → the last item
+  // ("Delete") went offscreen on mobile. Real measurement flips the menu up fully.
+  const [pos, setPos] = useState({ left: x, top: y });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({
+      left: Math.max(8, Math.min(x, window.innerWidth - r.width - 8)),
+      top: Math.max(8, Math.min(y, window.innerHeight - r.height - 8)),
+    });
+  }, [x, y, items, title]);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -64,20 +77,15 @@ export function ContextMenu({ x, y, title, items, width = 264, onClose }: Props)
     };
   }, [onClose]);
 
-  // Clamp to viewport. Touch rows are taller than 32px, so the old estimate
-  // under-counted → bottom items went offscreen (couldn't delete lower hosts on
-  // mobile). Use 36px/row, cap to the viewport, and never go above the top edge.
+  // Position (pos) is measured & clamped in useLayoutEffect above. Initial render
+  // uses the raw (x,y); the layout effect repositions synchronously before paint.
   const W = width;
-  const estH = items.length * 36 + (title ? 48 : 0) + 16;
-  const H = Math.min(estH, window.innerHeight - 16);
-  const safeX = Math.max(8, Math.min(x, window.innerWidth - W - 8));
-  const safeY = Math.max(8, Math.min(y, window.innerHeight - H - 8));
 
   return (
     <div
       ref={ref}
       className={"fixed z-[9999] " + POPOVER_SURFACE}
-      style={{ left: safeX, top: safeY, minWidth: W, maxHeight: "calc(100vh - 16px)", overflowY: "auto" }}
+      style={{ left: pos.left, top: pos.top, minWidth: W, maxHeight: "calc(100vh - 16px)", overflowY: "auto" }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {title && (

@@ -106,7 +106,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [settings] = useSettings();
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
-  const [port, setPort] = useState(settings.defaultPort);
+  // Port is kept as a STRING so the field can be emptied while typing (a number
+  // state forced parseInt("")→NaN→defaultPort, snapping back to 22 on backspace).
+  const [port, setPort] = useState(String(settings.defaultPort));
   const [user, setUser] = useState(settings.defaultUser);
   const [group, setGroup] = useState("");
   // Category (Cloud/Local) of the chosen folder — drives the host's sync flag
@@ -152,7 +154,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     if (!initial) return;
     setName(initial.name);
     setHost(initial.host);
-    setPort(initial.port || settings.defaultPort);
+    setPort(String(initial.port || settings.defaultPort));
     // Preserve a host's empty login (e.g. imported "address-only" hosts) —
     // don't paper over it with the local default user.
     setUser(initial.user ?? "");
@@ -232,7 +234,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
       (h) =>
         h.id !== initial?.id &&
         h.host.trim().toLowerCase() === trimmedHost.toLowerCase() &&
-        h.port === port,
+        h.port === (parseInt(port, 10) || settings.defaultPort),
     );
 
   // --- Port-forward (ssh -L) editing ---------------------------------------
@@ -332,7 +334,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         id,
         name: name.trim() || (user.trim() ? `${user.trim()}@${host.trim()}` : host.trim()),
         host: host.trim(),
-        port,
+        port: parseInt(port, 10) || settings.defaultPort,
         user: user.trim(),
         auth,
         group: group.trim() || undefined,
@@ -460,8 +462,9 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
               <div>
                 <RowLabel>{t("dialog.port")}</RowLabel>
                 <Input
-                  value={String(port)}
-                  onChange={(v) => setPort(parseInt(v) || settings.defaultPort)}
+                  value={port}
+                  onChange={(v) => setPort(v.replace(/[^0-9]/g, ""))}
+                  onBlur={() => { if (!port) setPort(String(settings.defaultPort)); }}
                   inputMode="numeric"
                 />
               </div>
@@ -750,18 +753,18 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         )}
 
         {/* Footer */}
-        <div className="px-[22px] py-3.5 border-t border-nx-divider bg-nx-bg-2 flex items-center gap-3">
-          <span className="text-meta text-nx-muted">
+        <div className="px-[22px] py-3.5 border-t border-nx-divider bg-nx-bg-2 flex items-center gap-3 max-md:sticky max-md:bottom-0 max-md:z-10">
+          <span className="text-meta text-nx-muted max-md:hidden">
             ⌘↵ <span className="ml-1">{t("dialog.shortcut_save")}</span>
           </span>
-          <span className="text-meta text-nx-muted">
+          <span className="text-meta text-nx-muted max-md:hidden">
             esc <span className="ml-1">{t("dialog.shortcut_cancel")}</span>
           </span>
-          <div className="ml-auto flex gap-2">
-            <Button type="button" variant="secondary" onClick={onClose}>
+          <div className="ml-auto flex gap-2 max-md:w-full max-md:ml-0">
+            <Button type="button" variant="secondary" onClick={onClose} className="max-md:flex-1">
               {t("dialog.cancel")}
             </Button>
-            <Button type="submit" variant="primary" disabled={!canSave}>
+            <Button type="submit" variant="primary" disabled={!canSave} className="max-md:flex-1">
               {t("dialog.save")}
             </Button>
           </div>

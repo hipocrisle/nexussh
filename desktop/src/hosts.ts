@@ -383,11 +383,19 @@ export async function moveHostToFolder(
   const all = await listHosts();
   const h = all.find((x) => x.id === hostId);
   if (!h) return;
+  const wasSynced = !!h.sync;
   h.group = folder ?? undefined;
   // Model "folder = category": a host adopts the category of where it lands.
   // Dropping into the Cloud section/folder makes it synced; into Local, local.
   if (synced !== undefined) h.sync = synced || undefined;
   await saveHost(h);
+  // Dragged OUT of Cloud → Local: record an explicit deletion tombstone + sync,
+  // so the un-sync propagates to other devices (deletion is never inferred —
+  // mirrors SyncHostsDialog). Without this the host lingers in Cloud elsewhere.
+  if (wasSynced && h.sync !== true) {
+    await accountRecordTombstones([hostId]).catch(() => {});
+    accountSyncNow().catch(() => {});
+  }
 }
 
 /** Assign `order` = position to each listed id (and set their group), in one
@@ -398,9 +406,11 @@ export async function reorderHosts(
   synced?: boolean,
 ): Promise<void> {
   const all = await readAll();
+  const unsynced: string[] = [];
   orderedIds.forEach((id, i) => {
     const h = all.find((x) => x.id === id);
     if (h) {
+      if (synced === false && !!h.sync) unsynced.push(id); // dragged Cloud → Local
       h.order = i;
       h.group = folder ?? undefined;
       if (synced !== undefined) h.sync = synced || undefined; // folder = category
@@ -408,6 +418,12 @@ export async function reorderHosts(
   });
   await writeAll(all);
   notifyHostsChanged();
+  // Un-synced via drag-reorder into Local → explicit tombstones so deletions
+  // propagate (never inferred). Mirrors moveHostToFolder / SyncHostsDialog.
+  if (unsynced.length > 0) {
+    await accountRecordTombstones(unsynced).catch(() => {});
+    accountSyncNow().catch(() => {});
+  }
 }
 
 // --- Empty folders ---------------------------------------------------------

@@ -64,17 +64,20 @@ export function ContextMenu({ x, y, title, items, width = 264, onClose }: Props)
     };
   }, [onClose]);
 
-  // Clamp to viewport
+  // Clamp to viewport. Touch rows are taller than 32px, so the old estimate
+  // under-counted → bottom items went offscreen (couldn't delete lower hosts on
+  // mobile). Use 36px/row, cap to the viewport, and never go above the top edge.
   const W = width;
-  const H = items.length * 32 + (title ? 48 : 0) + 16;
-  const safeX = Math.min(x, window.innerWidth - W - 8);
-  const safeY = Math.min(y, window.innerHeight - H - 8);
+  const estH = items.length * 36 + (title ? 48 : 0) + 16;
+  const H = Math.min(estH, window.innerHeight - 16);
+  const safeX = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+  const safeY = Math.max(8, Math.min(y, window.innerHeight - H - 8));
 
   return (
     <div
       ref={ref}
       className={"fixed z-[9999] " + POPOVER_SURFACE}
-      style={{ left: safeX, top: safeY, minWidth: W }}
+      style={{ left: safeX, top: safeY, minWidth: W, maxHeight: "calc(100vh - 16px)", overflowY: "auto" }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {title && (

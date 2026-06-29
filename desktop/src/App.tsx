@@ -3643,6 +3643,7 @@ function App() {
                 setMenu({ x, y, items, title })
               }
               clickMode={settings.clickMode}
+              onAddHost={() => setCreateHostOpen(true)}
             />
             {!sidebarCollapsed && (
               <div
@@ -3677,6 +3678,7 @@ function App() {
                   setMenu({ x, y, items, title })
                 }
                 clickMode={settings.clickMode}
+                onAddHost={() => setCreateHostOpen(true)}
               />
             </div>
           )}

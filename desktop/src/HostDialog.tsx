@@ -409,12 +409,15 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         }}
         onKeyDown={onFormKeyDown}
         {...contentProps}
-        className="nx-modal-enter relative w-[780px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none"
+        className="nx-modal-enter relative w-[780px] max-w-[94vw] max-h-[92vh] overflow-y-auto bg-nx-panel rounded-nx-lg shadow-elev-modal max-md:w-full max-md:max-w-none max-md:h-full max-md:max-h-none max-md:rounded-none max-md:flex max-md:flex-col max-md:overflow-hidden"
       >
         <span className="nx-brackets">
           <i />
         </span>
 
+        {/* Scrollable area (header + body). On mobile the form is a flex column;
+            this region grows/scrolls so the footer stays pinned and visible. */}
+        <div className="max-md:flex-1 max-md:min-h-0 max-md:overflow-y-auto">
         {/* header */}
         <div className="flex items-baseline gap-3 px-[22px] pt-5 pb-4 border-b border-nx-divider max-md:pt-[calc(env(safe-area-inset-top)+16px)]">
           <span className={kicker}>// {isEdit ? t("dialog.edit_kicker") : t("dialog.new_kicker")}</span>
@@ -751,9 +754,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         {error && (
           <div className="text-nx-error text-body font-mono px-[22px] -mt-1 mb-3">✗ {error}</div>
         )}
+        </div>{/* /scrollable area */}
 
-        {/* Footer */}
-        <div className="px-[22px] py-3.5 border-t border-nx-divider bg-nx-bg-2 flex items-center gap-3 max-md:sticky max-md:bottom-0 max-md:z-10">
+        {/* Footer — flex-pinned at the bottom on mobile (always visible). */}
+        <div className="px-[22px] py-3.5 border-t border-nx-divider bg-nx-bg-2 flex items-center gap-3 max-md:shrink-0">
           <span className="text-meta text-nx-muted max-md:hidden">
             ⌘↵ <span className="ml-1">{t("dialog.shortcut_save")}</span>
           </span>

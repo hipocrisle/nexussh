@@ -126,6 +126,11 @@ interface Props {
   /** Fill the parent's width instead of the fixed `width` — used when the host
    *  list is the mobile home screen rather than a fixed-width rail. */
   fill?: boolean;
+  /** Open the create-host dialog at the APP level instead of inside the sidebar.
+   *  On mobile the sidebar lives in a transformed drawer, which clips a `fixed`
+   *  modal → the footer (Save button) ends up offscreen. Edit already routes
+   *  through App (context-menu → setEditHost) and works; this does the same for +. */
+  onAddHost?: () => void;
 }
 
 const COLLAPSED_GROUPS_LS = "nexussh.collapsedGroups";
@@ -158,6 +163,7 @@ export function Sidebar({
   onContextMenu,
   clickMode = "select",
   fill = false,
+  onAddHost,
 }: Props) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -721,7 +727,7 @@ export function Sidebar({
     return [
       {
         label: t("sidebar.menu_add_host"),
-        onClick: () => setDialog({ kind: "add" }),
+        onClick: () => (onAddHost ? onAddHost() : setDialog({ kind: "add" })),
       },
       {
         label: t("sidebar.menu_new_folder"),
@@ -960,7 +966,7 @@ export function Sidebar({
           <PanelLeftOpen size={18} />
         </button>
         <button
-          onClick={() => setDialog({ kind: "add" })}
+          onClick={() => (onAddHost ? onAddHost() : setDialog({ kind: "add" }))}
           title={t("sidebar.add_host")}
           className="text-[var(--nx-accent)] hover:text-[var(--nx-accent)] p-1"
         >
@@ -1043,7 +1049,7 @@ export function Sidebar({
           </button>
         )}
         <button
-          onClick={() => setDialog({ kind: "add" })}
+          onClick={() => (onAddHost ? onAddHost() : setDialog({ kind: "add" }))}
           title={t("sidebar.add_host")}
           className="text-[var(--nx-accent)] hover:text-[var(--nx-accent)] shrink-0"
         >
@@ -1081,7 +1087,7 @@ export function Sidebar({
               {t("sidebar.empty_state")}
             </div>
             <button
-              onClick={() => setDialog({ kind: "add" })}
+              onClick={() => (onAddHost ? onAddHost() : setDialog({ kind: "add" }))}
               className="block w-full px-3 py-2 mb-3 rounded-nx border font-mono text-meta cursor-pointer transition-colors"
               style={{
                 borderColor: "var(--nx-accent)",

@@ -74,8 +74,25 @@ export interface ClosedEvent {
   reason: string;
 }
 
+export interface HostKeyPromptInfo {
+  host: string;
+  port: number;
+  fingerprint: string;
+  /** true = the pinned key CHANGED (possible MITM); false = new/unpinnable. */
+  changed: boolean;
+}
+/** Registered once by the app: shows a PuTTY-style "accept host key?" dialog and
+ *  resolves true if the user accepts. Without it, an unverified key just errors. */
+let hostKeyPrompt: ((info: HostKeyPromptInfo) => Promise<boolean>) | null = null;
+export function setHostKeyPrompt(
+  fn: (info: HostKeyPromptInfo) => Promise<boolean>,
+) {
+  hostKeyPrompt = fn;
+}
+
 export async function sshConnect(
   args: ConnectArgs,
+  _retry = false,
 ): Promise<{ sessionId: string; recording: boolean }> {
   // Reachability guard — the single choke-point every connect path goes through
   // (saved-password/key/vault hosts skip the askPassword probe, so guarding only
@@ -96,6 +113,26 @@ export async function sshConnect(
     );
     return { sessionId: res.session_id, recording: !!res.recording };
   } catch (e) {
+    // Host key not pinned (new host that couldn't auto-pin, or the key CHANGED) →
+    // prompt the user once; on accept, pin the key and re-connect.
+    if (
+      !_retry &&
+      e &&
+      typeof e === "object" &&
+      (e as { kind?: string }).kind === "host_key_unverified" &&
+      hostKeyPrompt
+    ) {
+      const info = e as unknown as HostKeyPromptInfo;
+      const accepted = await hostKeyPrompt(info);
+      if (!accepted) throw "Подключение отменено: ключ хоста не принят";
+      await invoke("ssh_pin_host_key", {
+        host: info.host,
+        port: info.port,
+        fingerprint: info.fingerprint,
+        encryptKnownHosts: args.encrypt_known_hosts ?? false,
+      });
+      return sshConnect(args, true);
+    }
     // Attach the captured SSH protocol trace (KEX / host-key / auth / disconnect)
     // so a cryptic failure like "Channel send error" shows what actually happened.
     let log = "";

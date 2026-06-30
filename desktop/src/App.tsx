@@ -49,7 +49,7 @@ const TunnelsPanel = lazy(() =>
   import("./TunnelsPanel").then((m) => ({ default: m.TunnelsPanel })),
 );
 import { StatusLine } from "./StatusLine";
-import type { ConnectArgs } from "./ssh";
+import type { ConnectArgs, HostKeyPromptInfo } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import { ConnectError } from "./ConnectError";
@@ -77,7 +77,8 @@ import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, startupCheck } from "./updater";
-import { sshConnect, sshDisconnect, sshSend, hostReachable, resolveAuth } from "./ssh";
+import { sshConnect, sshDisconnect, sshSend, hostReachable, resolveAuth, setHostKeyPrompt } from "./ssh";
+import { ConfirmDialog } from "./ConfirmDialog";
 import type { AuthMethod } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
 import { SmartKeyBar } from "./SmartKeyBar";
@@ -962,6 +963,17 @@ function App() {
   // crashes the form's auth.kind probe). null editHost + this true =
   // create mode.
   const [createHostOpen, setCreateHostOpen] = useState(false);
+  // Host-key accept prompt (PuTTY-style). sshConnect calls the registered prompt
+  // when a server key isn't pinned; we show a ConfirmDialog and resolve its gate.
+  const [hostKeyReq, setHostKeyReq] = useState<{
+    info: HostKeyPromptInfo;
+    resolve: (ok: boolean) => void;
+  } | null>(null);
+  useEffect(() => {
+    setHostKeyPrompt(
+      (info) => new Promise<boolean>((resolve) => setHostKeyReq({ info, resolve })),
+    );
+  }, []);
   // Stack of recently-closed hosts. Ctrl+Shift+T pops one and re-opens it.
   // Bounded to last 20 entries by the push site in closePane.
   const closedStackRef = useRef<HostRecord[]>([]);
@@ -3930,6 +3942,28 @@ function App() {
           onSaved={(saved) => {
             setSelectedHost(saved);
             setCreateHostOpen(false);
+          }}
+        />
+      )}
+      {hostKeyReq && (
+        <ConfirmDialog
+          title={hostKeyReq.info.changed ? "⚠ Ключ сервера ИЗМЕНИЛСЯ" : "Новый ключ сервера"}
+          message={
+            (hostKeyReq.info.changed
+              ? "Ключ хоста отличается от сохранённого. Это может быть переустановка сервера — или подмена (MITM). Принимайте только если вы знаете причину.\n\n"
+              : "Это первое подключение к хосту. Примите ключ, чтобы продолжить.\n\n") +
+            `${hostKeyReq.info.host}:${hostKeyReq.info.port}\nSHA256: ${hostKeyReq.info.fingerprint}`
+          }
+          confirmLabel="Принять ключ"
+          cancelLabel="Отмена"
+          destructive={hostKeyReq.info.changed}
+          onConfirm={() => {
+            hostKeyReq.resolve(true);
+            setHostKeyReq(null);
+          }}
+          onCancel={() => {
+            hostKeyReq.resolve(false);
+            setHostKeyReq(null);
           }}
         />
       )}

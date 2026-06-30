@@ -35,6 +35,16 @@ pub enum SshError {
     SessionNotFound(String),
     #[error("other: {0}")]
     Other(String),
+    /// Server host key isn't pinned — a new host whose key couldn't be auto-pinned,
+    /// or the key CHANGED vs the stored pin. Carries the fingerprint so the UI can
+    /// prompt the user to accept it (PuTTY-style), then re-connect.
+    #[error("host key unverified")]
+    HostKeyUnverified {
+        host: String,
+        port: u16,
+        fingerprint: String,
+        changed: bool,
+    },
 }
 
 impl serde::Serialize for SshError {
@@ -42,7 +52,20 @@ impl serde::Serialize for SshError {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        use serde::ser::SerializeMap;
+        if let SshError::HostKeyUnverified { host, port, fingerprint, changed } = self {
+            // Serialize as an object so the UI can detect it (kind discriminator)
+            // and show a host-key prompt instead of a plain error toast.
+            let mut m = serializer.serialize_map(Some(5))?;
+            m.serialize_entry("kind", "host_key_unverified")?;
+            m.serialize_entry("host", host)?;
+            m.serialize_entry("port", port)?;
+            m.serialize_entry("fingerprint", fingerprint)?;
+            m.serialize_entry("changed", changed)?;
+            m.end()
+        } else {
+            serializer.serialize_str(&self.to_string())
+        }
     }
 }
 
@@ -264,6 +287,10 @@ pub(crate) struct TofuHandler {
     /// instead of the plaintext file — used when host-list encryption is on.
     pub(crate) app: AppHandle,
     pub(crate) use_vault: bool,
+    /// Set by check_server_key when a key is REJECTED — carries (fingerprint,
+    /// changed) so ssh_connect can surface a HostKeyUnverified error to the UI
+    /// (which prompts the user and re-connects after pinning).
+    pub(crate) pending: std::sync::Arc<std::sync::Mutex<Option<(String, bool)>>>,
 }
 
 fn fingerprint_sha256(key: &PublicKey) -> String {
@@ -303,25 +330,50 @@ fn write_known_hosts(path: &std::path::Path, map: &HashMap<String, String>) -> s
 /// accept, Ok(false) to refuse (changed key), Err on store I/O/corruption — and
 /// a first-use pin that can't be persisted is treated as an error (fail closed)
 /// rather than silently accepting every future key.
+/// Outcome of a host-key check. `Reject{changed}` distinguishes a CHANGED pin
+/// (possible MITM) from a new host whose pin couldn't be persisted — both need a
+/// user prompt, but the UI shows different wording.
+pub(crate) enum KeyVerdict {
+    Accept,
+    Reject { changed: bool },
+}
+
 pub(crate) fn verify_known_host(
     store_path: &std::path::Path,
     host: &str,
     port: u16,
     key: &PublicKey,
-) -> std::io::Result<bool> {
+) -> std::io::Result<KeyVerdict> {
     let id = format!("{host}:{port}");
     let fp = fingerprint_sha256(key);
     let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut map = read_known_hosts(store_path)?;
     match map.get(&id) {
-        Some(known) if known == &fp => Ok(true),
-        Some(_) => Ok(false), // key changed — refuse (possible MITM)
+        Some(known) if known == &fp => Ok(KeyVerdict::Accept),
+        Some(_) => Ok(KeyVerdict::Reject { changed: true }), // key changed → ask
         None => {
             map.insert(id, fp);
-            write_known_hosts(store_path, &map)?; // fail closed if not persisted
-            Ok(true)
+            match write_known_hosts(store_path, &map) {
+                Ok(()) => Ok(KeyVerdict::Accept),
+                Err(_) => Ok(KeyVerdict::Reject { changed: false }), // couldn't pin → ask
+            }
         }
     }
+}
+
+/// Force-write a host-key pin (called after the user accepts a prompt). Overwrites
+/// any existing pin for this host:port.
+pub(crate) fn pin_known_host_file(
+    store_path: &std::path::Path,
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+) -> std::io::Result<()> {
+    let id = format!("{host}:{port}");
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map = read_known_hosts(store_path).unwrap_or_default();
+    map.insert(id, fingerprint.to_string());
+    write_known_hosts(store_path, &map)
 }
 
 /// TOFU verification against the encrypted vault (`__known_hosts__` JSON map)
@@ -332,7 +384,7 @@ pub(crate) fn verify_known_host_vault(
     host: &str,
     port: u16,
     key: &PublicKey,
-) -> std::io::Result<bool> {
+) -> std::io::Result<KeyVerdict> {
     use tauri::Manager;
     let vault = app.state::<crate::vault::VaultState>();
     let id = format!("{host}:{port}");
@@ -342,27 +394,57 @@ pub(crate) fn verify_known_host_vault(
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     match map.get(&id) {
-        Some(known) if known == &fp => Ok(true),
-        Some(_) => Ok(false),
+        Some(known) if known == &fp => Ok(KeyVerdict::Accept),
+        Some(_) => Ok(KeyVerdict::Reject { changed: true }),
         None => {
             map.insert(id, fp);
             let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());
-            crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, json)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            Ok(true)
+            match crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, json) {
+                Ok(()) => Ok(KeyVerdict::Accept),
+                Err(_) => Ok(KeyVerdict::Reject { changed: false }), // vault locked → ask
+            }
         }
     }
+}
+
+/// Force-write a pin into the vault map (after the user accepts a prompt).
+pub(crate) fn pin_known_host_vault(
+    app: &AppHandle,
+    host: &str,
+    port: u16,
+    fingerprint: &str,
+) -> std::io::Result<()> {
+    use tauri::Manager;
+    let vault = app.state::<crate::vault::VaultState>();
+    let id = format!("{host}:{port}");
+    let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut map: HashMap<String, String> = crate::vault::get_opt(&vault, KNOWN_HOSTS_VAULT_KEY)
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    map.insert(id, fingerprint.to_string());
+    let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());
+    crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, json)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
 }
 
 impl Handler for TofuHandler {
     type Error = russh::Error;
     async fn check_server_key(&mut self, key: &PublicKey) -> Result<bool, Self::Error> {
-        let r = if self.use_vault {
+        let fp = fingerprint_sha256(key);
+        let verdict = if self.use_vault {
             verify_known_host_vault(&self.app, &self.host, self.port, key)
         } else {
             verify_known_host(&self.store_path, &self.host, self.port, key)
-        };
-        r.map_err(russh::Error::from)
+        }
+        .map_err(russh::Error::from)?;
+        match verdict {
+            KeyVerdict::Accept => Ok(true),
+            KeyVerdict::Reject { changed } => {
+                // Record so ssh_connect can return HostKeyUnverified with the fp.
+                *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some((fp, changed));
+                Ok(false)
+            }
+        }
     }
 }
 
@@ -596,6 +678,24 @@ async fn authenticate<H: russh::client::Handler>(
     Ok(false)
 }
 
+/// Pin a server host key after the user accepts the prompt (PuTTY-style). Called
+/// by the UI when ssh_connect returned HostKeyUnverified; the UI then re-connects.
+#[tauri::command]
+pub async fn ssh_pin_host_key(
+    app: AppHandle,
+    host: String,
+    port: u16,
+    fingerprint: String,
+    encrypt_known_hosts: bool,
+) -> Result<(), SshError> {
+    if encrypt_known_hosts {
+        pin_known_host_vault(&app, &host, port, &fingerprint)?;
+    } else {
+        pin_known_host_file(&known_hosts_path(&app), &host, port, &fingerprint)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -626,12 +726,15 @@ pub async fn ssh_connect(
     // Establish the transport stream: either a direct TCP connect, or — when
     // the host is flagged "via built-in VPN" — through a local xray SOCKS5
     // proxy that egresses via the chosen node (userspace, no TUN/admin).
+    let pending_key: std::sync::Arc<std::sync::Mutex<Option<(String, bool)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     let handler = TofuHandler {
         host: args.host.clone(),
         port: args.port,
         store_path: known_hosts_path(&app),
         app: app.clone(),
         use_vault: args.encrypt_known_hosts,
+        pending: pending_key.clone(),
     };
     // Bound the whole connect phase (TCP/SOCKS connect + russh handshake) so a
     // dead host fails fast instead of hanging for minutes. Separate from the
@@ -657,7 +760,23 @@ pub async fn ssh_connect(
         }
     };
     let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
-        Ok(res) => res?,
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            // Handshake failed. If it was a host-key rejection (new key that
+            // couldn't auto-pin, or a CHANGED key), surface the fingerprint so
+            // the UI can prompt the user to accept it and re-connect.
+            if let Some((fingerprint, changed)) =
+                pending_key.lock().unwrap_or_else(|x| x.into_inner()).take()
+            {
+                return Err(SshError::HostKeyUnverified {
+                    host: args.host.clone(),
+                    port: args.port,
+                    fingerprint,
+                    changed,
+                });
+            }
+            return Err(e);
+        }
         Err(_) => {
             return Err(SshError::Other(format!(
                 "connection timed out after {}s",

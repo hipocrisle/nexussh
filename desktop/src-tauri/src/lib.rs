@@ -247,6 +247,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ssh::ssh_connect,
+            ssh::ssh_pin_host_key,
             ssh::host_reachable,
             ssh::tcp_ping,
             ssh::ssh_send,

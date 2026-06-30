@@ -112,6 +112,7 @@ async fn connect_and_auth(
         store_path: known_hosts_path(app),
         app: app.clone(),
         use_vault: args.encrypt_known_hosts,
+        pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
     };
 
     // Bound the connect phase (TCP/SOCKS connect + handshake) so a dead host

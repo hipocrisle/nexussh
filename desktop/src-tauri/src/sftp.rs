@@ -203,6 +203,7 @@ pub async fn sftp_connect(
         store_path: known_hosts_path(&app),
         app: app.clone(),
         use_vault: args.encrypt_known_hosts,
+        pending: std::sync::Arc::new(std::sync::Mutex::new(None)),
     };
 
     // Route through the built-in VPN (xray SOCKS) when the host is flagged,

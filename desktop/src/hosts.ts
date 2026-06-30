@@ -406,11 +406,9 @@ export async function reorderHosts(
   synced?: boolean,
 ): Promise<void> {
   const all = await readAll();
-  const unsynced: string[] = [];
   orderedIds.forEach((id, i) => {
     const h = all.find((x) => x.id === id);
     if (h) {
-      if (synced === false && !!h.sync) unsynced.push(id); // dragged Cloud → Local
       h.order = i;
       h.group = folder ?? undefined;
       if (synced !== undefined) h.sync = synced || undefined; // folder = category
@@ -418,12 +416,10 @@ export async function reorderHosts(
   });
   await writeAll(all);
   notifyHostsChanged();
-  // Un-synced via drag-reorder into Local → explicit tombstones so deletions
-  // propagate (never inferred). Mirrors moveHostToFolder / SyncHostsDialog.
-  if (unsynced.length > 0) {
-    await accountRecordTombstones(unsynced).catch(() => {});
-    accountSyncNow().catch(() => {});
-  }
+  // reorder NEVER records deletion tombstones. A drag-reorder touches many rows
+  // at once, and inferring un-sync here MASS-DELETED live cloud hosts (incident
+  // 2026-06-30: 9 hosts wiped across devices). Un-sync is an EXPLICIT action
+  // only — single-host Cloud→Local drag (moveHostToFolder) or Sync-hosts dialog.
 }
 
 // --- Empty folders ---------------------------------------------------------

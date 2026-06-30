@@ -1768,6 +1768,15 @@ fn build_push_changes(
             cfg.tombstones.remove(&item_id);
             continue;
         }
+        // SAFETY NET: never delete an item that is ALSO live in this push. A
+        // tombstone + a live (flagged) record for the same id is a contradiction —
+        // a stale/erroneous tombstone (e.g. from a buggy un-sync trigger). The
+        // live record wins; drop the tombstone. This is the last line of defence
+        // against mass-deleting cloud hosts (incident 2026-06-30).
+        if flagged_now.contains_key(&item_id) {
+            cfg.tombstones.remove(&item_id);
+            continue;
+        }
         let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
         changes.push(PushChange {
             item_id: item_id.clone(),

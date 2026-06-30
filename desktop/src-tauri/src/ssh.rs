@@ -301,6 +301,84 @@ fn fingerprint_sha256(key: &PublicKey) -> String {
 /// first-connects can't clobber each other's pin (lost-update race).
 static KNOWN_HOSTS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+// ===========================================================================
+// Keyboard-interactive (MFA / 2FA) — interactive prompt bridged to the UI
+// ===========================================================================
+/// Pending keyboard-interactive answer channels, keyed by session_id. The auth
+/// loop registers a oneshot sender, emits `ssh-kbi` to the UI, and awaits the
+/// reply; ssh_kbi_respond resolves it. Lets the user type a 2FA/OTP code instead
+/// of us blindly sending the password to every prompt (which broke MFA hosts).
+static KBI_PENDING: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>,
+> = std::sync::OnceLock::new();
+fn kbi_map() -> &'static std::sync::Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<String>>>>
+{
+    KBI_PENDING.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[derive(serde::Serialize, Clone)]
+struct KbiPrompt {
+    prompt: String,
+    echo: bool,
+}
+#[derive(serde::Serialize, Clone)]
+struct KbiPromptEvent {
+    session_id: String,
+    name: String,
+    instruction: String,
+    prompts: Vec<KbiPrompt>,
+}
+
+/// Emit a keyboard-interactive request to the UI and await the user's answers
+/// (e.g. a 2FA/OTP code). Times out so a dismissed UI never hangs auth forever.
+async fn prompt_kbi_ui(
+    app: &AppHandle,
+    session_id: &str,
+    name: String,
+    instruction: String,
+    prompts: Vec<KbiPrompt>,
+) -> Result<Vec<String>, russh::Error> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Vec<String>>();
+    kbi_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(session_id.to_string(), tx);
+    let _ = app.emit(
+        "ssh-kbi",
+        KbiPromptEvent {
+            session_id: session_id.to_string(),
+            name,
+            instruction,
+            prompts,
+        },
+    );
+    match tokio::time::timeout(std::time::Duration::from_secs(180), rx).await {
+        Ok(Ok(answers)) => Ok(answers),
+        _ => {
+            kbi_map()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(session_id);
+            Err(russh::Error::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "MFA prompt cancelled or timed out",
+            )))
+        }
+    }
+}
+
+/// UI calls this with the user's keyboard-interactive answers (2FA code, etc.).
+#[tauri::command]
+pub fn ssh_kbi_respond(session_id: String, answers: Vec<String>) {
+    if let Some(tx) = kbi_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&session_id)
+    {
+        let _ = tx.send(answers);
+    }
+}
+
 /// Read the pin store. Distinguishes "file absent" (legitimate empty → Ok)
 /// from "file present but unparseable" (corruption → Err, so we refuse to
 /// silently drop every pin and accept any key).
@@ -609,6 +687,8 @@ async fn try_keyboard_interactive<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
     user: &str,
     password: &str,
+    app: &AppHandle,
+    session_id: &str,
 ) -> Result<bool, russh::Error> {
     use russh::client::KeyboardInteractiveAuthResponse as Ki;
     let mut resp = session
@@ -618,18 +698,54 @@ async fn try_keyboard_interactive<H: russh::client::Handler>(
         match resp {
             Ki::Success => return Ok(true),
             Ki::Failure { .. } => return Ok(false),
-            Ki::InfoRequest { prompts, .. } => {
-                let answers = prompts
-                    .iter()
-                    .map(|p| {
+            Ki::InfoRequest {
+                name,
+                instructions,
+                prompts,
+            } => {
+                // Answer automatically ONLY when every prompt is a known field
+                // (password/login) and we have a password — the plain first step.
+                // Anything else (OTP / 2FA / verification code / an echoed prompt)
+                // is asked interactively via the UI: blindly sending the password
+                // to a 2FA prompt is exactly what broke MFA hosts.
+                let all_known = !prompts.is_empty()
+                    && prompts.iter().all(|p| {
                         let l = p.prompt.to_lowercase();
-                        if l.contains("user") || l.contains("login") || l.contains("name") {
-                            user.to_string()
-                        } else {
-                            password.to_string()
-                        }
-                    })
-                    .collect();
+                        l.contains("password")
+                            || l.contains("пароль")
+                            || l.contains("user")
+                            || l.contains("login")
+                            || l.contains("name")
+                    });
+                let answers: Vec<String> = if all_known && !password.is_empty() {
+                    prompts
+                        .iter()
+                        .map(|p| {
+                            let l = p.prompt.to_lowercase();
+                            if l.contains("user") || l.contains("login") || l.contains("name") {
+                                user.to_string()
+                            } else {
+                                password.to_string()
+                            }
+                        })
+                        .collect()
+                } else {
+                    let ui_prompts = prompts
+                        .iter()
+                        .map(|p| KbiPrompt {
+                            prompt: p.prompt.to_string(),
+                            echo: p.echo,
+                        })
+                        .collect();
+                    prompt_kbi_ui(
+                        app,
+                        session_id,
+                        name.to_string(),
+                        instructions.to_string(),
+                        ui_prompts,
+                    )
+                    .await?
+                };
                 resp = session
                     .authenticate_keyboard_interactive_respond(answers)
                     .await?;
@@ -650,6 +766,8 @@ async fn authenticate<H: russh::client::Handler>(
     session: &mut russh::client::Handle<H>,
     user: &str,
     password: &str,
+    app: &AppHandle,
+    session_id: &str,
 ) -> Result<bool, russh::Error> {
     use russh::client::AuthResult;
     let methods = match session.authenticate_none(user).await? {
@@ -673,7 +791,7 @@ async fn authenticate<H: russh::client::Handler>(
         return Ok(true);
     }
     if offers("keyboard-interactive") {
-        return try_keyboard_interactive(session, user, password).await;
+        return try_keyboard_interactive(session, user, password, app, session_id).await;
     }
     Ok(false)
 }
@@ -787,7 +905,7 @@ pub async fn ssh_connect(
 
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => {
-            authenticate(&mut session, &args.user, password).await?
+            authenticate(&mut session, &args.user, password, &app, &session_id).await?
         }
         AuthMethod::Key { path, passphrase, content } => {
             // Prefer in-memory key TEXT (mobile: file picker gives a content-URI
@@ -811,7 +929,7 @@ pub async fn ssh_connect(
             // Resolve secret from our in-memory vault (must be unlocked).
             let secret = crate::vault::resolve(&vault, key)
                 .map_err(|e| SshError::Other(e.to_string()))?;
-            authenticate(&mut session, &args.user, &secret).await?
+            authenticate(&mut session, &args.user, &secret, &app, &session_id).await?
         }
     };
     if !auth_ok {

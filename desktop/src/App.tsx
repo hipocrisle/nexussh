@@ -97,6 +97,8 @@ import {
   VAULT_UNLOCKED_EVENT,
 } from "./vault";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { KbiPromptDialog, type KbiRequest } from "./KbiPromptDialog";
 import {
   findPlaintextPasswordHosts,
   migratePlaintextToVault,
@@ -973,6 +975,15 @@ function App() {
     setHostKeyPrompt(
       (info) => new Promise<boolean>((resolve) => setHostKeyReq({ info, resolve })),
     );
+  }, []);
+  // Keyboard-interactive (MFA/2FA) prompt: backend emits `ssh-kbi` mid-handshake
+  // with the server's prompts; show the dialog and send answers back.
+  const [kbiReq, setKbiReq] = useState<KbiRequest | null>(null);
+  useEffect(() => {
+    const un = listen<KbiRequest>("ssh-kbi", (e) => setKbiReq(e.payload));
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
   }, []);
   // Stack of recently-closed hosts. Ctrl+Shift+T pops one and re-opens it.
   // Bounded to last 20 entries by the push site in closePane.
@@ -3964,6 +3975,20 @@ function App() {
           onCancel={() => {
             hostKeyReq.resolve(false);
             setHostKeyReq(null);
+          }}
+        />
+      )}
+      {kbiReq && (
+        <KbiPromptDialog
+          req={kbiReq}
+          onSubmit={(answers) => {
+            invoke("ssh_kbi_respond", { sessionId: kbiReq.session_id, answers });
+            setKbiReq(null);
+          }}
+          onCancel={() => {
+            // Empty answers → server rejects → auth fails fast (no 180s hang).
+            invoke("ssh_kbi_respond", { sessionId: kbiReq.session_id, answers: [] });
+            setKbiReq(null);
           }}
         />
       )}

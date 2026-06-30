@@ -1758,10 +1758,20 @@ fn build_push_changes(
     // Emit a push change for every pending tombstone (recorded on user un-flag /
     // delete, plus any left over from a previous failed run).
     for (item_id, ts) in cfg.tombstones.clone() {
+        let itype = item_type_for_key(&item_id);
+        if itype == "other" {
+            // Legacy / non-syncable tombstone (e.g. an old `nexussh.snippets` blob
+            // key from before per-item snippets, or `__hostlist__`). Its type isn't
+            // a syncable item type, so pushing it makes the server reject the WHOLE
+            // batch with 400 "unknown item type" — breaking all sync. There's
+            // nothing to delete server-side, so just drop it from the queue.
+            cfg.tombstones.remove(&item_id);
+            continue;
+        }
         let base_rev = cfg.item_revs.get(&item_id).copied().unwrap_or(0);
         changes.push(PushChange {
             item_id: item_id.clone(),
-            r#type: item_type_for_key(&item_id).to_string(),
+            r#type: itype.to_string(),
             ciphertext: String::new(),
             updated_at: ts,
             deleted: true,

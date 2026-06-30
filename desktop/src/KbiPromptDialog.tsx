@@ -28,10 +28,14 @@ export function KbiPromptDialog({ req, onSubmit, onCancel }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        onSubmit(vals);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [onCancel, onSubmit, vals]);
 
   return (
     <div className="nx-scrim grid place-items-center" {...backdropProps}>

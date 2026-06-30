@@ -25,6 +25,7 @@ import {
   onSnippetsChanged,
 } from "./snippets";
 import { Button, Input, Checkbox, Toggle, RowLabel } from "./components/primitives";
+import { accountStatus } from "./account";
 import { useBackdropClose } from "./useBackdropClose";
 import { askPrompt, askConfirm } from "./dialogs";
 import { open as openFileDialog, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
@@ -54,6 +55,16 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
   const [cat, setCat] = useState<string>("all");
   const [editing, setEditing] = useState<Snippet | "new" | null>(null);
   const [syncOn, setSyncOn] = useState(snippetsSyncEnabled());
+  // Cloud sync only works when an account is logged in. Track it so the snippet-
+  // sync toggle doesn't falsely show "on" and the cloud button isn't dead when
+  // signed out. The toggle CHOICE persists (localStorage); it just can't act
+  // without an account, and visually reflects that.
+  const [cloudActive, setCloudActive] = useState(false);
+  useEffect(() => {
+    accountStatus()
+      .then((st) => setCloudActive(st.logged_in))
+      .catch(() => {});
+  }, []);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [selIdx, setSelIdx] = useState(-1);
@@ -295,9 +306,17 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
           </span>
           {onSync && (
             <button
-              onClick={onSync}
-              title={t("snippets.sync_now")}
-              className="ml-auto inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border border-nx-accent/50 bg-[rgba(0,255,149,0.10)] text-nx-accent hover:bg-[rgba(0,255,149,0.18)] hover:border-nx-accent shadow-[0_0_10px_var(--nx-accent-glow)]"
+              onClick={() => {
+                if (cloudActive) onSync();
+              }}
+              disabled={!cloudActive}
+              title={cloudActive ? t("snippets.sync_now") : "Войдите в облачный аккаунт"}
+              className={
+                "ml-auto inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border " +
+                (cloudActive
+                  ? "border-nx-accent/50 bg-[rgba(0,255,149,0.10)] text-nx-accent hover:bg-[rgba(0,255,149,0.18)] hover:border-nx-accent shadow-[0_0_10px_var(--nx-accent-glow)]"
+                  : "border-nx-border text-nx-muted opacity-40 cursor-not-allowed")
+              }
             >
               <Cloud size={14} />
             </button>
@@ -433,10 +452,23 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
           >
             <Upload size={13} /> {t("snippets.export")}
           </button>
-          <label className="ml-2 inline-flex items-center gap-2 cursor-pointer">
+          <label
+            className={
+              "ml-2 inline-flex items-center gap-2 " +
+              (cloudActive
+                ? "cursor-pointer"
+                : "opacity-40 cursor-not-allowed pointer-events-none")
+            }
+            title={
+              cloudActive
+                ? ""
+                : "Войдите в облачный аккаунт, чтобы синхронизировать сниппеты"
+            }
+          >
             <Toggle
-              checked={syncOn}
+              checked={syncOn && cloudActive}
               onChange={(v) => {
+                if (!cloudActive) return;
                 setSyncOn(v);
                 setSnippetsSyncEnabled(v);
               }}

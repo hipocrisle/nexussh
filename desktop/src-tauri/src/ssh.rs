@@ -717,7 +717,12 @@ async fn try_keyboard_interactive<H: russh::client::Handler>(
                             || l.contains("login")
                             || l.contains("name")
                     });
-                let answers: Vec<String> = if all_known && !password.is_empty() {
+                let answers: Vec<String> = if prompts.is_empty() {
+                    // RFC 4256 info-only message (0 prompts) — just acknowledge
+                    // with an empty response, no dialog. This was the pointless
+                    // extra "OK" popup the server sends right after the 2FA code.
+                    Vec::new()
+                } else if all_known && !password.is_empty() {
                     prompts
                         .iter()
                         .map(|p| {

@@ -307,13 +307,19 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
           {onSync && (
             <button
               onClick={() => {
-                if (cloudActive) onSync();
+                if (cloudActive && syncOn) onSync();
               }}
-              disabled={!cloudActive}
-              title={cloudActive ? t("snippets.sync_now") : "Войдите в облачный аккаунт"}
+              disabled={!(cloudActive && syncOn)}
+              title={
+                !cloudActive
+                  ? "Войдите в облачный аккаунт"
+                  : !syncOn
+                    ? "Включите синхронизацию сниппетов"
+                    : t("snippets.sync_now")
+              }
               className={
                 "ml-auto inline-flex items-center justify-center w-7 h-7 rounded-nx-sm border " +
-                (cloudActive
+                (cloudActive && syncOn
                   ? "border-nx-accent/50 bg-[rgba(0,255,149,0.10)] text-nx-accent hover:bg-[rgba(0,255,149,0.18)] hover:border-nx-accent shadow-[0_0_10px_var(--nx-accent-glow)]"
                   : "border-nx-border text-nx-muted opacity-40 cursor-not-allowed")
               }

@@ -1093,6 +1093,78 @@ pub async fn account_record_snippet_tombstones(app: AppHandle, ids: Vec<String>)
     Ok(())
 }
 
+/// Re-pull ALL snippets from the server (since=0) and merge them into the
+/// SNIPPETS_KEY transport blob, WITHOUT touching the host sync cursor, host
+/// items, or item_revs. Called when the user (re)enables snippet sync: the shared
+/// pull cursor may already be PAST the snippet items (they were "consumed" by a
+/// host-only sync while snippet sync was off), so a normal sync would never
+/// re-fetch them. This re-reads them from scratch. LWW: a local snippet that is
+/// newer than the server copy is preserved. Returns how many were applied.
+#[tauri::command]
+pub async fn account_repull_snippets(
+    app: AppHandle,
+    state: State<'_, AccountState>,
+    vault_state: State<'_, VaultState>,
+) -> Result<usize> {
+    restore_session(&app, &state, &vault_state);
+    let (token, user_key) = {
+        let guard = state.inner.lock().unwrap();
+        let s = guard.as_ref().ok_or(AccountError::NotLoggedIn)?;
+        (s.token.clone(), s.user_key.clone())
+    };
+    if !vault::is_unlocked(&vault_state) {
+        return Err(AccountError::Vault(vault::VaultError::Locked));
+    }
+    let server_url = load_config(&app)?.server_url;
+    let url = server_url.clone();
+    let tok = token.clone();
+    let raw = tokio::task::spawn_blocking(move || {
+        http_get_json(&url, "/v1/items?since=0", &tok)
+    })
+    .await
+    .map_err(|e| AccountError::Other(e.to_string()))??;
+    let pull: PullResponse = serde_json::from_value(raw)?;
+    let mut snippetlist = parse_hostlist(vault::get_opt(&vault_state, SNIPPETS_KEY).as_deref());
+    let mut applied = 0usize;
+    for item in &pull.items {
+        if item_type_for_key(&item.item_id) != ITEM_TYPE_SNIPPET {
+            continue;
+        }
+        let id = match snippet_id_from_item(&item.item_id) {
+            Some(i) => i.to_string(),
+            None => continue,
+        };
+        let pos = snippetlist.iter().position(|r| record_id(r).as_deref() == Some(&id));
+        if item.deleted {
+            if let Some(p) = pos {
+                snippetlist.remove(p);
+            }
+            continue;
+        }
+        let ct = B64.decode(&item.ciphertext)?;
+        let plaintext = ac::decrypt_item(&ct, &user_key)?;
+        let remote_rec: serde_json::Map<String, serde_json::Value> =
+            match serde_json::from_slice(&plaintext) {
+                Ok(serde_json::Value::Object(m)) => m,
+                _ => continue,
+            };
+        // LWW: keep a strictly-newer local snippet; otherwise take the server's.
+        let apply = match pos {
+            None => true,
+            Some(p) => record_updated_at(&remote_rec) >= record_updated_at(&snippetlist[p]),
+        };
+        if apply {
+            match pos {
+                Some(p) => snippetlist[p] = remote_rec,
+                None => snippetlist.push(remote_rec),
+            }
+            applied += 1;
+        }
+    }
+    vault::put_key(&vault_state, SNIPPETS_KEY, serialize_hostlist(&snippetlist))?;
+    Ok(applied)
+}
+
 // ===========================================================================
 // TOTP enroll / verify
 // ===========================================================================

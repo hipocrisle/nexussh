@@ -476,7 +476,9 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
               onChange={(v) => {
                 if (!cloudActive) return;
                 setSyncOn(v);
-                setSnippetsSyncEnabled(v);
+                // async: on enable it re-pulls cloud snippets, then dispatches the
+                // snippets-changed event which refreshes this list.
+                void setSnippetsSyncEnabled(v);
               }}
             />
             <span className="text-meta text-nx-dim inline-flex items-center gap-1.5">

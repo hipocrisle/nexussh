@@ -91,6 +91,20 @@ function persist(all: Snippet[]) {
  *  and pushes each snippet as its own snippet.<id> item (LWW by updatedAt). */
 async function mirrorToVault(all: Snippet[]) {
   try {
+    // Guard: never overwrite a NON-empty transport blob with an EMPTY local list.
+    // That wiped cloud snippets when the toggle flipped on before they had been
+    // pulled into localStorage (the blob held server snippets the list lacked).
+    if (all.length === 0) {
+      const existing = await vaultGet(SNIPPETS_KEY);
+      if (existing) {
+        try {
+          const cur = JSON.parse(existing);
+          if (Array.isArray(cur) && cur.length > 0) return;
+        } catch {
+          /* unparseable — fall through and overwrite */
+        }
+      }
+    }
     await vaultSet(SNIPPETS_KEY, JSON.stringify(all));
   } catch {
     /* vault locked / not logged in — next unlock+sync picks it up */
@@ -190,10 +204,22 @@ export function removeCategory(name: string) {
 export function snippetsSyncEnabled(): boolean {
   return localStorage.getItem(LS_SYNC) === "1";
 }
-export function setSnippetsSyncEnabled(on: boolean) {
+export async function setSnippetsSyncEnabled(on: boolean) {
   localStorage.setItem(LS_SYNC, on ? "1" : "0");
   if (on) {
-    void mirrorToVault(listSnippets());
+    // Re-pull server snippets FIRST — the shared sync cursor may already be past
+    // them (consumed by a host-only sync while snippet sync was off), so a normal
+    // sync would never re-fetch them. Merge LWW with any local ones, reflect into
+    // the visible list, THEN mirror so local-only snippets push on the next sync.
+    // Previously this just mirrored the (often empty) local list, which WIPED the
+    // transport blob and the cloud snippets never came back down.
+    try {
+      await invoke("account_repull_snippets");
+      await pullSnippetsToLocal();
+    } catch {
+      /* not logged in / vault locked — nothing to pull yet */
+    }
+    await mirrorToVault(listSnippets());
   } else {
     // Sync OFF → explicit per-item tombstones for every snippet (so they leave
     // the server) + drop the local transport blob. Explicit-only, never inferred.

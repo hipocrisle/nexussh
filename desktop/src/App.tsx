@@ -53,6 +53,7 @@ import type { ConnectArgs, HostKeyPromptInfo } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import AiPanel from "./AiPanel";
+import { aiStatus } from "./ai";
 import { ConnectError } from "./ConnectError";
 import { parseConnectError } from "./connect-error";
 const UpdatePanel = lazy(() =>
@@ -670,6 +671,8 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiActive, setAiActive] = useState(false); // доступ выдан → кнопка подсвечена
+  const [aiHasDraft, setAiHasDraft] = useState(false); // свёрнутый черновик → пульс
   // Which settings section to deep-link to on open (sync modal → "account").
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // First-run vault nudge — a one-time, dismissible banner offering to set up
@@ -898,6 +901,16 @@ function App() {
     check();
     return onHostsChanged(check);
   }, []);
+  // AI-доступ активен? (для подсветки кнопки AI даже когда панель закрыта).
+  useEffect(() => {
+    if (syncState === "none") {
+      setAiActive(false);
+      return;
+    }
+    aiStatus()
+      .then((s) => setAiActive(s.status === "granted"))
+      .catch(() => setAiActive(false));
+  }, [syncState, aiPanelOpen]);
   const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
   // Active tunnel count → drives the header "tunnels" button highlight.
   // Polled (cheap in-process call) so it reflects tunnels closed from the panel.
@@ -1488,7 +1501,9 @@ function App() {
       const meta = e.ctrlKey || e.metaKey;
       const code = e.code;
       // AI-панель: Ctrl/Cmd+Shift+A — открыть/закрыть подсказку команд.
-      if (meta && e.shiftKey && (e.key === "A" || e.key === "a")) {
+      // e.code (физическая клавиша), НЕ e.key — иначе не сработает на не-латинской
+      // раскладке (на русской "A" = "Ф").
+      if (meta && e.shiftKey && e.code === "KeyA") {
         e.preventDefault();
         setAiPanelOpen((v) => !v);
         return;
@@ -3512,6 +3527,22 @@ function App() {
 
         <div className="ml-auto flex items-center gap-1 text-meta">
           {syncState !== "none" && (
+            <span className="relative inline-flex">
+              <HeaderButton
+                icon={<Sparkles size={12} />}
+                onClick={() => setAiPanelOpen(true)}
+                title="AI-подсказка команд (Ctrl+Shift+A)"
+                active={aiActive || aiPanelOpen}
+              >
+                AI
+              </HeaderButton>
+              {/* Пульс-точка: есть свёрнутый незавершённый запрос. */}
+              {aiHasDraft && !aiPanelOpen && (
+                <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-nx-accent animate-pulse pointer-events-none" />
+              )}
+            </span>
+          )}
+          {syncState !== "none" && (
             <HeaderButton
               icon={syncState === "on" ? <Cloud size={12} /> : <CloudOff size={12} />}
               onClick={() => setSyncPanelOpen(true)}
@@ -3519,16 +3550,6 @@ function App() {
               active={syncState === "on"}
             >
               {t("sync.header")}
-            </HeaderButton>
-          )}
-          {syncState !== "none" && (
-            <HeaderButton
-              icon={<Sparkles size={12} />}
-              onClick={() => setAiPanelOpen(true)}
-              title="AI-подсказка команд (Ctrl+Shift+A)"
-              active={aiPanelOpen}
-            >
-              AI
             </HeaderButton>
           )}
           <HeaderButton
@@ -3861,7 +3882,10 @@ function App() {
           hasSession={!!activeId}
           onInsert={(cmd) => {
             if (activeId) sshSend(activeId, new TextEncoder().encode(cmd));
+            // Вернуть фокус в терминал, чтобы Enter сработал сразу (без клика).
+            focusActiveTerminal();
           }}
+          onHasDraftChange={setAiHasDraft}
         />
         {sftpEntry && activeId && !isMobile && (
           <SFTPPanel

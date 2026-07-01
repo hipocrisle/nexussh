@@ -5,6 +5,7 @@
 //! derived encryption keys, or any item plaintext. See README.md and
 //! `crypto.rs` for the full client/server crypto contract.
 
+pub mod ai;
 pub mod crypto;
 pub mod db;
 pub mod handlers;
@@ -37,6 +38,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/items", get(items::pull_items).post(items::push_items))
         .route("/v1/credentials", post(handlers::update_credentials))
         .route("/v1/account", delete(handlers::delete_account))
+        .route("/v1/ai/status", get(ai::status))
+        .route("/v1/ai/request", post(ai::request_access))
+        .route("/v1/ai/suggest", post(ai::suggest))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             handlers::require_auth,
@@ -49,6 +53,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/prelogin", post(handlers::prelogin))
         .route("/v1/login", post(handlers::login))
         .route("/v1/recovery-login", post(handlers::recovery_login))
+        // Admin (bot → server) — свой X-Admin-Token, вне Bearer-мидлвари.
+        .route("/v1/ai/admin/grant", post(ai::admin_grant))
         .merge(authed)
         .with_state(state)
 }

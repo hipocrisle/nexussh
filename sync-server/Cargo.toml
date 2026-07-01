@@ -26,6 +26,10 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# AI-ассистент: вызов Claude API (через наш VPN-прокси, т.к. api.anthropic.com
+# гео-заблокирован из РФ) + уведомления в Telegram. rustls чтобы не тянуть openssl,
+# socks для проксирования исходящих запросов через exit-ноду.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -52,6 +52,7 @@ import { StatusLine } from "./StatusLine";
 import type { ConnectArgs, HostKeyPromptInfo } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
+import AiPanel from "./AiPanel";
 import { ConnectError } from "./ConnectError";
 import { parseConnectError } from "./connect-error";
 const UpdatePanel = lazy(() =>
@@ -138,6 +139,7 @@ import {
   FolderOpen,
   Cloud,
   CloudOff,
+  Sparkles,
 } from "lucide-react";
 import { accountStatus, accountSyncNow } from "./account";
 import "./App.css";
@@ -667,6 +669,7 @@ function App() {
   const [vaultChecked, setVaultChecked] = useState(false);
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
   // Which settings section to deep-link to on open (sync modal → "account").
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // First-run vault nudge — a one-time, dismissible banner offering to set up
@@ -1484,6 +1487,12 @@ function App() {
     const handler = (e: KeyboardEvent) => {
       const meta = e.ctrlKey || e.metaKey;
       const code = e.code;
+      // AI-панель: Ctrl/Cmd+Shift+A — открыть/закрыть подсказку команд.
+      if (meta && e.shiftKey && (e.key === "A" || e.key === "a")) {
+        e.preventDefault();
+        setAiPanelOpen((v) => !v);
+        return;
+      }
       // When the SFTP browser is open it OWNS the function keys (F1/F5–F8) —
       // the panel binds them on its own capture-phase listener. Bail out here so
       // they never reach the app (notably F5, the WebView's page-reload, which
@@ -3512,6 +3521,16 @@ function App() {
               {t("sync.header")}
             </HeaderButton>
           )}
+          {syncState !== "none" && (
+            <HeaderButton
+              icon={<Sparkles size={12} />}
+              onClick={() => setAiPanelOpen(true)}
+              title="AI-подсказка команд (Ctrl+Shift+A)"
+              active={aiPanelOpen}
+            >
+              AI
+            </HeaderButton>
+          )}
           <HeaderButton
             icon={
               vault?.unlocked ? (
@@ -3835,6 +3854,15 @@ function App() {
             }}
           />
         )}
+        <AiPanel
+          open={aiPanelOpen}
+          onClose={() => setAiPanelOpen(false)}
+          hostLabel={activeSession?.name ?? activeSession?.host ?? null}
+          hasSession={!!activeId}
+          onInsert={(cmd) => {
+            if (activeId) sshSend(activeId, new TextEncoder().encode(cmd));
+          }}
+        />
         {sftpEntry && activeId && !isMobile && (
           <SFTPPanel
             // Desktop only — on mobile the Files tab (MobileFiles) owns SFTP, so

@@ -1166,6 +1166,54 @@ pub async fn account_repull_snippets(
 }
 
 // ===========================================================================
+// AI-ассистент — тонкий прокси к sync-server /v1/ai/* (на session-токене).
+// Клиент не видит Claude-ключ: сервер проверяет доступ/лимиты и вызывает Claude.
+// ===========================================================================
+
+#[tauri::command]
+pub async fn ai_status(app: AppHandle) -> Result<serde_json::Value> {
+    let cfg = load_config(&app)?;
+    let token = cfg.token.ok_or(AccountError::NotLoggedIn)?;
+    let server_url = cfg.server_url;
+    let v = tokio::task::spawn_blocking(move || http_get_json(&server_url, "/v1/ai/status", &token))
+        .await
+        .map_err(|e| AccountError::Other(e.to_string()))??;
+    Ok(v)
+}
+
+#[tauri::command]
+pub async fn ai_request(app: AppHandle) -> Result<serde_json::Value> {
+    let cfg = load_config(&app)?;
+    let token = cfg.token.ok_or(AccountError::NotLoggedIn)?;
+    let server_url = cfg.server_url;
+    let body = serde_json::json!({});
+    let v = tokio::task::spawn_blocking(move || {
+        http_post_json(&server_url, "/v1/ai/request", Some(&token), &body)
+    })
+    .await
+    .map_err(|e| AccountError::Other(e.to_string()))??;
+    Ok(v)
+}
+
+#[tauri::command]
+pub async fn ai_suggest(
+    app: AppHandle,
+    query: String,
+    os: Option<String>,
+) -> Result<serde_json::Value> {
+    let cfg = load_config(&app)?;
+    let token = cfg.token.ok_or(AccountError::NotLoggedIn)?;
+    let server_url = cfg.server_url;
+    let body = serde_json::json!({ "query": query, "os": os });
+    let v = tokio::task::spawn_blocking(move || {
+        http_post_json(&server_url, "/v1/ai/suggest", Some(&token), &body)
+    })
+    .await
+    .map_err(|e| AccountError::Other(e.to_string()))??;
+    Ok(v)
+}
+
+// ===========================================================================
 // TOTP enroll / verify
 // ===========================================================================
 

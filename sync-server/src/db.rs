@@ -96,6 +96,32 @@ impl Db {
                 rev     INTEGER NOT NULL
             );
 
+            -- AI-ассистент: доступ (allowlist) + посуточный учёт токенов.
+            CREATE TABLE IF NOT EXISTS ai_access (
+                user_id         TEXT PRIMARY KEY,
+                username        TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending', -- pending|granted|denied
+                tier            TEXT NOT NULL DEFAULT 'standard',-- standard|full|unlimited
+                model           TEXT NOT NULL DEFAULT 'haiku',   -- haiku|sonnet|opus
+                context_allowed INTEGER NOT NULL DEFAULT 0,
+                granted_at      INTEGER,
+                expires_at      INTEGER,
+                requested_at    INTEGER NOT NULL
+            );
+            -- Посуточный расход на пользователя.
+            CREATE TABLE IF NOT EXISTS ai_ledger (
+                user_id  TEXT NOT NULL,
+                day      INTEGER NOT NULL,        -- UTC day number = epoch/86400
+                requests INTEGER NOT NULL DEFAULT 0,
+                tokens   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(user_id, day)
+            );
+            -- Глобальный посуточный расход токенов (общий hard-cap / предохранитель).
+            CREATE TABLE IF NOT EXISTS ai_global (
+                day    INTEGER PRIMARY KEY,       -- UTC day number = epoch/86400
+                tokens INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE INDEX IF NOT EXISTS idx_sessions_user   ON sessions(user_id);
             CREATE INDEX IF NOT EXISTS idx_devices_user    ON devices(user_id);
             CREATE INDEX IF NOT EXISTS idx_items_user_rev  ON items(user_id, rev);

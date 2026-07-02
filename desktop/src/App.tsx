@@ -54,6 +54,8 @@ import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import AiPanel from "./AiPanel";
 import AiIndicatorDot from "./AiIndicatorDot";
+import CommandPalette, { type PaletteItem } from "./CommandPalette";
+import { listSnippets, expandPlaceholders } from "./snippets";
 import { useAiAssistant } from "./useAiAssistant";
 import { readTerminalScreen } from "./terminalBuffers";
 import { redactSecrets } from "./redactSecrets";
@@ -684,6 +686,23 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // Хосты для палитры: грузим при открытии (listHosts async) + рефреш по событию.
+  const [paletteHosts, setPaletteHosts] = useState<HostRecord[]>([]);
+  useEffect(() => {
+    if (!paletteOpen) return;
+    let alive = true;
+    const load = () =>
+      listHosts()
+        .then((h) => alive && setPaletteHosts(h))
+        .catch(() => {});
+    load();
+    const off = onHostsChanged(load);
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [paletteOpen]);
   // Which settings section to deep-link to on open (sync modal → "account").
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // First-run vault nudge — a one-time, dismissible banner offering to set up
@@ -1504,6 +1523,16 @@ function App() {
       // AI-панель: Ctrl/Cmd+Shift+A — открыть/закрыть подсказку команд.
       // e.code (физическая клавиша), НЕ e.key — иначе не сработает на не-латинской
       // раскладке (на русской "A" = "Ф").
+      // Command palette: Ctrl/Cmd+Shift+Z (e.code — раскладко-независимо).
+      if (meta && e.shiftKey && e.code === "KeyZ") {
+        e.preventDefault();
+        setPaletteOpen((v) => {
+          const next = !v;
+          if (!next && !isMobile) setTimeout(() => focusActiveTerminal(), 0);
+          return next;
+        });
+        return;
+      }
       if (meta && e.shiftKey && e.code === "KeyA") {
         e.preventDefault();
         setAiPanelOpen((v) => {
@@ -2079,6 +2108,117 @@ function App() {
   function openSshPicker() {
     setPickerMode("ssh");
     setPickerOpen(true);
+  }
+
+  // Собрать записи Command palette из хостов / сниппетов / вкладок / действий /
+  // настроек. Вызывается при рендере палитры (см. paletteOpen).
+  function buildPaletteItems(): PaletteItem[] {
+    const out: PaletteItem[] = [];
+    const close = () => setPaletteOpen(false);
+    // Хосты → подключиться.
+    for (const h of paletteHosts) {
+      out.push({
+        id: `host:${h.id}`,
+        section: "Хосты",
+        icon: "🖥",
+        label: h.name || `${h.user}@${h.host}`,
+        hint: "подключиться",
+        keywords: `${h.user}@${h.host} ${h.group ?? ""}`,
+        run: () => {
+          close();
+          openHost(h);
+        },
+      });
+    }
+    // Сниппеты → отправить в активную сессию.
+    const ctx = focusedSession
+      ? { host: focusedSession.host.host, user: focusedSession.host.user, port: focusedSession.host.port }
+      : null;
+    for (const s of listSnippets()) {
+      out.push({
+        id: `snip:${s.id}`,
+        section: "Сниппеты",
+        icon: "⚡",
+        label: s.name,
+        hint: activeId ? "→ в терминал" : "нет активной сессии",
+        keywords: s.command + " " + (s.category ?? ""),
+        run: () => {
+          close();
+          if (!activeId) {
+            showToast("Нет активной сессии — команду некуда отправить");
+            return;
+          }
+          const cmd = expandPlaceholders(s.command, ctx);
+          sshSend(activeId, new TextEncoder().encode(cmd + (s.autoRun ? "\r" : "")));
+          if (!isMobile) focusActiveTerminal();
+        },
+      });
+    }
+    // Открытые вкладки → переключиться.
+    for (const w of workspaces) {
+      for (const p of w.panes) {
+        const s = p.session;
+        out.push({
+          id: `tab:${s.id}`,
+          section: "Вкладки",
+          icon: "▶",
+          label: s.host.name || `${s.host.user}@${s.host.host}`,
+          hint: s.id === activeId ? "текущая" : "переключиться",
+          keywords: `${s.host.user}@${s.host.host}`,
+          run: () => {
+            close();
+            setFocusedPane(w.id, p.id);
+          },
+        });
+      }
+    }
+    // Действия.
+    const actions: PaletteItem[] = [
+      { id: "act:newtab", icon: "＋", label: "Новая вкладка (SSH)", run: openSshPicker },
+      { id: "act:sftp", icon: "📁", label: "Открыть SFTP активного хоста", hint: activeSession ? undefined : "нет сессии", run: () => activeSession && openSftp(activeSession) },
+      { id: "act:ai", icon: "🤖", label: "AI-подсказка команд", run: () => setAiPanelOpen(true) },
+      { id: "act:snippets", icon: "⚡", label: "Управление сниппетами", run: () => setSnippetsOpen(true) },
+      { id: "act:tunnels", icon: "🔌", label: "Туннели (проброс портов)", run: () => openTunnelsPanel() },
+      { id: "act:vault", icon: "🔒", label: "Vault", run: () => setVaultPanelOpen(true) },
+      { id: "act:sync", icon: "☁", label: "Облачный синк", run: () => setSyncPanelOpen(true) },
+      { id: "act:history", icon: "🕘", label: "История сессий", run: () => setHistoryPanelOpen(true) },
+      {
+        id: "act:update",
+        icon: "⬆",
+        label: "Проверить обновление",
+        run: () => {
+          setUpdatePanel({ initial: undefined });
+          startupCheck()
+            .then((info) => setUpdatePanel({ initial: info }))
+            .catch(() => {});
+        },
+      },
+    ].map((a) => ({ ...a, section: "Действия", run: () => { close(); a.run(); } }));
+    out.push(...actions);
+    // Настройки (deep-link).
+    const settings: Array<[string, string]> = [
+      ["appearance", "Внешний вид"],
+      ["behavior", "Поведение"],
+      ["vpn", "VPN-профили"],
+      ["account", "Аккаунт / синк"],
+      ["updates", "Обновления"],
+      ["about", "О программе"],
+    ];
+    for (const [sec, label] of settings) {
+      out.push({
+        id: `set:${sec}`,
+        section: "Настройки",
+        icon: "⚙️",
+        label,
+        hint: "настройки",
+        run: () => {
+          close();
+          setSettingsSection(sec);
+          setSettingsOpen(true);
+        },
+      });
+    }
+    return out;
   }
 
   // Caret next to "+" — choose what kind of session the new tab opens.
@@ -3897,6 +4037,18 @@ function App() {
             }}
           />
         )}
+        <CommandPalette
+          open={paletteOpen}
+          items={paletteOpen ? buildPaletteItems() : []}
+          onClose={() => {
+            setPaletteOpen(false);
+            if (!isMobile) focusActiveTerminal();
+          }}
+          onAskAi={(q) => {
+            ai.setQuery(q);
+            setAiPanelOpen(true);
+          }}
+        />
         <AiPanel
           open={aiPanelOpen}
           onClose={() => {

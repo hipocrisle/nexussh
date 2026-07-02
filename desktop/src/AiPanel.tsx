@@ -62,6 +62,18 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
 
   // Короткий «Скопировано» тик у кнопки копирования (ключ = что скопировали).
   const [copied, setCopied] = useState<string | null>(null);
+  // Ответ показываем свёрнутым (краткая выжимка) + «Развернуть». Сбрасываем на
+  // свёрнутый при каждом новом ответе.
+  const [answerExpanded, setAnswerExpanded] = useState(false);
+  useEffect(() => {
+    setAnswerExpanded(false);
+  }, [answer]);
+  const ANSWER_PREVIEW = 240;
+  const answerLong = answer.trim().length > ANSWER_PREVIEW;
+  const answerShown =
+    answerExpanded || !answerLong
+      ? answer.trim()
+      : answer.trim().slice(0, ANSWER_PREVIEW).trimEnd() + "…";
   async function copy(text: string, key: string) {
     try {
       await writeClipboard(text);
@@ -280,12 +292,13 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             )}
             {err && <p className="text-nx-danger text-xs">{err}</p>}
 
-            {/* Текстовый ответ модели (объяснение/анализ экрана) — с копированием. */}
+            {/* Текстовый ответ — свёрнут до краткой выжимки, «Развернуть» для полного.
+                Короткий свёрнутый ответ не прячет команды под фолд. */}
             {answer.trim() && (
               <div className="rounded-lg border border-nx-border bg-nx-bg/50 p-3">
                 <div className="flex items-start gap-2">
                   <div className="flex-1 text-sm whitespace-pre-wrap break-words leading-snug">
-                    {answer}
+                    {answerShown}
                   </div>
                   <button
                     type="button"
@@ -296,6 +309,15 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                     {copied === "answer" ? "✓" : "Копировать"}
                   </button>
                 </div>
+                {answerLong && (
+                  <button
+                    type="button"
+                    onClick={() => setAnswerExpanded((v) => !v)}
+                    className="mt-1.5 text-xs text-nx-accent hover:underline"
+                  >
+                    {answerExpanded ? "Свернуть" : "Развернуть"}
+                  </button>
+                )}
               </div>
             )}
 

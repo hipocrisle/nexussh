@@ -3903,7 +3903,13 @@ function App() {
         )}
         <AiPanel
           open={aiPanelOpen}
-          onClose={() => setAiPanelOpen(false)}
+          onClose={() => {
+            setAiPanelOpen(false);
+            // Вернуть фокус в терминал, чтобы после сворачивания панели курсор
+            // сразу был в сессии (без клика по окну). На мобиле не трогаем —
+            // focus всплывает клавиатуру.
+            if (!isMobile) focusActiveTerminal();
+          }}
           hasSession={!!activeId}
           ai={ai}
           onInsert={(cmd) => {

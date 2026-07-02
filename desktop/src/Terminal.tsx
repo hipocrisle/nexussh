@@ -23,6 +23,7 @@ import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { readClipboard, writeClipboard, copyTextVerbose } from "./clipboard";
 import { useIsMobile } from "./useIsMobile";
+import { registerTerminalReader, unregisterTerminalReader } from "./terminalBuffers";
 
 export interface TerminalAction {
   label: string;
@@ -315,6 +316,21 @@ export function TerminalView({
     fitIfVisible(containerRef.current, fit);
     termRef.current = term;
     fitRef.current = fit;
+
+    // Expose a screen-reader for the AI context feature. Reads the tail of the
+    // active buffer (visible rows + a little above), trimming trailing blanks.
+    registerTerminalReader(sessionId, (maxLines: number) => {
+      const buf = term.buffer.active;
+      const end = buf.baseY + term.rows; // exclusive bottom of the screen
+      const start = Math.max(0, end - maxLines);
+      const lines: string[] = [];
+      for (let y = start; y < end; y++) {
+        const line = buf.getLine(y);
+        lines.push(line ? line.translateToString(true) : "");
+      }
+      while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+      return lines.join("\n");
+    });
 
     // Mobile: declare the hidden input as inputmode="none" so the soft keyboard
     // never auto-pops — not on focus, not on a bar-key tap, not on a stray touch
@@ -909,6 +925,7 @@ export function TerminalView({
       unlistenData?.();
       unlistenClosed?.();
       sshDisconnect(sessionId).catch(() => {});
+      unregisterTerminalReader(sessionId);
       term.dispose();
     };
     // sessionId never changes per mount — TerminalView is keyed by it in parent

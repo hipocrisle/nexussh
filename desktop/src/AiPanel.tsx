@@ -32,6 +32,9 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
     refreshStatus,
     granted,
     setReady,
+    contextAllowed,
+    useCtx,
+    setUseCtx,
   } = ai;
 
   useEffect(() => {
@@ -199,6 +202,33 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                 {busy ? "…" : "Спросить"}
               </button>
             </div>
+
+            {contextAllowed && (
+              <div className="rounded-lg border border-nx-border bg-nx-bg/50 px-3 py-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={useCtx}
+                    disabled={!hasSession}
+                    onChange={(e) => setUseCtx(e.target.checked)}
+                    className="accent-nx-accent"
+                  />
+                  <span className="text-sm">AI видит экран терминала</span>
+                  {useCtx && (
+                    <span className="ml-auto text-[11px] text-nx-danger">
+                      ⚠️ экран уходит в AI
+                    </span>
+                  )}
+                </label>
+                {useCtx && (
+                  <p className="text-[11px] text-nx-muted mt-1 leading-snug">
+                    Последние ~40 строк экрана отправляются модели для точности.
+                    Пароли и ключи вырезаются автоматически, но проверяй экран —
+                    не гарантия. Выключай для чувствительных сессий.
+                  </p>
+                )}
+              </div>
+            )}
 
             {!hasSession && (
               <p className="text-xs text-nx-muted">

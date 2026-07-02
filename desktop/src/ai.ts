@@ -30,10 +30,12 @@ export async function aiRequest(): Promise<{ status: string }> {
 export async function aiSuggest(
   query: string,
   os?: string,
+  context?: string | null,
 ): Promise<AiSuggestion[]> {
   const r = await invoke<{ suggestions: AiSuggestion[] }>("ai_suggest", {
     query,
     os,
+    context: context ?? null,
   });
   return r.suggestions ?? [];
 }

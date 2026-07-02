@@ -32,6 +32,9 @@ const INPUT_CAP: usize = 2000;
 /// `NEXUSSH_AI_GLOBAL_DAILY_CAP`). Предохранитель: при достижении AI выключается
 /// для всех до конца суток.
 const GLOBAL_DAILY_CAP_DEFAULT: i64 = 3_000_000;
+/// Максимум символов контекста экрана терминала, передаваемого модели. Обрезаем
+/// с хвоста (последние строки важнее). Экономит токены и ограничивает утечку.
+const CONTEXT_CAP: usize = 4000;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -238,6 +241,11 @@ pub struct SuggestReq {
     /// Платформа: "linux" | "cisco-ios" | "esxi" | ... (подсказка для модели).
     #[serde(default)]
     os: Option<String>,
+    /// Контекст экрана терминала (последние строки), уже отредактированный клиентом
+    /// от секретов. Используется ТОЛЬКО если у юзера есть право context_allowed —
+    /// иначе сервер его игнорирует (защита от утечки при отозванном праве).
+    #[serde(default)]
+    context: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -271,7 +279,7 @@ pub async fn suggest(
     }
 
     // Проверки доступа/лимитов под локом; вызов Claude — уже без лока.
-    let (model, _tier) = {
+    let (model, _tier, context_allowed) = {
         let conn = state.db.conn.lock().unwrap();
         let acc = resolve_access(&conn, &user.user_id)?;
         if acc.status != "granted" {
@@ -291,7 +299,7 @@ pub async fn suggest(
                 "ai temporarily unavailable (global cap)",
             ));
         }
-        (acc.model.clone(), acc.tier.clone())
+        (acc.model.clone(), acc.tier.clone(), acc.context_allowed)
     };
 
     let os = req.os.as_deref().unwrap_or("linux");
@@ -304,7 +312,24 @@ pub async fn suggest(
          форматирование, сброс конфига). Без markdown, без пояснений вне JSON."
     );
 
-    let (text, tokens) = call_claude(&model, &system, q)
+    // Контекст экрана — только при наличии права. Обрезаем на всякий случай.
+    let user_content = match req.context.as_deref() {
+        Some(c) if context_allowed && !c.trim().is_empty() => {
+            let c = if c.chars().count() > CONTEXT_CAP {
+                let tail: String = c.chars().rev().take(CONTEXT_CAP).collect();
+                tail.chars().rev().collect::<String>()
+            } else {
+                c.to_string()
+            };
+            format!(
+                "Недавний вывод терминала (для контекста, секреты уже вырезаны клиентом):\n\
+                 ```\n{c}\n```\n\nЗапрос пользователя: {q}"
+            )
+        }
+        _ => q.to_string(),
+    };
+
+    let (text, tokens) = call_claude(&model, &system, &user_content)
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, &format!("ai upstream: {e}")))?;
 

@@ -1200,11 +1200,12 @@ pub async fn ai_suggest(
     app: AppHandle,
     query: String,
     os: Option<String>,
+    context: Option<String>,
 ) -> Result<serde_json::Value> {
     let cfg = load_config(&app)?;
     let token = cfg.token.ok_or(AccountError::NotLoggedIn)?;
     let server_url = cfg.server_url;
-    let body = serde_json::json!({ "query": query, "os": os });
+    let body = serde_json::json!({ "query": query, "os": os, "context": context });
     let v = tokio::task::spawn_blocking(move || {
         http_post_json(&server_url, "/v1/ai/suggest", Some(&token), &body)
     })

@@ -28,7 +28,12 @@ function aiErrorMessage(e: unknown): string {
  * свёрнута (WebKitGTK душит JS в скрытом поддереве, из-за чего внутри панели
  * запрос «замирал»). Панель — просто презентация над этим состоянием.
  */
-export function useAiAssistant(hostLabel: string | null | undefined) {
+export function useAiAssistant(
+  hostLabel: string | null | undefined,
+  // Поставщик контекста экрана (App): читает активный терминал + редактирует
+  // секреты. Вызывается только когда включён тумблер И у юзера есть право.
+  getScreenContext?: () => string | null,
+) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<AiSuggestion[]>([]);
@@ -37,8 +42,13 @@ export function useAiAssistant(hostLabel: string | null | undefined) {
   const [busy, setBusy] = useState(false);
   const [ready, setReady] = useState(false); // ответ пришёл, пока панель свёрнута
   const [err, setErr] = useState<string | null>(null);
+  // Тумблер «AI видит экран». Off по умолчанию; живёт на уровне App (всегда
+  // смонтирован), поэтому держится в рамках запуска и сбрасывается при рестарте.
+  const [useCtx, setUseCtx] = useState(false);
   const hostRef = useRef(hostLabel);
   hostRef.current = hostLabel;
+  const ctxProviderRef = useRef(getScreenContext);
+  ctxProviderRef.current = getScreenContext;
 
   const refreshStatus = useCallback(() => {
     return aiStatus()
@@ -67,7 +77,12 @@ export function useAiAssistant(hostLabel: string | null | undefined) {
     setNavigated(false);
     setReady(false);
     try {
-      const s = await aiSuggest(q, guessOs(hostRef.current));
+      // Контекст экрана — только при включённом тумблере И наличии права.
+      // Сервер всё равно проигнорит его без права, но не гоняем зря и не читаем
+      // буфер, если контекст не запрошен.
+      const wantCtx = useCtx && status?.context_allowed === true;
+      const ctx = wantCtx ? (ctxProviderRef.current?.() ?? null) : null;
+      const s = await aiSuggest(q, guessOs(hostRef.current), ctx);
       setItems(s);
       setSel(0);
       setReady(true);
@@ -78,7 +93,7 @@ export function useAiAssistant(hostLabel: string | null | undefined) {
     } finally {
       setBusy(false);
     }
-  }, [query, busy, refreshStatus]);
+  }, [query, busy, refreshStatus, useCtx, status?.context_allowed]);
 
   const requestAccess = useCallback(async () => {
     setBusy(true);
@@ -123,6 +138,9 @@ export function useAiAssistant(hostLabel: string | null | undefined) {
     refreshStatus,
     hasDraft,
     granted: status?.status === "granted",
+    contextAllowed: status?.context_allowed === true,
+    useCtx,
+    setUseCtx,
   };
 }
 

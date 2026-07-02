@@ -54,6 +54,8 @@ import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import AiPanel from "./AiPanel";
 import { useAiAssistant } from "./useAiAssistant";
+import { readTerminalScreen } from "./terminalBuffers";
+import { redactSecrets } from "./redactSecrets";
 import { ConnectError } from "./ConnectError";
 import { parseConnectError } from "./connect-error";
 const UpdatePanel = lazy(() =>
@@ -592,7 +594,15 @@ function App() {
   const activeId = focusedSession?.id ?? null;
   const activeSession = focusedSession?.host ?? null;
   // AI-ассистент: состояние на уровне App — запрос продолжается при свёрнутой панели.
-  const ai = useAiAssistant(activeSession?.name ?? activeSession?.host ?? null);
+  // Контекст экрана читаем из активного терминала и РЕДАКТИРУЕМ секреты перед
+  // отдачей в хук (тот отправит его в AI только при включённом тумблере + праве).
+  const ai = useAiAssistant(
+    activeSession?.name ?? activeSession?.host ?? null,
+    () => {
+      const raw = readTerminalScreen(activeId, 40);
+      return raw ? redactSecrets(raw) : null;
+    },
+  );
   // Hosts that have an open pane → "live" badge in the sidebar; the focused
   // pane's host additionally gets the blinking caret.
   const openHostIds = new Set(allSessions.map((s) => s.host.id));

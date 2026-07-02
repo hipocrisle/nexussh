@@ -304,12 +304,16 @@ pub async fn suggest(
 
     let os = req.os.as_deref().unwrap_or("linux");
     let system = format!(
-        "Ты помощник по командной строке для SSH-сессий. Платформа: {os}. \
-         Пользователь описывает что хочет сделать. Верни ТОЛЬКО JSON-массив \
-         вариантов команд (1-5 штук), самый подходящий первым, в формате: \
-         [{{\"cmd\":\"...\",\"explain\":\"кратко на русском что делает\",\"danger\":true|false}}]. \
+        "Ты помощник по SSH-сессиям. Платформа: {os}. Отвечай ТОЛЬКО одним \
+         JSON-объектом, без markdown и без текста вне JSON, в формате: \
+         {{\"answer\":\"...\",\"commands\":[{{\"cmd\":\"...\",\"explain\":\"кратко на русском\",\"danger\":true|false}}]}}. \
+         Если пользователь просит ВЫПОЛНИТЬ действие — заполни commands (1-5 вариантов, \
+         лучший первым), answer оставь пустым. \
+         Если пользователь ЗАДАЁТ ВОПРОС либо просит ОБЪЯСНИТЬ/РАСШИФРОВАТЬ/ПРОАНАЛИЗИРОВАТЬ \
+         вывод на экране — заполни answer понятным текстом на русском, а commands оставь пустым []. \
+         Можно заполнить оба поля, если уместно и объяснение, и команда. \
          danger=true для разрушительных/необратимых команд (удаление, перезагрузка, \
-         форматирование, сброс конфига). Без markdown, без пояснений вне JSON."
+         форматирование, сброс конфига)."
     );
 
     // Контекст экрана — только при наличии права. Обрезаем на всякий случай.
@@ -333,7 +337,7 @@ pub async fn suggest(
         .await
         .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, &format!("ai upstream: {e}")))?;
 
-    let suggestions = parse_suggestions(&text);
+    let (suggestions, answer) = parse_response(&text);
 
     // Учёт расхода.
     {
@@ -352,7 +356,7 @@ pub async fn suggest(
         );
     }
 
-    Ok(Json(json!({ "suggestions": suggestions })))
+    Ok(Json(json!({ "suggestions": suggestions, "answer": answer })))
 }
 
 /// Дополнительная страховка: помечаем danger по эвристике, даже если модель не.
@@ -366,16 +370,13 @@ fn danger_heuristic(cmd: &str) -> bool {
     PATTERNS.iter().any(|p| c.contains(p))
 }
 
-/// Достаём JSON-массив из ответа модели (терпимо к обёрткам/markdown).
-fn parse_suggestions(text: &str) -> Vec<Suggestion> {
-    let start = text.find('[');
-    let end = text.rfind(']');
-    let slice = match (start, end) {
-        (Some(s), Some(e)) if e > s => &text[s..=e],
-        _ => return Vec::new(),
+/// Массив команд из JSON-значения (терпимо к формам).
+fn parse_command_array(v: &serde_json::Value) -> Vec<Suggestion> {
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
     };
-    let raw: Vec<serde_json::Value> = serde_json::from_str(slice).unwrap_or_default();
-    raw.into_iter()
+    arr.iter()
         .filter_map(|v| {
             let cmd = v.get("cmd")?.as_str()?.to_string();
             if cmd.is_empty() {
@@ -388,13 +389,52 @@ fn parse_suggestions(text: &str) -> Vec<Suggestion> {
                 .to_string();
             let danger =
                 v.get("danger").and_then(|x| x.as_bool()).unwrap_or(false) || danger_heuristic(&cmd);
-            Some(Suggestion {
-                cmd,
-                explain,
-                danger,
-            })
+            Some(Suggestion { cmd, explain, danger })
         })
         .collect()
+}
+
+/// Разбираем ответ модели в (команды, текст-ответ). Двухрежимно:
+/// - объект {answer, commands} — основной формат;
+/// - голый массив [...] — только команды (обратная совместимость);
+/// - иначе (проза без JSON) — весь текст как answer, чтобы НЕ терять объяснение
+///   (это чинило «модель не вернула команд» на вопросы-объяснения).
+fn parse_response(text: &str) -> (Vec<Suggestion>, String) {
+    // 1) объект {...}
+    if let (Some(s), Some(e)) = (text.find('{'), text.rfind('}')) {
+        if e > s {
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&text[s..=e]) {
+                if obj.is_object() {
+                    let cmds = obj
+                        .get("commands")
+                        .map(parse_command_array)
+                        .unwrap_or_default();
+                    let answer = obj
+                        .get("answer")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if !cmds.is_empty() || !answer.is_empty() {
+                        return (cmds, answer);
+                    }
+                }
+            }
+        }
+    }
+    // 2) голый массив [...] (легаси)
+    if let (Some(s), Some(e)) = (text.find('['), text.rfind(']')) {
+        if e > s {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text[s..=e]) {
+                let cmds = parse_command_array(&v);
+                if !cmds.is_empty() {
+                    return (cmds, String::new());
+                }
+            }
+        }
+    }
+    // 3) сырая проза → показываем как ответ (не теряем)
+    (Vec::new(), text.trim().to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

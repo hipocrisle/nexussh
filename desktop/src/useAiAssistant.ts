@@ -11,14 +11,19 @@ import {
 /** Человекочитаемая ошибка (в т.ч. offline). */
 function aiErrorMessage(e: unknown): string {
   const s = String(e);
-  if (/network|connection|fetch|timeout|unreachable|dns|refused|offline|error sending/i.test(s)) {
-    return "Нет соединения с сервером AI. Проверь интернет и попробуй снова.";
-  }
-  // Серверные коды из ApiError.
+  // Серверные коды из ApiError — проверяем ДО сетевых, чтобы 502/timeout от
+  // upstream не мапились ошибочно в «нет интернета» (был разовый 502 → мис-лейбл).
   if (/ai not enabled|403/i.test(s)) return "AI-доступ не активен.";
   if (/daily limit|429/i.test(s)) return "Дневной лимит запросов исчерпан.";
   if (/too long|413/i.test(s)) return "Запрос слишком длинный.";
   if (/unavailable|503/i.test(s)) return "AI временно недоступен (общий лимит). Попробуй позже.";
+  // upstream/шлюз/таймаут AI — это НЕ отсутствие интернета у пользователя.
+  if (/ai upstream|bad gateway|502|gateway|timeout|504/i.test(s))
+    return "AI не смог ответить (сервис перегружен). Попробуй ещё раз.";
+  // Только настоящая сетевая ошибка клиента.
+  if (/network|connection|fetch|unreachable|dns|refused|offline|error sending/i.test(s)) {
+    return "Нет соединения с сервером AI. Проверь интернет и попробуй снова.";
+  }
   return s.replace(/^Error:\s*/, "");
 }
 
@@ -37,6 +42,7 @@ export function useAiAssistant(
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<AiSuggestion[]>([]);
+  const [answer, setAnswer] = useState(""); // текстовый ответ (объяснение/анализ)
   const [sel, setSel] = useState(0);
   const [navigated, setNavigated] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -74,6 +80,7 @@ export function useAiAssistant(
     setBusy(true);
     setErr(null);
     setItems([]);
+    setAnswer("");
     setNavigated(false);
     setReady(false);
     try {
@@ -82,11 +89,13 @@ export function useAiAssistant(
       // буфер, если контекст не запрошен.
       const wantCtx = useCtx && status?.context_allowed === true;
       const ctx = wantCtx ? (ctxProviderRef.current?.() ?? null) : null;
-      const s = await aiSuggest(q, guessOs(hostRef.current), ctx);
-      setItems(s);
+      const r = await aiSuggest(q, guessOs(hostRef.current), ctx);
+      setItems(r.suggestions);
+      setAnswer(r.answer);
       setSel(0);
       setReady(true);
-      if (!s.length) setErr("Модель не вернула команд — уточни запрос.");
+      if (!r.suggestions.length && !r.answer.trim())
+        setErr("Модель не вернула ответ — уточни запрос.");
       refreshStatus();
     } catch (e) {
       setErr(aiErrorMessage(e));
@@ -111,19 +120,21 @@ export function useAiAssistant(
   const clear = useCallback(() => {
     setQuery("");
     setItems([]);
+    setAnswer("");
     setSel(0);
     setNavigated(false);
     setErr(null);
     setReady(false);
   }, []);
 
-  const hasDraft = query.trim() !== "" || items.length > 0;
+  const hasDraft = query.trim() !== "" || items.length > 0 || answer.trim() !== "";
 
   return {
     status,
     query,
     setQuery,
     items,
+    answer,
     sel,
     setSel,
     navigated,

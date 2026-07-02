@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AiAssistant } from "./useAiAssistant";
+import { writeClipboard } from "./clipboard";
 
 interface Props {
   open: boolean;
@@ -35,7 +36,20 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
     contextAllowed,
     useCtx,
     setUseCtx,
+    answer,
   } = ai;
+
+  // Короткий «Скопировано» тик у кнопки копирования (ключ = что скопировали).
+  const [copied, setCopied] = useState<string | null>(null);
+  async function copy(text: string, key: string) {
+    try {
+      await writeClipboard(text);
+      setCopied(key);
+      setTimeout(() => setCopied((c) => (c === key ? null : c)), 1200);
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -237,15 +251,34 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             )}
             {err && <p className="text-nx-danger text-xs">{err}</p>}
 
+            {/* Текстовый ответ модели (объяснение/анализ экрана) — с копированием. */}
+            {answer.trim() && (
+              <div className="rounded-lg border border-nx-border bg-nx-bg/50 p-3">
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 text-sm whitespace-pre-wrap break-words leading-snug">
+                    {answer}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => copy(answer, "answer")}
+                    title="Скопировать ответ"
+                    className="shrink-0 text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded border border-nx-border"
+                  >
+                    {copied === "answer" ? "✓" : "Копировать"}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {items.length > 0 && (
               <ul className="space-y-1 max-h-[46vh] overflow-auto">
                 {items.map((it, i) => (
-                  <li key={i}>
+                  <li key={i} className="flex items-stretch gap-1">
                     <button
                       type="button"
                       onMouseEnter={() => setSel(i)}
                       onClick={() => insert(it.cmd)}
-                      className={`w-full text-left px-3 py-2 rounded-lg border transition ${
+                      className={`flex-1 text-left px-3 py-2 rounded-lg border transition ${
                         i === sel
                           ? "border-nx-accent bg-nx-accent/10"
                           : "border-transparent hover:bg-nx-bg"
@@ -261,6 +294,14 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                         <div className="text-xs text-nx-muted mt-0.5">{it.explain}</div>
                       )}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => copy(it.cmd, `cmd${i}`)}
+                      title="Скопировать команду"
+                      className="shrink-0 self-center text-xs text-nx-muted hover:text-nx-text px-1.5 py-1 rounded border border-nx-border"
+                    >
+                      {copied === `cmd${i}` ? "✓" : "⧉"}
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -268,8 +309,8 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
 
             {items.length > 0 && (
               <p className="text-[11px] text-nx-muted">
-                ↑/↓ — выбор, Enter — вставить в терминал (не выполняется), Esc —
-                свернуть.
+                ↑/↓ — выбор, Enter — вставить в терминал (не выполняется), ⧉ —
+                скопировать, Esc — свернуть.
               </p>
             )}
           </div>

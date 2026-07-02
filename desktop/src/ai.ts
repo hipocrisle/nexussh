@@ -27,17 +27,23 @@ export async function aiRequest(): Promise<{ status: string }> {
   return invoke<{ status: string }>("ai_request");
 }
 
+export interface AiResult {
+  /** Команды-подсказки (для вставки в терминал). */
+  suggestions: AiSuggestion[];
+  /** Текстовый ответ модели (объяснение/анализ экрана) — для вопросов. */
+  answer: string;
+}
+
 export async function aiSuggest(
   query: string,
   os?: string,
   context?: string | null,
-): Promise<AiSuggestion[]> {
-  const r = await invoke<{ suggestions: AiSuggestion[] }>("ai_suggest", {
-    query,
-    os,
-    context: context ?? null,
-  });
-  return r.suggestions ?? [];
+): Promise<AiResult> {
+  const r = await invoke<{ suggestions?: AiSuggestion[]; answer?: string }>(
+    "ai_suggest",
+    { query, os, context: context ?? null },
+  );
+  return { suggestions: r.suggestions ?? [], answer: r.answer ?? "" };
 }
 
 /** Грубая догадка платформы по метке/имени хоста — подсказка модели про синтаксис.

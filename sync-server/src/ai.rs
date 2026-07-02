@@ -533,10 +533,12 @@ async fn notify_admin_request(user_id: &str, username: &str) -> Result<(), Strin
     // callback_data лимит 64 байта → короткие коды: aig:<action>:<code>:<user_id>.
     // keyboard = [[{text,callback_data},...],...] (формат DE-1 tg_send).
     let btn = |label: &str, data: String| json!({ "text": label, "callback_data": data });
+    // Контекст (screen-буфер) пока НЕ реализован (MVP без контекста) — не выдаём
+    // это право до готовности фичи. Модель Opus доступна, контекст — нет.
     let keyboard = json!([
         [ btn("✅ Standard/Haiku", format!("aig:g:sh0:{user_id}")),
           btn("⚡ Full/Sonnet",    format!("aig:g:fs0:{user_id}")) ],
-        [ btn("🧠 Full/Opus+ctx",  format!("aig:g:fo1:{user_id}")) ],
+        [ btn("🧠 Full/Opus",      format!("aig:g:fo0:{user_id}")) ],
         [ btn("⛔ Deny",           format!("aig:d:x:{user_id}")) ],
     ]);
     let text = format!(

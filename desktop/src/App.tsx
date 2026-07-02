@@ -1506,7 +1506,13 @@ function App() {
       // раскладке (на русской "A" = "Ф").
       if (meta && e.shiftKey && e.code === "KeyA") {
         e.preventDefault();
-        setAiPanelOpen((v) => !v);
+        setAiPanelOpen((v) => {
+          const next = !v;
+          // При закрытии хоткеем — вернуть фокус в терминал (как и кнопка/Esc),
+          // иначе курсор оставался вне сессии. На мобиле хоткея нет.
+          if (!next && !isMobile) setTimeout(() => focusActiveTerminal(), 0);
+          return next;
+        });
         return;
       }
       // When the SFTP browser is open it OWNS the function keys (F1/F5–F8) —

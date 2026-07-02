@@ -1,121 +1,70 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  aiStatus,
-  aiRequest,
-  aiSuggest,
-  guessOs,
-  type AiStatus,
-  type AiSuggestion,
-} from "./ai";
+import { useEffect, useRef } from "react";
+import type { AiAssistant } from "./useAiAssistant";
 
 interface Props {
   open: boolean;
-  /** Свернуть панель (state сохраняется — не закрытие). */
+  /** Свернуть панель (state в hook сохраняется). */
   onClose: () => void;
-  /** Вставить команду в активный терминал (без выполнения — юзер жмёт Enter). */
+  /** Вставить команду в активный терминал (без выполнения). */
   onInsert: (cmd: string) => void;
-  /** Метка/имя активного хоста — подсказка платформы (не контекст терминала). */
-  hostLabel?: string | null;
   /** Есть ли активная SSH-сессия. */
   hasSession: boolean;
-  /** Сообщить наружу, есть ли незавершённый черновик (для пульс-индикатора). */
-  onHasDraftChange?: (hasDraft: boolean) => void;
+  /** Состояние AI, поднятое на уровень App (живёт при свёрнутой панели). */
+  ai: AiAssistant;
 }
 
-export default function AiPanel({
-  open,
-  onClose,
-  onInsert,
-  hostLabel,
-  hasSession,
-  onHasDraftChange,
-}: Props) {
-  const [status, setStatus] = useState<AiStatus | null>(null);
-  const [query, setQuery] = useState("");
-  const [items, setItems] = useState<AiSuggestion[]>([]);
-  const [sel, setSel] = useState(0);
-  // Навигировал ли юзер стрелками: пока false — Enter = новый поиск, после — вставка.
-  const [navigated, setNavigated] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const {
+    status,
+    query,
+    setQuery,
+    items,
+    sel,
+    setSel,
+    navigated,
+    setNavigated,
+    busy,
+    err,
+    ask,
+    requestAccess,
+    clear,
+    refreshStatus,
+    granted,
+    setReady,
+  } = ai;
 
-  // Подтягиваем статус доступа при разворачивании + фокус ввода.
   useEffect(() => {
     if (!open) return;
-    setErr(null);
-    aiStatus()
-      .then(setStatus)
-      .catch((e) => setErr(String(e)));
+    refreshStatus();
+    setReady(false); // увидел ответ — гасим «готово»-индикатор
     setTimeout(() => inputRef.current?.focus(), 60);
-  }, [open]);
+  }, [open, refreshStatus, setReady]);
 
-  // Наличие черновика (для пульс-точки на кнопке AI).
-  useEffect(() => {
-    onHasDraftChange?.(query.trim() !== "" || items.length > 0);
-  }, [query, items, onHasDraftChange]);
-
-  const granted = status?.status === "granted";
-
-  async function ask() {
-    const q = query.trim();
-    if (!q || busy) return;
-    setBusy(true);
-    setErr(null);
-    setItems([]);
-    setNavigated(false);
-    try {
-      const s = await aiSuggest(q, guessOs(hostLabel));
-      setItems(s);
-      setSel(0);
-      if (!s.length) setErr("Модель не вернула команд — уточни запрос.");
-      aiStatus().then(setStatus).catch(() => {});
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function requestAccess() {
-    setBusy(true);
-    try {
-      const r = await aiRequest();
-      setStatus((p) => (p ? { ...p, status: r.status } : p));
-    } catch (e) {
-      setErr(String(e));
-    } finally {
-      setBusy(false);
-    }
+  if (!open && !busy) {
+    // Панель скрыта — но hook продолжает работать. Держим лёгкую обёртку только
+    // ради анимации сворачивания (см. классы ниже), контент не рендерим когда
+    // полностью закрыто и не занят.
   }
 
   function insert(cmd: string) {
     onInsert(cmd);
-    onClose(); // свернуть (черновик остаётся до «Очистить»)
-  }
-
-  function clearDraft() {
-    setQuery("");
-    setItems([]);
-    setSel(0);
-    setNavigated(false);
-    setErr(null);
-    inputRef.current?.focus();
+    onClose();
   }
 
   function onKey(e: React.KeyboardEvent) {
     if (e.key === "Escape") {
-      onClose(); // Esc = свернуть, не сброс
+      onClose();
       return;
     }
     if (e.key === "ArrowDown" && items.length) {
       e.preventDefault();
       setNavigated(true);
-      setSel((s) => Math.min(s + 1, items.length - 1));
+      setSel(Math.min(sel + 1, items.length - 1));
     } else if (e.key === "ArrowUp" && items.length) {
       e.preventDefault();
       setNavigated(true);
-      setSel((s) => Math.max(s - 1, 0));
+      setSel(Math.max(sel - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (navigated && items[sel]) insert(items[sel].cmd);
@@ -124,22 +73,16 @@ export default function AiPanel({
   }
 
   const remainLabel =
-    status == null
-      ? ""
-      : status.remaining == null
+    granted && status
+      ? status.remaining == null
         ? "без лимита"
-        : `осталось ${status.remaining} сегодня`;
-
-  const hasDraft = query.trim() !== "" || items.length > 0;
+        : `осталось ${status.remaining} сегодня`
+      : "";
 
   return (
-    // Всегда в DOM — прячем через классы, чтобы state (запрос/ответ) сохранялся
-    // при сворачивании, а сворачивание было анимированным.
     <div
       className={`fixed inset-0 z-50 flex items-start justify-center pt-24 transition-opacity duration-200 ${
-        open
-          ? "bg-black/50 opacity-100"
-          : "bg-transparent opacity-0 pointer-events-none"
+        open ? "bg-black/50 opacity-100" : "bg-transparent opacity-0 pointer-events-none"
       }`}
       onClick={onClose}
       aria-hidden={!open}
@@ -154,11 +97,12 @@ export default function AiPanel({
         <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-border">
           <span className="text-lg">🤖</span>
           <span className="font-medium">AI-подсказка команд</span>
+          {busy && <span className="text-xs text-nx-muted animate-pulse">думает…</span>}
           <span className="ml-auto text-xs text-nx-muted">{remainLabel}</span>
-          {granted && hasDraft && (
+          {granted && ai.hasDraft && (
             <button
               type="button"
-              onClick={clearDraft}
+              onClick={clear}
               title="Очистить запрос и ответ"
               className="text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded"
             >
@@ -168,7 +112,7 @@ export default function AiPanel({
           <button
             type="button"
             onClick={onClose}
-            title="Свернуть (Esc) — запрос сохранится"
+            title="Свернуть (Esc) — запрос продолжит выполняться"
             className="text-nx-muted hover:text-nx-text px-1.5 leading-none text-lg"
           >
             —
@@ -178,9 +122,41 @@ export default function AiPanel({
         {!granted && (
           <div className="p-5 space-y-3 text-sm">
             {status?.status === "pending" ? (
-              <p>⏳ Запрос отправлен. Ожидает одобрения администратором.</p>
+              <>
+                <p>⏳ Запрос отправлен. Ожидает одобрения администратором.</p>
+                <p className="text-nx-muted text-xs">
+                  Статус обновится автоматически. Долго нет ответа — переотправь.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={requestAccess}
+                    className="px-3 py-1.5 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
+                  >
+                    Переотправить запрос
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clear}
+                    className="px-3 py-1.5 rounded-lg border border-nx-border text-sm"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </>
             ) : status?.status === "denied" ? (
-              <p>⛔ Доступ к AI отклонён.</p>
+              <>
+                <p>⛔ Доступ к AI отклонён.</p>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={requestAccess}
+                  className="px-4 py-2 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
+                >
+                  Запросить снова
+                </button>
+              </>
             ) : (
               <>
                 <p className="text-nx-muted">
@@ -209,7 +185,7 @@ export default function AiPanel({
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
-                  setNavigated(false); // новый ввод → Enter снова = поиск
+                  setNavigated(false);
                 }}
                 placeholder="Что нужно сделать? (напр. «показать открытые порты»)"
                 className="flex-1 px-3 py-2 rounded-lg bg-nx-bg border border-nx-border text-sm outline-none focus:border-nx-accent"
@@ -248,15 +224,11 @@ export default function AiPanel({
                       <div className="flex items-center gap-2">
                         <code className="text-sm font-mono">{it.cmd}</code>
                         {it.danger && (
-                          <span className="text-xs text-nx-danger">
-                            🔴 опасная
-                          </span>
+                          <span className="text-xs text-nx-danger">🔴 опасная</span>
                         )}
                       </div>
                       {it.explain && (
-                        <div className="text-xs text-nx-muted mt-0.5">
-                          {it.explain}
-                        </div>
+                        <div className="text-xs text-nx-muted mt-0.5">{it.explain}</div>
                       )}
                     </button>
                   </li>

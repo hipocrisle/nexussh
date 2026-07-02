@@ -214,17 +214,17 @@ pub async fn request_access(
         .map_err(db_err)?;
         (acc.username, acc.status == "pending")
     };
+    let _ = already; // повтор запроса («Переотправить») ДОЛЖЕН слать заново —
+                     // прошлое уведомление могло не дойти. От спама защищает rate-limit.
 
-    if !already {
-        // Уведомляем админа с inline-кнопками. Ошибку TG не роняем на клиента.
-        let uid = user.user_id.clone();
-        let uname = username.clone();
-        tokio::spawn(async move {
-            if let Err(e) = notify_admin_request(&uid, &uname).await {
-                tracing::warn!("ai request TG notify failed: {e}");
-            }
-        });
-    }
+    // Уведомляем админа с inline-кнопками. Ошибку TG не роняем на клиента.
+    let uid = user.user_id.clone();
+    let uname = username.clone();
+    tokio::spawn(async move {
+        if let Err(e) = notify_admin_request(&uid, &uname).await {
+            tracing::warn!("ai request TG notify failed: {e}");
+        }
+    });
     Ok(Json(json!({ "status": "pending" })))
 }
 

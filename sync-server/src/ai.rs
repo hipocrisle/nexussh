@@ -450,15 +450,6 @@ fn constant_eq(a: &str, b: &str) -> bool {
 // Исходящие вызовы: Claude API + Telegram (через reqwest, опц. VPN-прокси)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// reqwest-клиент с опциональным прокси (`NEXUSSH_AI_PROXY`, socks5:// или http://).
-fn http_client() -> Result<reqwest::Client, String> {
-    let mut b = reqwest::Client::builder().timeout(std::time::Duration::from_secs(45));
-    if let Some(p) = env("NEXUSSH_AI_PROXY") {
-        b = b.proxy(reqwest::Proxy::all(&p).map_err(|e| e.to_string())?);
-    }
-    b.build().map_err(|e| e.to_string())
-}
-
 /// Возвращает (текст-ответ, всего токенов). Проксирует на DE-1 headless-endpoint
 /// (`claude --print` на ПОДПИСКЕ владельца — у нас подписка, а не API-ключ).
 /// Anthropic вызывается уже с DE-1 (не из РФ), так что здесь прокси не нужен.
@@ -467,15 +458,50 @@ async fn call_claude(
     system: &str,
     user_query: &str,
 ) -> Result<(String, i64), String> {
-    let upstream = env("NEXUSSH_AI_UPSTREAM").ok_or("ai upstream not configured")?;
+    // Список upstream-нод через запятую (два транзита: DE-1 + rez, оба с claude
+    // headless на подписке). Балансируем нагрузку + отказоустойчивость.
+    let list: Vec<String> = env("NEXUSSH_AI_UPSTREAM")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if list.is_empty() {
+        return Err("ai upstream not configured".into());
+    }
     let token = env("NEXUSSH_AI_UPSTREAM_TOKEN").unwrap_or_default();
+    // Случайный старт (равномерное распределение), затем fallback по остальным.
+    let start = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as usize)
+        .unwrap_or(0)
+        % list.len();
+    let mut last_err = String::new();
+    for i in 0..list.len() {
+        let url = &list[(start + i) % list.len()];
+        match call_upstream(url, &token, model, system, user_query).await {
+            Ok(r) => return Ok(r),
+            Err(e) => last_err = format!("{url}: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+/// Один запрос к конкретной upstream-ноде (DE-1 или rez).
+async fn call_upstream(
+    url: &str,
+    token: &str,
+    model: &str,
+    system: &str,
+    user_query: &str,
+) -> Result<(String, i64), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(70))
         .build()
         .map_err(|e| e.to_string())?;
     let body = json!({ "system": system, "query": user_query, "model": model });
     let resp = client
-        .post(&upstream)
+        .post(url)
         .header("X-Alert-Token", token)
         .header("content-type", "application/json")
         .json(&body)
@@ -494,37 +520,39 @@ async fn call_claude(
 }
 
 /// Уведомляем админа о запросе доступа с inline-кнопками approve.
+/// Шлём НЕ напрямую в Telegram (RU не достучится до api.telegram.org — РКН),
+/// а на DE-1 notify-endpoint, который отправит через локальный bot-api.
 async fn notify_admin_request(user_id: &str, username: &str) -> Result<(), String> {
-    let token = env("NEXUSSH_BOT_TOKEN").ok_or("no bot token")?;
-    let chat = env("NEXUSSH_AI_CHAT_ID").ok_or("no chat id")?;
-    let api_base =
-        env("NEXUSSH_TG_API").unwrap_or_else(|| "https://api.telegram.org".to_string());
-    let client = http_client()?;
+    let notify_url = env("NEXUSSH_AI_NOTIFY_URL").ok_or("no notify url")?;
+    let token = env("NEXUSSH_AI_UPSTREAM_TOKEN").unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
 
-    // callback_data лимит 64 байта → короткие коды: aig:<action>:<code>:<user_id>
-    // код тира/модели/контекста кодируем одной буквой; бот разбирает.
-    let btns = |label: &str, data: String| json!({ "text": label, "callback_data": data });
-    let kb = json!({
-        "inline_keyboard": [
-            [ btns("✅ Standard/Haiku", format!("aig:g:sh0:{user_id}")),
-              btns("⚡ Full/Sonnet",    format!("aig:g:fs0:{user_id}")) ],
-            [ btns("🧠 Full/Opus+ctx",  format!("aig:g:fo1:{user_id}")) ],
-            [ btns("⛔ Deny",           format!("aig:d:x:{user_id}")) ],
-        ]
-    });
+    // callback_data лимит 64 байта → короткие коды: aig:<action>:<code>:<user_id>.
+    // keyboard = [[{text,callback_data},...],...] (формат DE-1 tg_send).
+    let btn = |label: &str, data: String| json!({ "text": label, "callback_data": data });
+    let keyboard = json!([
+        [ btn("✅ Standard/Haiku", format!("aig:g:sh0:{user_id}")),
+          btn("⚡ Full/Sonnet",    format!("aig:g:fs0:{user_id}")) ],
+        [ btn("🧠 Full/Opus+ctx",  format!("aig:g:fo1:{user_id}")) ],
+        [ btn("⛔ Deny",           format!("aig:d:x:{user_id}")) ],
+    ]);
     let text = format!(
         "🤖 <b>Запрос AI-доступа NexuSSH</b>\n\nПользователь: <code>{username}</code>\nВыдать доступ?"
     );
-    let url = format!("{api_base}/bot{token}/sendMessage");
-    let body = json!({
-        "chat_id": chat,
-        "text": text,
-        "parse_mode": "HTML",
-        "reply_markup": kb,
-    });
-    let resp = client.post(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+    let body = json!({ "text": text, "keyboard": keyboard });
+    let resp = client
+        .post(&notify_url)
+        .header("X-Alert-Token", token)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("tg {}", resp.status()));
+        return Err(format!("notify {}", resp.status()));
     }
     Ok(())
 }

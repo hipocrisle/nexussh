@@ -53,6 +53,7 @@ import type { ConnectArgs, HostKeyPromptInfo } from "./ssh";
 import { TabPicker } from "./TabPicker";
 import { SnippetsModal } from "./SnippetsModal";
 import AiPanel from "./AiPanel";
+import AiIndicatorDot from "./AiIndicatorDot";
 import { useAiAssistant } from "./useAiAssistant";
 import { readTerminalScreen } from "./terminalBuffers";
 import { redactSecrets } from "./redactSecrets";
@@ -3402,6 +3403,23 @@ function App() {
               </button>
             ) : mobileTab === "sessions" ? (
               <div className="flex items-center gap-0.5 shrink-0">
+                {/* AI-ассистент — как на десктопе (слева от прочих), с индикатором.
+                    Виден при настроенном аккаунте (syncState). */}
+                {syncState !== "none" && (
+                  <span className="relative inline-flex">
+                    <button
+                      type="button"
+                      onClick={() => setAiPanelOpen(true)}
+                      aria-label="AI-подсказка команд"
+                      className={`shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated ${
+                        ai.granted ? "text-nx-accent" : "text-nx-soft"
+                      }`}
+                    >
+                      <Sparkles size={19} />
+                    </button>
+                    <AiIndicatorDot ai={ai} panelOpen={aiPanelOpen} />
+                  </span>
+                )}
                 {/* Snippets MANAGER (CRUD + sync) — always available, even with no
                     active connection. Quick-run lives in the SmartKeyBar ⚡. */}
                 <button
@@ -3536,36 +3554,8 @@ function App() {
               >
                 AI
               </HeaderButton>
-              {/* Индикатор на кнопке. Красная пульсация = контекст-режим включён
-                  (экран читается) — приоритетный privacy-сигнал. Иначе: думает /
-                  готово / черновик. */}
-              {(() => {
-                if (aiPanelOpen) return null;
-                const ctxOn = ai.useCtx && ai.contextAllowed;
-                const base =
-                  "absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full pointer-events-none";
-                if (ai.busy)
-                  return (
-                    <span
-                      className={`${base} animate-ping ${ctxOn ? "bg-red-500" : "bg-nx-accent"}`}
-                      title={ctxOn ? "AI думает (видит экран)" : "AI думает"}
-                    />
-                  );
-                if (ctxOn)
-                  return (
-                    <span
-                      className={`${base} bg-red-500 animate-pulse`}
-                      title="Контекст-режим: AI видит экран"
-                    />
-                  );
-                if (ai.ready)
-                  return <span className={`${base} bg-green-500`} title="Ответ готов" />;
-                if (ai.hasDraft)
-                  return (
-                    <span className={`${base} bg-nx-accent animate-pulse`} title="Есть черновик" />
-                  );
-                return null;
-              })()}
+              {/* Индикатор на кнопке (общий компонент, тот же на мобиле). */}
+              <AiIndicatorDot ai={ai} panelOpen={aiPanelOpen} />
             </span>
           )}
           {syncState !== "none" && (

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AiAssistant } from "./useAiAssistant";
 import { writeClipboard } from "./clipboard";
+import { useIsMobile } from "./useIsMobile";
 
 interface Props {
   open: boolean;
@@ -15,6 +16,7 @@ interface Props {
 }
 
 export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Props) {
+  const isMobile = useIsMobile();
   const inputRef = useRef<HTMLInputElement>(null);
   const {
     status,
@@ -44,6 +46,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   function onHeaderPointerDown(e: React.PointerEvent) {
+    if (isMobile) return; // на мобиле панель — bottom-sheet, drag не нужен
     if ((e.target as HTMLElement).closest("button")) return; // не с кнопок шапки
     dragRef.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y };
     const move = (ev: PointerEvent) => {
@@ -59,6 +62,26 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
+
+  // Мобайл: поднять bottom-sheet над экранной клавиатурой. Без этого поле ввода
+  // прячется за клавиатурой (WebView оверлеит её). Считаем «инсет» снизу по
+  // visualViewport и делаем его нижним отступом контейнера.
+  const [kbInset, setKbInset] = useState(0);
+  useEffect(() => {
+    if (!isMobile) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      setKbInset(Math.max(0, window.innerHeight - vv.height - vv.offsetTop));
+    };
+    vv.addEventListener("resize", onResize);
+    vv.addEventListener("scroll", onResize);
+    onResize();
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      vv.removeEventListener("scroll", onResize);
+    };
+  }, [isMobile]);
 
   // Короткий «Скопировано» тик у кнопки копирования (ключ = что скопировали).
   const [copied, setCopied] = useState<string | null>(null);
@@ -131,26 +154,36 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-start justify-center pt-24 transition-opacity duration-200 ${
+      className={`fixed inset-0 z-50 flex justify-center transition-opacity duration-200 items-start pt-24 max-md:items-end max-md:pt-0 ${
         open ? "bg-black/50 opacity-100" : "bg-transparent opacity-0 pointer-events-none"
       }`}
+      style={isMobile && kbInset ? { paddingBottom: kbInset } : undefined}
       onClick={onClose}
       aria-hidden={!open}
     >
       <div
-        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+        style={!isMobile ? { transform: `translate(${pos.x}px, ${pos.y}px)` } : undefined}
+        className="max-md:w-full"
         onClick={(e) => e.stopPropagation()}
       >
       <div
-        className={`w-[min(680px,92vw)] max-h-[85vh] flex flex-col rounded-xl bg-nx-elevated shadow-2xl border border-nx-border overflow-hidden origin-top-right transition-all duration-200 ${
-          open ? "scale-100 opacity-100 translate-y-0" : "scale-90 opacity-0 -translate-y-6"
+        className={`w-[min(680px,92vw)] max-h-[85vh] flex flex-col rounded-xl bg-nx-elevated shadow-2xl border border-nx-border overflow-hidden transition-all duration-200 max-md:w-full max-md:max-h-[88vh] max-md:rounded-b-none max-md:origin-bottom origin-top-right ${
+          isMobile
+            ? open
+              ? "translate-y-0 opacity-100"
+              : "translate-y-full opacity-0"
+            : open
+              ? "scale-100 opacity-100 translate-y-0"
+              : "scale-90 opacity-0 -translate-y-6"
         }`}
         onKeyDown={onKey}
       >
         <div
-          className="flex items-center gap-2 px-4 py-3 border-b border-nx-border cursor-move select-none shrink-0"
+          className={`flex items-center gap-2 px-4 py-3 border-b border-nx-border select-none shrink-0 ${
+            isMobile ? "" : "cursor-move"
+          }`}
           onPointerDown={onHeaderPointerDown}
-          title="Потяни, чтобы переместить"
+          title={isMobile ? undefined : "Потяни, чтобы переместить"}
         >
           <span className="text-lg">🤖</span>
           <span className="font-medium">AI-подсказка команд</span>
@@ -358,10 +391,15 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
               </ul>
             )}
 
-            {items.length > 0 && (
+            {items.length > 0 && !isMobile && (
               <p className="text-[11px] text-nx-muted">
                 ↑/↓ — выбор, Enter — вставить в терминал (не выполняется), ⧉ —
                 скопировать, Esc — свернуть.
+              </p>
+            )}
+            {items.length > 0 && isMobile && (
+              <p className="text-[11px] text-nx-muted">
+                Тап — вставить команду в терминал (не выполняется), ⧉ — скопировать.
               </p>
             )}
           </div>

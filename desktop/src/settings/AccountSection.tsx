@@ -36,6 +36,7 @@ import { Section, Row, TextField } from "./primitives";
 import { SyncHostsDialog } from "./SyncHostsDialog";
 import { writeClipboard } from "../clipboard";
 import { listHosts } from "../hosts";
+import { aiStatus, aiRequest, type AiStatus } from "../ai";
 import {
   accountStatus,
   accountSetServer,
@@ -967,9 +968,78 @@ function LoggedIn({
         <LogoutControl t={t} onChanged={onChanged} />
       </Row>
 
+      <AiAccessRow t={t} />
+
       <Row label={tr("settings.account.danger")} hint={tr("settings.account.danger_hint")} t={t}>
         <DeleteAccountControl t={t} onChanged={onChanged} />
       </Row>
+    </div>
+  );
+}
+
+// AI-ассистент: статус доступа + запрос (виден в разделе Аккаунт).
+function AiAccessRow({ t }: { t: ThemePalette }) {
+  const [st, setSt] = useState<AiStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    aiStatus().then(setSt).catch(() => setSt(null));
+  }, []);
+
+  async function req() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await aiRequest();
+      setSt((p) => (p ? { ...p, status: r.status } : p));
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  let line = "…";
+  if (st) {
+    if (st.status === "granted") {
+      const lim =
+        st.daily_limit == null
+          ? "без лимита"
+          : `${st.remaining ?? st.daily_limit}/${st.daily_limit} в день`;
+      line =
+        `✅ Подключён · тир ${st.tier} · модель ${st.model} · ${lim}` +
+        (st.context_allowed ? " · контекст вкл" : "");
+    } else if (st.status === "pending") {
+      line = "⏳ Ожидает одобрения администратором";
+    } else if (st.status === "denied") {
+      line = "⛔ Доступ отклонён";
+    } else if (st.status === "expired") {
+      line = "⌛ Доступ истёк";
+    } else {
+      line = "Не подключён";
+    }
+  }
+  const canRequest =
+    st != null && ["none", "denied", "expired"].includes(st.status);
+
+  return (
+    <div
+      className="rounded-lg p-4 space-y-2.5"
+      style={{ background: t.bgElevated, border: `1px solid ${t.border}` }}
+    >
+      <div className="font-mono text-xs" style={{ color: t.textPrimary }}>
+        🤖 AI-ассистент команд
+      </div>
+      <div className="font-mono text-[11px]" style={{ color: t.textMuted }}>
+        {line}
+      </div>
+      {canRequest && (
+        <PrimaryButton t={t} onClick={req} busy={busy}>
+          Запросить доступ к AI
+        </PrimaryButton>
+      )}
+      {err && <ErrorLine t={t} msg={err} />}
     </div>
   );
 }

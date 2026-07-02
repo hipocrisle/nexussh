@@ -55,6 +55,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/recovery-login", post(handlers::recovery_login))
         // Admin (bot → server) — свой X-Admin-Token, вне Bearer-мидлвари.
         .route("/v1/ai/admin/grant", post(ai::admin_grant))
+        .route("/v1/ai/admin/list", get(ai::admin_list))
         .merge(authed)
         .with_state(state)
 }

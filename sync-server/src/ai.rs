@@ -397,15 +397,7 @@ pub async fn admin_grant(
     headers: HeaderMap,
     Json(req): Json<AdminGrantReq>,
 ) -> ApiResult<impl IntoResponse> {
-    let expected = env("NEXUSSH_AI_ADMIN_TOKEN")
-        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "admin not configured"))?;
-    let got = headers
-        .get("X-Admin-Token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !constant_eq(got, &expected) {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "bad admin token"));
-    }
+    check_admin(&headers)?;
 
     let conn = state.db.conn.lock().unwrap();
     match req.action.as_str() {
@@ -444,6 +436,76 @@ pub async fn admin_grant(
 fn constant_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+fn check_admin(headers: &HeaderMap) -> Result<(), ApiError> {
+    let expected = env("NEXUSSH_AI_ADMIN_TOKEN")
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "admin not configured"))?;
+    let got = headers
+        .get("X-Admin-Token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !constant_eq(got, &expected) {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "bad admin token"));
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /v1/ai/admin/list — список AI-юзеров для управления из бота
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub async fn admin_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    check_admin(&headers)?;
+    let conn = state.db.conn.lock().unwrap();
+    let today_n = today();
+    let mut stmt = conn
+        .prepare(
+            "SELECT user_id, username, status, tier, model, context_allowed, expires_at
+               FROM ai_access ORDER BY requested_at DESC",
+        )
+        .map_err(db_err)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(db_err)?;
+    let mut users = Vec::new();
+    for row in rows {
+        let (user_id, username, status, tier, model, ctx, expires) = row.map_err(db_err)?;
+        let used_today: i64 = conn
+            .query_row(
+                "SELECT requests FROM ai_ledger WHERE user_id=?1 AND day=?2",
+                rusqlite::params![user_id, today_n],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        users.push(json!({
+            "user_id": user_id,
+            "username": username,
+            "status": status,
+            "tier": tier,
+            "model": model,
+            "context_allowed": ctx != 0,
+            "expires_at": expires,
+            "used_today": used_today,
+        }));
+    }
+    Ok(Json(json!({ "users": users })))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

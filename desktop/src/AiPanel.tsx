@@ -39,6 +39,27 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
     answer,
   } = ai;
 
+  // Перетаскивание панели за шапку (чтобы видеть терминал под ней). Позиция
+  // сохраняется в рамках сессии (панель всегда смонтирована на уровне App).
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  function onHeaderPointerDown(e: React.PointerEvent) {
+    if ((e.target as HTMLElement).closest("button")) return; // не с кнопок шапки
+    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y };
+    const move = (ev: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      setPos({ x: d.ox + ev.clientX - d.sx, y: d.oy + ev.clientY - d.sy });
+    };
+    const up = () => {
+      dragRef.current = null;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
   // Короткий «Скопировано» тик у кнопки копирования (ключ = что скопировали).
   const [copied, setCopied] = useState<string | null>(null);
   async function copy(text: string, key: string) {
@@ -105,13 +126,20 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
       aria-hidden={!open}
     >
       <div
-        className={`w-[min(680px,92vw)] rounded-xl bg-nx-elevated shadow-2xl border border-nx-border overflow-hidden origin-top-right transition-all duration-200 ${
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+        onClick={(e) => e.stopPropagation()}
+      >
+      <div
+        className={`w-[min(680px,92vw)] max-h-[85vh] flex flex-col rounded-xl bg-nx-elevated shadow-2xl border border-nx-border overflow-hidden origin-top-right transition-all duration-200 ${
           open ? "scale-100 opacity-100 translate-y-0" : "scale-90 opacity-0 -translate-y-6"
         }`}
-        onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
       >
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-nx-border">
+        <div
+          className="flex items-center gap-2 px-4 py-3 border-b border-nx-border cursor-move select-none shrink-0"
+          onPointerDown={onHeaderPointerDown}
+          title="Потяни, чтобы переместить"
+        >
           <span className="text-lg">🤖</span>
           <span className="font-medium">AI-подсказка команд</span>
           {busy && <span className="text-xs text-nx-muted animate-pulse">думает…</span>}
@@ -136,6 +164,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
           </button>
         </div>
 
+        <div className="flex-1 overflow-y-auto">
         {!granted && (
           <div className="p-5 space-y-3 text-sm">
             {status?.status === "pending" ? (
@@ -271,7 +300,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             )}
 
             {items.length > 0 && (
-              <ul className="space-y-1 max-h-[46vh] overflow-auto">
+              <ul className="space-y-1">
                 {items.map((it, i) => (
                   <li key={i} className="flex items-stretch gap-1">
                     <button
@@ -315,6 +344,8 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             )}
           </div>
         )}
+        </div>
+      </div>
       </div>
     </div>
   );

@@ -316,3 +316,26 @@ jobs:
           for a in $(gh release view channel-beta --repo "$REPO" --json assets --jq '.assets[].name'); do
             case "$KEEP" in *" $a "*) ;; *) echo "prune $a"; gh release delete-asset channel-beta "$a" --repo "$REPO" --yes || true;; esac
           done
+
+      # Синхронизировать self-host фид (upd.hipogas.org на DE-1) с GitHub СРАЗУ,
+      # не дожидаясь крон-цикла (*/5 мин). Без этого шага после сборки было окно
+      # до 5 мин, когда автообновление отдавало старую версию (self-host — PRIMARY
+      # endpoint, а GitHub-fallback не срабатывает на «свежий-но-старый» манифест).
+      # Дёргает токен-защищённый /trigger-mirror → intake на DE-1 гоняет mirror-скрипт.
+      - name: Trigger self-host mirror (upd.hipogas.org)
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          MIRROR_TOKEN: ${{ secrets.NEXUSSH_MIRROR_TOKEN }}
+        run: |
+          code=""
+          for i in 1 2 3; do
+            code=$(curl -s -o /tmp/mirror.json -w '%{http_code}' -m 160 -X POST \
+              -H "X-Mirror-Token: $MIRROR_TOKEN" \
+              https://upd.hipogas.org/trigger-mirror || echo 000)
+            echo "attempt $i → HTTP $code"; cat /tmp/mirror.json 2>/dev/null || true; echo
+            [ "$code" = "200" ] && break
+            sleep 8
+          done
+          # Не роняем сборку, если зеркало недоступно (крон догонит за ≤5 мин) —
+          # но громко предупреждаем.
+          [ "$code" = "200" ] || echo "::warning::mirror trigger failed (HTTP $code); cron will catch up within 5 min"

@@ -63,18 +63,31 @@ export function guessOs(hostLabel?: string | null): string {
  *  или null (тогда падаем на guessOs по имени хоста). ПРИВАТНО: наружу уходит
  *  только ярлык платформы, НЕ текст экрана — работает и без «AI видит экран». */
 export function detectPlatform(screenTail?: string | null): string | null {
-  const t = (screenTail || "").toLowerCase();
+  const raw = screenTail || "";
+  const t = raw.toLowerCase();
   if (!t.trim()) return null;
-  // Cisco IOS/IOS-XE/NX-OS — очень характерные маркеры.
-  if (
-    /\(config[^)]*\)#/.test(t) || // config-режим: hostname(config)# / (config-if)#
-    /% (invalid input|incomplete command|ambiguous command|bad|unknown command)/.test(t) ||
-    /building configuration|line protocol is|show running-config|\bcisco ios\b|ios[ -]xe|nx-?os|catalyst/.test(t) ||
-    /(gigabit|fast|ten-?gig)ethernet\d|\bvlan\d+\b.*\bactive\b/.test(t)
-  )
-    return "cisco-ios";
+  // MikroTik / Juniper / VyOS — характерные приглашения/маркеры.
   if (/\[[\w.-]+@[\w.-]+\]\s*>|routeros|mikrotik/.test(t)) return "routeros";
   if (/junos|\{master(:\d+)?\}|\bjuniper\b/.test(t)) return "junos";
   if (/vyos@|\bvyos\b/.test(t)) return "vyos";
+  // Cisco IOS/IOS-XE/NX-OS — сильные маркеры вывода.
+  if (
+    /\(config[^)]*\)\s*#/.test(t) || // config-режим: hostname(config)# / (config-if)#
+    /% (invalid input|incomplete command|ambiguous command|bad|unknown command)/.test(t) ||
+    /building configuration|line protocol is|show running-config|\bcisco ios\b|ios[ -]xe|nx-?os|catalyst/.test(t) ||
+    /(gigabit|fast|ten-?gig)ethernet\d/.test(t)
+  )
+    return "cisco-ios";
+  // По приглашению (когда вывода ещё нет — чистая сессия). Берём последнюю
+  // непустую строку экрана.
+  const lines = raw.split(/\r?\n/).map((l) => l.replace(/\s+$/, "")).filter((l) => l.trim());
+  const last = (lines[lines.length - 1] || "").trim();
+  // Явно shell-приглашения → linux (исключаем ложняк ниже).
+  if (/^(sh|bash|zsh|ash|dash|ksh)-[\d.]+\s*[#$]\s*$/.test(last)) return null;
+  if (/[@:~]|\/.*[#$]\s*$/.test(last)) return null; // user@host:~$ / [root@h ~]# / путь
+  // hostname>  — user-exec, у linux такого приглашения не бывает → сеть.
+  if (/^[A-Za-z][\w.\-]{0,48}>\s*$/.test(last)) return "cisco-ios";
+  // hostname#  — enable-режим, без linux-признаков (нет @ : / — отсеяны выше) → сеть.
+  if (/^[A-Za-z][\w.\-]{0,48}#\s*$/.test(last)) return "cisco-ios";
   return null;
 }

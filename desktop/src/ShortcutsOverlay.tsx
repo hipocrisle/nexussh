@@ -52,6 +52,14 @@ export function ShortcutsOverlay({ onClose }: Props) {
       ],
     },
     {
+      title: t("shortcuts.s_tools"),
+      items: [
+        { keys: ["Ctrl", "Shift", "Z"], desc: t("shortcuts.k_palette") },
+        { keys: ["Ctrl", "Shift", "A"], desc: t("shortcuts.k_ai") },
+        { keys: ["Ctrl", "Shift", "X"], desc: t("shortcuts.k_snippets") },
+      ],
+    },
+    {
       title: t("shortcuts.s_chrome"),
       items: [
         { keys: ["Ctrl", ","], desc: t("shortcuts.k_settings") },

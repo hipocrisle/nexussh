@@ -702,6 +702,17 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  // Инлайн-агент (эксперимент): "/agent " в консоли открывает AI-панель в доке
+  // снизу (а не по центру). aiDock = режим дока.
+  const [aiDock, setAiDock] = useState(false);
+  useEffect(() => {
+    const onAgent = () => {
+      setAiDock(true);
+      setAiPanelOpen(true);
+    };
+    window.addEventListener("nx:agent", onAgent as EventListener);
+    return () => window.removeEventListener("nx:agent", onAgent as EventListener);
+  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Хосты для палитры: грузим при открытии (listHosts async) + рефреш по событию.
   const [paletteHosts, setPaletteHosts] = useState<HostRecord[]>([]);
@@ -1551,6 +1562,7 @@ function App() {
       }
       if (meta && e.shiftKey && e.code === "KeyA") {
         e.preventDefault();
+        setAiDock(false); // хоткей — центральная панель
         setAiPanelOpen((v) => {
           const next = !v;
           // При закрытии хоткеем — вернуть фокус в терминал (как и кнопка/Esc),
@@ -4067,8 +4079,10 @@ function App() {
         />
         <AiPanel
           open={aiPanelOpen}
+          dock={aiDock && !isMobile}
           onClose={() => {
             setAiPanelOpen(false);
+            setAiDock(false);
             // Вернуть фокус в терминал, чтобы после сворачивания панели курсор
             // сразу был в сессии (без клика по окну). На мобиле не трогаем —
             // focus всплывает клавиатуру.

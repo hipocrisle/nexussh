@@ -860,11 +860,61 @@ export function TerminalView({
         );
       }
     }
+    // ─── Inline agent (эксперимент, Фаза 0) ───────────────────────────────
+    // Ловим "/agent " в начале свежего промпта (после Enter), НЕ отправляя в PTY,
+    // и открываем AI-панель в доке. Изолировано: только путь onData (набор),
+    // остальные пути ввода не трогаем. В alt-screen (vim/htop) — не вмешиваемся.
+    const AGENT_TRIG = "/agent ";
+    let agentHold = "";
+    let agentArmed = true; // считаем, что старт — у свежего промпта
+    function agentSend(data: string) {
+      if (term.buffer.active.type === "alternate") {
+        send(data);
+        return;
+      }
+      if (data.length !== 1) {
+        if (agentHold) {
+          send(agentHold);
+          agentHold = "";
+        }
+        send(data);
+        agentArmed = false;
+        return;
+      }
+      const ch = data;
+      if (agentHold) {
+        if (ch === "\x7f") {
+          agentHold = agentHold.slice(0, -1);
+          return; // swallow (редактируем удержанный префикс)
+        }
+        const next = agentHold + ch;
+        if (AGENT_TRIG.startsWith(next)) {
+          agentHold = next;
+          if (next === AGENT_TRIG) {
+            agentHold = "";
+            window.dispatchEvent(
+              new CustomEvent("nx:agent", { detail: { sessionId } }),
+            );
+          }
+          return; // swallow (держим префикс)
+        }
+        // Не наш префикс — отдаём удержанное + текущий символ шеллу.
+        send(agentHold + ch);
+        agentHold = "";
+        agentArmed = ch === "\r";
+        return;
+      }
+      if (agentArmed && ch === "/") {
+        agentHold = "/";
+        return; // начинаем держать
+      }
+      send(ch);
+      agentArmed = ch === "\r";
+    }
+
     const onDataDisposable = term.onData((data) => {
-      // Reached only for input we didn't intercept above (e.g. IME composition,
-      // desktop). Send as-is.
       dbg(`onData '${esc(data).slice(0, 24)}'`);
-      send(data);
+      agentSend(data);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
       sshResize(sessionId, cols, rows).catch(console.error);

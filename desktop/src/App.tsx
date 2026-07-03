@@ -146,6 +146,8 @@ import {
   Cloud,
   CloudOff,
   Sparkles,
+  Cable,
+  ArrowUpCircle,
 } from "lucide-react";
 import { accountStatus, accountSyncNow } from "./account";
 import "./App.css";
@@ -2120,7 +2122,7 @@ function App() {
       out.push({
         id: `host:${h.id}`,
         section: "Хосты",
-        icon: "🖥",
+        icon: <Server size={14} />,
         label: h.name || `${h.user}@${h.host}`,
         hint: "подключиться",
         keywords: `${h.user}@${h.host} ${h.group ?? ""}`,
@@ -2138,7 +2140,7 @@ function App() {
       out.push({
         id: `snip:${s.id}`,
         section: "Сниппеты",
-        icon: "⚡",
+        icon: <Zap size={14} />,
         label: s.name,
         hint: activeId ? "→ в терминал" : "нет активной сессии",
         keywords: s.command + " " + (s.category ?? ""),
@@ -2161,7 +2163,7 @@ function App() {
         out.push({
           id: `tab:${s.id}`,
           section: "Вкладки",
-          icon: "▶",
+          icon: <TerminalIcon size={14} />,
           label: s.host.name || `${s.host.user}@${s.host.host}`,
           hint: s.id === activeId ? "текущая" : "переключиться",
           keywords: `${s.host.user}@${s.host.host}`,
@@ -2174,17 +2176,17 @@ function App() {
     }
     // Действия.
     const actions: PaletteItem[] = [
-      { id: "act:newtab", icon: "＋", label: "Новая вкладка (SSH)", run: openSshPicker },
-      { id: "act:sftp", icon: "📁", label: "Открыть SFTP активного хоста", hint: activeSession ? undefined : "нет сессии", run: () => activeSession && openSftp(activeSession) },
-      { id: "act:ai", icon: "🤖", label: "AI-подсказка команд", run: () => setAiPanelOpen(true) },
-      { id: "act:snippets", icon: "⚡", label: "Управление сниппетами", run: () => setSnippetsOpen(true) },
-      { id: "act:tunnels", icon: "🔌", label: "Туннели (проброс портов)", run: () => openTunnelsPanel() },
-      { id: "act:vault", icon: "🔒", label: "Vault", run: () => setVaultPanelOpen(true) },
-      { id: "act:sync", icon: "☁", label: "Облачный синк", run: () => setSyncPanelOpen(true) },
-      { id: "act:history", icon: "🕘", label: "История сессий", run: () => setHistoryPanelOpen(true) },
+      { id: "act:newtab", icon: <Plus size={14} />, label: "Новая вкладка (SSH)", run: openSshPicker },
+      { id: "act:sftp", icon: <FolderOpen size={14} />, label: "Открыть SFTP активного хоста", hint: activeSession ? undefined : "нет сессии", run: () => activeSession && openSftp(activeSession) },
+      { id: "act:ai", icon: <Sparkles size={14} className="text-nx-accent2" />, label: "AI-подсказка команд", run: () => setAiPanelOpen(true) },
+      { id: "act:snippets", icon: <Zap size={14} />, label: "Управление сниппетами", run: () => setSnippetsOpen(true) },
+      { id: "act:tunnels", icon: <Cable size={14} />, label: "Туннели (проброс портов)", run: () => openTunnelsPanel() },
+      { id: "act:vault", icon: <Lock size={14} />, label: "Vault", run: () => setVaultPanelOpen(true) },
+      { id: "act:sync", icon: <Cloud size={14} />, label: "Облачный синк", run: () => setSyncPanelOpen(true) },
+      { id: "act:history", icon: <HistoryIcon size={14} />, label: "История сессий", run: () => setHistoryPanelOpen(true) },
       {
         id: "act:update",
-        icon: "⬆",
+        icon: <ArrowUpCircle size={14} />,
         label: "Проверить обновление",
         run: () => {
           setUpdatePanel({ initial: undefined });
@@ -2208,7 +2210,7 @@ function App() {
       out.push({
         id: `set:${sec}`,
         section: "Настройки",
-        icon: "⚙️",
+        icon: <SettingsIcon size={14} />,
         label,
         hint: "настройки",
         run: () => {

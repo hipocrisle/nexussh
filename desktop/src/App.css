@@ -354,6 +354,36 @@ html[data-os="linux"][data-squared] #root > main {
     box-shadow: 0 0 8px var(--nx-accent-glow);
   }
 
+  /* Command palette leading orb (accent, glossy) — step 14. */
+  .nx-orb {
+    width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0;
+    background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.6),
+      var(--nx-accent) 62%, color-mix(in srgb, var(--nx-accent) 68%, #000));
+    box-shadow: 0 0 12px var(--nx-accent-glow);
+  }
+  /* AI bot-orb (cyan accent2 — distinct entity) — step 15. */
+  .nx-ai-orb {
+    width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--nx-accent2);
+    background: linear-gradient(150deg,
+      color-mix(in srgb, var(--nx-accent2) 18%, var(--nx-bg)),
+      color-mix(in srgb, var(--nx-accent2) 5%, var(--nx-bg)));
+    border: 1px solid color-mix(in srgb, var(--nx-accent2) 45%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--nx-accent2) 20%, transparent),
+      0 0 14px color-mix(in srgb, var(--nx-accent2) 22%, transparent);
+  }
+  /* AI corner brackets — cyan variant. */
+  .nx-brackets--ai::before, .nx-brackets--ai::after,
+  .nx-brackets--ai > i::before, .nx-brackets--ai > i::after { border-color: var(--nx-accent2); }
+  /* AI quota progress bar (cyan). */
+  .nx-ai-bar { height: 3px; border-radius: 2px; background: var(--nx-bg-elevated); overflow: hidden; }
+  .nx-ai-bar > i { display: block; height: 100%; background: var(--nx-accent2);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--nx-accent2) 40%, transparent); }
+  /* AI modal glow (cyan, distinct from accent-green modals). */
+  .nx-glow-ai { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--nx-accent2) 8%, transparent),
+    0 30px 90px rgba(0,0,0,0.55), 0 0 44px color-mix(in srgb, var(--nx-accent2) 13%, transparent); }
+
   /* Tab — bottom-accent underline on active */
   .nx-tab { position: relative; transition: color var(--nx-d-fast), background-color var(--nx-d-fast); }
   .nx-tab[data-active="true"]::after {

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Sparkles, Send, Copy, Check } from "lucide-react";
 import type { AiAssistant } from "./useAiAssistant";
 import { writeClipboard } from "./clipboard";
 import { useIsMobile } from "./useIsMobile";
@@ -151,6 +152,11 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
         ? "без лимита"
         : `осталось ${status.remaining} сегодня`
       : "";
+  // Прогресс квоты (доля оставшегося) для cyan-бара; null = без лимита.
+  const quotaPct =
+    granted && status && status.daily_limit != null && status.remaining != null
+      ? Math.max(0, Math.min(100, (status.remaining / status.daily_limit) * 100))
+      : null;
 
   return (
     <div
@@ -167,7 +173,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
         onClick={(e) => e.stopPropagation()}
       >
       <div
-        className={`w-[min(680px,92vw)] max-h-[85vh] flex flex-col rounded-xl bg-nx-elevated shadow-2xl border border-nx-border overflow-hidden transition-all duration-200 max-md:w-full max-md:max-h-[88vh] max-md:rounded-b-none max-md:origin-bottom origin-top-right ${
+        className={`nx-modal-enter relative w-[min(680px,92vw)] max-h-[85vh] flex flex-col rounded-nx-lg bg-nx-panel nx-glow-ai border border-nx-border overflow-hidden transition-all duration-200 max-md:w-full max-md:max-h-[88vh] max-md:rounded-b-none max-md:origin-bottom origin-top-right ${
           isMobile
             ? open
               ? "translate-y-0 opacity-100"
@@ -178,23 +184,43 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
         }`}
         onKeyDown={onKey}
       >
+        <span className="nx-brackets nx-brackets--ai">
+          <i />
+        </span>
         <div
-          className={`flex items-center gap-2 px-4 py-3 border-b border-nx-border select-none shrink-0 ${
+          className={`flex items-center gap-2.5 px-4 py-3 border-b border-nx-divider select-none shrink-0 ${
             isMobile ? "" : "cursor-move"
           }`}
           onPointerDown={onHeaderPointerDown}
           title={isMobile ? undefined : "Потяни, чтобы переместить"}
         >
-          <span className="text-lg">🤖</span>
-          <span className="font-medium">AI-подсказка команд</span>
-          {busy && <span className="text-xs text-nx-muted animate-pulse">думает…</span>}
-          <span className="ml-auto text-xs text-nx-muted">{remainLabel}</span>
+          <span className="nx-ai-orb">
+            <Sparkles size={15} />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-sm">AI-подсказка команд</span>
+              {busy && (
+                <span className="text-xs text-nx-accent2 animate-pulse">думает…</span>
+              )}
+            </div>
+            {granted && (
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-[11px] text-nx-muted whitespace-nowrap">{remainLabel}</span>
+                {quotaPct != null && (
+                  <span className="nx-ai-bar w-20 max-w-[30vw]">
+                    <i style={{ width: `${quotaPct}%` }} />
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
           {granted && ai.hasDraft && (
             <button
               type="button"
               onClick={clear}
               title="Очистить запрос и ответ"
-              className="text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded"
+              className="ml-auto text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded"
             >
               Очистить
             </button>
@@ -203,7 +229,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             type="button"
             onClick={onClose}
             title="Свернуть (Esc) — запрос продолжит выполняться"
-            className="text-nx-muted hover:text-nx-text px-1.5 leading-none text-lg"
+            className={`${granted && ai.hasDraft ? "" : "ml-auto"} text-nx-muted hover:text-nx-text px-1.5 leading-none text-lg`}
           >
             —
           </button>
@@ -285,8 +311,9 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                 type="button"
                 disabled={busy || !query.trim()}
                 onClick={ask}
-                className="px-4 py-2 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
+                className="px-4 py-2 rounded-lg bg-nx-accent text-nx-bg font-semibold text-sm shadow-glow-sm inline-flex items-center gap-1.5 disabled:opacity-50 disabled:shadow-none"
               >
+                <Send size={13} />
                 {busy ? "…" : "Спросить"}
               </button>
             </div>
@@ -328,7 +355,10 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             {/* Текстовый ответ — свёрнут до краткой выжимки, «Развернуть» для полного.
                 Короткий свёрнутый ответ не прячет команды под фолд. */}
             {answer.trim() && (
-              <div className="rounded-lg border border-nx-border bg-nx-bg/50 p-3">
+              <div className="rounded-nx border border-nx-divider bg-nx-bg/40 p-3">
+                <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
+                  // ответ
+                </div>
                 <div className="flex items-start gap-2">
                   <div className="flex-1 text-sm whitespace-pre-wrap break-words leading-snug">
                     {answerShown}
@@ -355,52 +385,69 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             )}
 
             {items.length > 0 && (
-              <ul className="space-y-1">
-                {items.map((it, i) => (
-                  <li key={i} className="flex items-stretch gap-1">
-                    <button
-                      type="button"
+              <div>
+                <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
+                  // предложенные команды
+                </div>
+                <div className="rounded-nx border border-nx-divider overflow-hidden divide-y divide-nx-divider">
+                  {items.map((it, i) => (
+                    <div
+                      key={i}
+                      className="nx-row px-3 py-2"
+                      data-active={i === sel}
                       onMouseEnter={() => setSel(i)}
-                      onClick={() => insert(it.cmd)}
-                      className={`flex-1 text-left px-3 py-2 rounded-lg border transition ${
-                        i === sel
-                          ? "border-nx-accent bg-nx-accent/10"
-                          : "border-transparent hover:bg-nx-bg"
-                      }`}
                     >
                       <div className="flex items-center gap-2">
-                        <code className="text-sm font-mono">{it.cmd}</code>
+                        <code className="flex-1 text-sm font-mono min-w-0 truncate">
+                          <span className="text-nx-muted mr-1.5 select-none">$</span>
+                          <span className="text-nx-accent">{it.cmd}</span>
+                        </code>
                         {it.danger && (
-                          <span className="text-xs text-nx-danger">🔴 опасная</span>
+                          <span className="text-[11px] text-nx-danger shrink-0">⚠ опасная</span>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => copy(it.cmd, `cmd${i}`)}
+                          title="Скопировать команду"
+                          className="shrink-0 text-nx-muted hover:text-nx-text p-1 rounded"
+                        >
+                          {copied === `cmd${i}` ? <Check size={13} /> : <Copy size={13} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => insert(it.cmd)}
+                          className="shrink-0 text-[11px] text-nx-accent border border-nx-accent/40 rounded-full px-2 py-0.5 hover:bg-nx-accent/10"
+                        >
+                          → выполнить
+                        </button>
                       </div>
                       {it.explain && (
-                        <div className="text-xs text-nx-muted mt-0.5">{it.explain}</div>
+                        <div className="text-xs text-nx-muted mt-1">{it.explain}</div>
                       )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => copy(it.cmd, `cmd${i}`)}
-                      title="Скопировать команду"
-                      className="shrink-0 self-center text-xs text-nx-muted hover:text-nx-text px-1.5 py-1 rounded border border-nx-border"
-                    >
-                      {copied === `cmd${i}` ? "✓" : "⧉"}
-                    </button>
-                  </li>
-                ))}
-              </ul>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-nx-muted mt-1.5">
+                  {isMobile
+                    ? "Тап «→ выполнить» — вставить в терминал (не запускается), копия — иконкой."
+                    : "↑/↓ — выбор, Enter или «→ выполнить» — вставить (не запускается), Esc — свернуть."}
+                </p>
+              </div>
             )}
 
-            {items.length > 0 && !isMobile && (
-              <p className="text-[11px] text-nx-muted">
-                ↑/↓ — выбор, Enter — вставить в терминал (не выполняется), ⧉ —
-                скопировать, Esc — свернуть.
-              </p>
-            )}
-            {items.length > 0 && isMobile && (
-              <p className="text-[11px] text-nx-muted">
-                Тап — вставить команду в терминал (не выполняется), ⧉ — скопировать.
-              </p>
+            {/* Пустое состояние — до первого запроса. */}
+            {!busy && !err && !answer.trim() && items.length === 0 && (
+              <div className="rounded-nx border border-nx-divider bg-nx-bg/40 p-3">
+                <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
+                  // как это работает
+                </div>
+                <p className="text-xs text-nx-muted leading-relaxed">
+                  Опиши задачу на русском — AI предложит команды или объяснит вывод.
+                  Ничего не выполняется само: команда лишь вставляется в терминал по
+                  «→ выполнить», запускаешь её ты. Для разбора экрана включи «AI видит
+                  экран».
+                </p>
+              </div>
             )}
           </div>
         )}

@@ -21,11 +21,22 @@ built-in VPN transport.
 
 ## Features
 
+**AI command assistant** *(new)*
+- Describe a task in plain language — get suggested commands to insert (never auto-run), or a plain-text explanation of on-screen output
+- Platform-aware: detects the target (Linux, Cisco IOS, MikroTik, Juniper…) from the prompt and adapts the syntax
+- Optional "AI sees the screen" mode sends the last ~40 lines for accuracy — passwords and keys are stripped client-side; off by default, only a platform label leaves the machine otherwise
+- Access-gated with per-user daily limits; suggestions are copyable and inserted only on your click
+
+**Command palette** *(new, desktop)*
+- One hotkey (default `Ctrl+Shift+Z`, configurable) — fuzzy-search across hosts, snippets, open tabs, actions and settings
+- Keyboard-only: arrows, Enter, `Tab` to jump sections, `@ # > /` prefixes to scope; plus an "ask AI" row
+
 **Terminal**
 - Split tabs and keyboard shortcuts
 - Status line with live connection state
 - Theme and font selection
 - Built-in search and session history
+- Snippets (command grid, hotkeys, synced)
 
 **Connecting**
 - Quick-connect by IP address

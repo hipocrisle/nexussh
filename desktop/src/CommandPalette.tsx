@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { fuzzyMatch } from "./fuzzy";
-import { useIsMobile } from "./useIsMobile";
 
 export interface PaletteItem {
   id: string;
@@ -48,28 +47,11 @@ type Row =
 
 export default function CommandPalette({ open, onClose, items, onAskAi }: Props) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<string | null>(null); // от чипа «вкладки» и т.п.
   const [sel, setSel] = useState(0);
-
-  // Мобайл: поднять над клавиатурой (поле поиска сверху, результаты не прячутся).
-  const [kbInset, setKbInset] = useState(0);
-  useEffect(() => {
-    if (!isMobile) return;
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const onResize = () => setKbInset(Math.max(0, window.innerHeight - vv.height - vv.offsetTop));
-    vv.addEventListener("resize", onResize);
-    vv.addEventListener("scroll", onResize);
-    onResize();
-    return () => {
-      vv.removeEventListener("resize", onResize);
-      vv.removeEventListener("scroll", onResize);
-    };
-  }, [isMobile]);
 
   useEffect(() => {
     if (open) {
@@ -208,18 +190,16 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-start justify-center pt-24 max-md:pt-3 transition-opacity duration-150 ${
+      className={`fixed inset-0 z-50 flex items-start justify-center pt-24 transition-opacity duration-150 ${
         open ? "bg-black/60 backdrop-blur-sm opacity-100" : "bg-transparent opacity-0 pointer-events-none"
       }`}
-      style={isMobile && kbInset ? { paddingBottom: kbInset } : undefined}
       onClick={onClose}
       aria-hidden={!open}
     >
       <div
-        className={`nx-modal-enter relative w-[640px] max-w-[94vw] max-h-[70vh] flex flex-col bg-nx-panel rounded-nx-lg border border-nx-border shadow-glow-lg overflow-hidden transition-all duration-150 max-md:w-[96vw] max-md:max-h-full ${
+        className={`nx-modal-enter relative w-[640px] max-w-[94vw] max-h-[70vh] flex flex-col bg-nx-panel rounded-nx-lg border border-nx-border shadow-glow-lg overflow-hidden transition-all duration-150 ${
           open ? "scale-100 opacity-100 translate-y-0" : "scale-95 opacity-0 -translate-y-4"
         }`}
-        style={isMobile ? { maxHeight: `calc(100dvh - ${kbInset + 24}px)` } : undefined}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
       >

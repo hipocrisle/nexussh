@@ -3611,10 +3611,6 @@ function App() {
           }
           items={[
             {
-              label: t("palette.open"),
-              onClick: () => setPaletteOpen(true),
-            },
-            {
               label: vault?.configured ? "vault" : t("vault.header_enable"),
               onClick: () => {
                 if (!vault?.configured) markVaultPromptSeen();
@@ -4058,8 +4054,8 @@ function App() {
           />
         )}
         <CommandPalette
-          open={paletteOpen}
-          items={paletteOpen ? buildPaletteItems() : []}
+          open={paletteOpen && !isMobile}
+          items={paletteOpen && !isMobile ? buildPaletteItems() : []}
           onClose={() => {
             setPaletteOpen(false);
             if (!isMobile) focusActiveTerminal();

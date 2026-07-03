@@ -80,7 +80,8 @@ const HistoryPanel = lazy(() =>
 );
 import { PaneHeader } from "./PaneHeader";
 import { Button } from "./components/primitives";
-import { useSettings } from "./settings/settings-store";
+import { useSettings, getSettings } from "./settings/settings-store";
+import { eventMatches } from "./hotkeys";
 import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
@@ -1538,8 +1539,8 @@ function App() {
       // AI-панель: Ctrl/Cmd+Shift+A — открыть/закрыть подсказку команд.
       // e.code (физическая клавиша), НЕ e.key — иначе не сработает на не-латинской
       // раскладке (на русской "A" = "Ф").
-      // Command palette: Ctrl/Cmd+Shift+Z (e.code — раскладко-независимо).
-      if (meta && e.shiftKey && e.code === "KeyZ") {
+      // Command palette: настраиваемый хоткей (дефолт Ctrl/Cmd+Shift+Z).
+      if (eventMatches(e, getSettings().paletteHotkey)) {
         e.preventDefault();
         setPaletteOpen((v) => {
           const next = !v;
@@ -3609,6 +3610,10 @@ function App() {
             ) : undefined
           }
           items={[
+            {
+              label: t("palette.open"),
+              onClick: () => setPaletteOpen(true),
+            },
             {
               label: vault?.configured ? "vault" : t("vault.header_enable"),
               onClick: () => {

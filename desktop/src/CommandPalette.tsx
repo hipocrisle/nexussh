@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { fuzzyMatch } from "./fuzzy";
+import { useIsMobile } from "./useIsMobile";
 
 export interface PaletteItem {
   id: string;
@@ -45,11 +47,29 @@ type Row =
   | { kind: "item"; item: PaletteItem; positions: number[] };
 
 export default function CommandPalette({ open, onClose, items, onAskAi }: Props) {
+  const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<string | null>(null); // от чипа «вкладки» и т.п.
   const [sel, setSel] = useState(0);
+
+  // Мобайл: поднять над клавиатурой (поле поиска сверху, результаты не прячутся).
+  const [kbInset, setKbInset] = useState(0);
+  useEffect(() => {
+    if (!isMobile) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => setKbInset(Math.max(0, window.innerHeight - vv.height - vv.offsetTop));
+    vv.addEventListener("resize", onResize);
+    vv.addEventListener("scroll", onResize);
+    onResize();
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      vv.removeEventListener("scroll", onResize);
+    };
+  }, [isMobile]);
 
   useEffect(() => {
     if (open) {
@@ -188,16 +208,18 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex items-start justify-center pt-24 transition-opacity duration-150 ${
+      className={`fixed inset-0 z-50 flex items-start justify-center pt-24 max-md:pt-3 transition-opacity duration-150 ${
         open ? "bg-black/60 backdrop-blur-sm opacity-100" : "bg-transparent opacity-0 pointer-events-none"
       }`}
+      style={isMobile && kbInset ? { paddingBottom: kbInset } : undefined}
       onClick={onClose}
       aria-hidden={!open}
     >
       <div
-        className={`nx-modal-enter relative w-[640px] max-w-[94vw] max-h-[70vh] flex flex-col bg-nx-panel rounded-nx-lg border border-nx-border shadow-glow-lg overflow-hidden transition-all duration-150 ${
+        className={`nx-modal-enter relative w-[640px] max-w-[94vw] max-h-[70vh] flex flex-col bg-nx-panel rounded-nx-lg border border-nx-border shadow-glow-lg overflow-hidden transition-all duration-150 max-md:w-[96vw] max-md:max-h-full ${
           open ? "scale-100 opacity-100 translate-y-0" : "scale-95 opacity-0 -translate-y-4"
         }`}
+        style={isMobile ? { maxHeight: `calc(100dvh - ${kbInset + 24}px)` } : undefined}
         onClick={(e) => e.stopPropagation()}
         onKeyDown={onKey}
       >
@@ -215,7 +237,7 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
               setQuery(e.target.value);
               setSel(0);
             }}
-            placeholder="Поиск: хосты, сниппеты, вкладки, действия…"
+            placeholder={t("palette.placeholder")}
             className="flex-1 bg-transparent outline-none text-sm placeholder:text-nx-muted font-mono"
           />
           <span className="text-micro text-nx-muted tracking-widest select-none max-md:hidden">@ # &gt; /</span>
@@ -246,7 +268,7 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
         {/* Результаты */}
         <div ref={listRef} className="flex-1 overflow-y-auto py-1">
           {rows.length === 0 && !showAskAi && (
-            <div className="px-4 py-6 text-center text-sm text-nx-muted">Ничего не найдено</div>
+            <div className="px-4 py-6 text-center text-sm text-nx-muted">{t("palette.empty")}</div>
           )}
           {rows.map((row) => {
             if (row.kind === "header") {
@@ -309,7 +331,7 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
                       ✦
                     </span>
                     <span className="flex-1 text-sm truncate font-mono text-nx-text">
-                      Спросить AI про «{needle}»
+                      {t("palette.ask_ai", { q: needle })}
                     </span>
                   </button>
                 </>
@@ -319,10 +341,10 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
 
         {/* Футер */}
         <div className="px-[18px] py-1.5 border-t border-nx-divider text-micro text-nx-muted shrink-0 flex gap-3 flex-wrap">
-          <span>↑↓ выбор</span>
-          <span>↵ выполнить</span>
-          <span>Tab секция</span>
-          <span>@ # &gt; / фильтр</span>
+          <span>↑↓ {t("palette.k_select")}</span>
+          <span>↵ {t("palette.k_run")}</span>
+          <span>Tab {t("palette.k_section")}</span>
+          <span>@ # &gt; / {t("palette.k_filter")}</span>
         </div>
       </div>
     </div>

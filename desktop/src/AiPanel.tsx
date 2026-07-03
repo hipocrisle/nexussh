@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Sparkles, Send, Copy, Check } from "lucide-react";
 import type { AiAssistant } from "./useAiAssistant";
 import { writeClipboard } from "./clipboard";
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Props) {
+  const { t } = useTranslation();
   const isMobile = useIsMobile();
   const inputRef = useRef<HTMLInputElement>(null);
   const {
@@ -149,8 +151,8 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
   const remainLabel =
     granted && status
       ? status.remaining == null
-        ? "без лимита"
-        : `осталось ${status.remaining} сегодня`
+        ? t("ai.quota_unlimited")
+        : t("ai.quota_left", { n: status.remaining })
       : "";
   // Прогресс квоты (доля оставшегося) для cyan-бара; null = без лимита.
   const quotaPct =
@@ -199,9 +201,9 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
           </span>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="font-medium text-sm">AI-подсказка команд</span>
+              <span className="font-medium text-sm">{t("ai.title")}</span>
               {busy && (
-                <span className="text-xs text-nx-accent2 animate-pulse">думает…</span>
+                <span className="text-xs text-nx-accent2 animate-pulse">{t("ai.thinking")}</span>
               )}
             </div>
             {granted && (
@@ -219,10 +221,10 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             <button
               type="button"
               onClick={clear}
-              title="Очистить запрос и ответ"
+              title={t("ai.clear")}
               className="ml-auto text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded"
             >
-              Очистить
+              {t("ai.clear")}
             </button>
           )}
           <button
@@ -304,7 +306,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                   setQuery(e.target.value);
                   setNavigated(false);
                 }}
-                placeholder="Что нужно сделать? (напр. «показать открытые порты»)"
+                placeholder={t("ai.ask_ph")}
                 className="flex-1 px-3 py-2 rounded-lg bg-nx-bg border border-nx-border text-sm outline-none focus:border-nx-accent"
               />
               <button
@@ -314,7 +316,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                 className="px-4 py-2 rounded-lg bg-nx-accent text-nx-bg font-semibold text-sm shadow-glow-sm inline-flex items-center gap-1.5 disabled:opacity-50 disabled:shadow-none"
               >
                 <Send size={13} />
-                {busy ? "…" : "Спросить"}
+                {busy ? "…" : t("ai.ask")}
               </button>
             </div>
 
@@ -328,27 +330,23 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                     onChange={(e) => setUseCtx(e.target.checked)}
                     className="accent-nx-accent"
                   />
-                  <span className="text-sm">AI видит экран терминала</span>
+                  <span className="text-sm">{t("ai.vision")}</span>
                   {useCtx && (
                     <span className="ml-auto text-[11px] text-nx-danger">
-                      ⚠️ экран уходит в AI
+                      ⚠️ {t("ai.vision_warn")}
                     </span>
                   )}
                 </label>
                 {useCtx && (
                   <p className="text-[11px] text-nx-muted mt-1 leading-snug">
-                    Последние ~40 строк экрана отправляются модели для точности.
-                    Пароли и ключи вырезаются автоматически, но проверяй экран —
-                    не гарантия. Выключай для чувствительных сессий.
+                    {t("ai.vision_note")}
                   </p>
                 )}
               </div>
             )}
 
             {!hasSession && (
-              <p className="text-xs text-nx-muted">
-                ⚠️ Нет активного терминала — команду можно только скопировать.
-              </p>
+              <p className="text-xs text-nx-muted">⚠️ {t("ai.no_session")}</p>
             )}
             {err && <p className="text-nx-danger text-xs">{err}</p>}
 
@@ -357,7 +355,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             {answer.trim() && (
               <div className="rounded-nx border border-nx-divider bg-nx-bg/40 p-3">
                 <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
-                  // ответ
+                  // {t("ai.answer")}
                 </div>
                 <div className="flex items-start gap-2">
                   <div className="flex-1 text-sm whitespace-pre-wrap break-words leading-snug">
@@ -366,10 +364,10 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                   <button
                     type="button"
                     onClick={() => copy(answer, "answer")}
-                    title="Скопировать ответ"
+                    title={t("ai.copy")}
                     className="shrink-0 text-xs text-nx-muted hover:text-nx-text px-1.5 py-0.5 rounded border border-nx-border"
                   >
-                    {copied === "answer" ? "✓" : "Копировать"}
+                    {copied === "answer" ? "✓" : t("ai.copy")}
                   </button>
                 </div>
                 {answerLong && (
@@ -378,7 +376,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                     onClick={() => setAnswerExpanded((v) => !v)}
                     className="mt-1.5 text-xs text-nx-accent hover:underline"
                   >
-                    {answerExpanded ? "Свернуть" : "Развернуть"}
+                    {answerExpanded ? t("ai.collapse") : t("ai.expand")}
                   </button>
                 )}
               </div>
@@ -387,7 +385,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             {items.length > 0 && (
               <div>
                 <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
-                  // предложенные команды
+                  // {t("ai.suggested")}
                 </div>
                 <div className="rounded-nx border border-nx-divider overflow-hidden divide-y divide-nx-divider">
                   {items.map((it, i) => (
@@ -403,7 +401,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                           <span className="text-nx-accent">{it.cmd}</span>
                         </code>
                         {it.danger && (
-                          <span className="text-[11px] text-nx-danger shrink-0">⚠ опасная</span>
+                          <span className="text-[11px] text-nx-danger shrink-0">⚠ {t("ai.danger")}</span>
                         )}
                         <button
                           type="button"
@@ -418,7 +416,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                           onClick={() => insert(it.cmd)}
                           className="shrink-0 text-[11px] text-nx-accent border border-nx-accent/40 rounded-full px-2 py-0.5 hover:bg-nx-accent/10"
                         >
-                          → выполнить
+                          {t("ai.run")}
                         </button>
                       </div>
                       {it.explain && (
@@ -439,14 +437,9 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             {!busy && !err && !answer.trim() && items.length === 0 && (
               <div className="rounded-nx border border-nx-divider bg-nx-bg/40 p-3">
                 <div className="text-micro uppercase tracking-[0.22em] text-nx-soft mb-1.5">
-                  // как это работает
+                  // {t("ai.how")}
                 </div>
-                <p className="text-xs text-nx-muted leading-relaxed">
-                  Опиши задачу на русском — AI предложит команды или объяснит вывод.
-                  Ничего не выполняется само: команда лишь вставляется в терминал по
-                  «→ выполнить», запускаешь её ты. Для разбора экрана включи «AI видит
-                  экран».
-                </p>
+                <p className="text-xs text-nx-muted leading-relaxed">{t("ai.how_note")}</p>
               </div>
             )}
           </div>

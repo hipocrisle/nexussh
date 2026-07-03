@@ -15,6 +15,7 @@ import {
   TextField,
 } from "./primitives";
 import type { NexuSettings } from "./settings-store";
+import { eventToHotkey, hotkeyLabel } from "../hotkeys";
 import { ImportHostsPanel } from "../ImportHostsPanel";
 import { BulkImportDialog } from "../BulkImportDialog";
 import { BundleExportDialog } from "../BundleExportDialog";
@@ -25,6 +26,58 @@ interface Props {
   s: NexuSettings;
   set: (patch: Partial<NexuSettings>) => void;
   t: ThemePalette;
+}
+
+/** Рекордер горячей клавиши: клик → «нажмите комбинацию» → следующий keydown
+ *  становится биндингом. Esc отменяет, «сброс» вернёт дефолт. */
+function HotkeyField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [rec, setRec] = useState(false);
+  useEffect(() => {
+    if (!rec) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setRec(false);
+        return;
+      }
+      const hk = eventToHotkey(e);
+      if (hk) {
+        onChange(hk);
+        setRec(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [rec, onChange]);
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setRec((r) => !r)}
+        className={`px-3 py-1.5 rounded-nx-sm border text-sm font-mono min-w-[9rem] text-center ${
+          rec
+            ? "border-nx-accent text-nx-accent animate-pulse"
+            : "border-nx-border text-nx-text hover:border-nx-accent/50"
+        }`}
+      >
+        {rec ? "нажмите комбинацию…" : hotkeyLabel(value)}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("Mod+Shift+KeyZ")}
+        className="text-xs text-nx-muted hover:text-nx-text"
+      >
+        сброс
+      </button>
+    </div>
+  );
 }
 
 export function BehaviorSection({ s, set, t }: Props) {
@@ -83,6 +136,17 @@ export function BehaviorSection({ s, set, t }: Props) {
             t={t}
           />
         </div>
+      </Row>
+
+      <Row
+        label={tr("settings.behavior.palette_hotkey")}
+        hint={tr("settings.behavior.palette_hotkey_hint")}
+        t={t}
+      >
+        <HotkeyField
+          value={s.paletteHotkey}
+          onChange={(v) => set({ paletteHotkey: v })}
+        />
       </Row>
 
       <Row

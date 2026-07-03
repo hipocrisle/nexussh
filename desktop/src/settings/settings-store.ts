@@ -40,6 +40,8 @@ export interface NexuSettings {
    *  redraw garbage); only "light" remains. Kept as a single-member union so a
    *  persisted "full" is normalized to "light" on load (see load()). */
   historyMode: "light";
+  /** Биндинг Command palette (см. hotkeys.ts). "Mod"=Ctrl/Cmd. */
+  paletteHotkey: string;
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -64,6 +66,7 @@ export const DEFAULTS: NexuSettings = {
   vaultAutoLockMin: 0,
   historyEnabled: false, // off by default; opt-in (requires vault)
   historyMode: "light",
+  paletteHotkey: "Mod+Shift+KeyZ",
 };
 
 const STORAGE_KEY = "nexussh.settings.v1";

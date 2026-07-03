@@ -79,9 +79,10 @@ export function useAiAssistant(
     return () => clearInterval(id);
   }, [status?.status, refreshStatus]);
 
-  const ask = useCallback(async () => {
-    const q = query.trim();
+  const ask = useCallback(async (override?: string) => {
+    const q = (override ?? query).trim();
     if (!q || busy) return;
+    if (override !== undefined) setQuery(override); // отобразить в поле
     setBusy(true);
     setErr(null);
     setItems([]);

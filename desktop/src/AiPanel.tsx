@@ -119,8 +119,10 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai, dock 
     if (!open) return;
     refreshStatus();
     setReady(false); // увидел ответ — гасим «готово»-индикатор
-    setTimeout(() => inputRef.current?.focus(), 60);
-  }, [open, refreshStatus, setReady]);
+    // В доке (инлайн-агент) фокус НЕ забираем — xterm держит фокус и ведёт
+    // захват "/agent ...". В обычной панели — фокус в поле ввода.
+    if (!dock) setTimeout(() => inputRef.current?.focus(), 60);
+  }, [open, dock, refreshStatus, setReady]);
 
   if (!open && !busy) {
     // Панель скрыта — но hook продолжает работать. Держим лёгкую обёртку только
@@ -319,7 +321,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai, dock 
               <button
                 type="button"
                 disabled={busy || !query.trim()}
-                onClick={ask}
+                onClick={() => ask()}
                 className="px-4 py-2 rounded-lg bg-nx-accent text-nx-bg font-semibold text-sm shadow-glow-sm inline-flex items-center gap-1.5 disabled:opacity-50 disabled:shadow-none"
               >
                 <Send size={13} />

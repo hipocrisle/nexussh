@@ -702,16 +702,32 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  // Инлайн-агент (эксперимент): "/agent " в консоли открывает AI-панель в доке
-  // снизу (а не по центру). aiDock = режим дока.
+  // Инлайн-агент (эксперимент): "/agent " в консоли захватывается инлайн и
+  // зеркалится в AI-панель, прижатую к низу (док). Фазы: update (набор) / submit
+  // (Enter) / cancel (Esc/Ctrl-C). ai берём через ref — слушатель монтируется раз.
   const [aiDock, setAiDock] = useState(false);
+  const aiRef = useRef(ai);
+  aiRef.current = ai;
   useEffect(() => {
-    const onAgent = () => {
+    const onAgent = (e: Event) => {
+      const { phase, query } = (e as CustomEvent).detail as {
+        phase: "update" | "submit" | "cancel";
+        query: string;
+      };
+      if (phase === "cancel") {
+        setAiPanelOpen(false);
+        setAiDock(false);
+        if (!isMobile) focusActiveTerminal();
+        return;
+      }
       setAiDock(true);
       setAiPanelOpen(true);
+      if (phase === "update") aiRef.current.setQuery(query);
+      else if (phase === "submit") aiRef.current.ask(query);
     };
-    window.addEventListener("nx:agent", onAgent as EventListener);
-    return () => window.removeEventListener("nx:agent", onAgent as EventListener);
+    window.addEventListener("nx:agent", onAgent);
+    return () => window.removeEventListener("nx:agent", onAgent);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Хосты для палитры: грузим при открытии (listHosts async) + рефреш по событию.

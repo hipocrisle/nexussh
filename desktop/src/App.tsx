@@ -57,7 +57,7 @@ import AiIndicatorDot from "./AiIndicatorDot";
 import CommandPalette, { type PaletteItem } from "./CommandPalette";
 import { listSnippets, expandPlaceholders } from "./snippets";
 import { useAiAssistant } from "./useAiAssistant";
-import { readTerminalScreen } from "./terminalBuffers";
+import { readTerminalScreen, readTerminalPromptLine } from "./terminalBuffers";
 import { redactSecrets } from "./redactSecrets";
 import { detectPlatform, guessOs } from "./ai";
 import { ConnectError } from "./ConnectError";
@@ -608,9 +608,18 @@ function App() {
       const raw = readTerminalScreen(activeId, 40);
       return raw ? redactSecrets(raw) : null;
     },
-    // Платформа: сначала по выводу терминала (Cisco/Mikrotik/…), потом по имени
-    // хоста. Приватно — наружу только ярлык. Читаем небольшой хвост экрана.
-    () => detectPlatform(readTerminalScreen(activeId, 15)) ?? guessOs(activeSession?.name ?? activeSession?.host ?? null),
+    // Платформа: по выводу терминала (Cisco/Mikrotik/…) + строке-приглашению под
+    // курсором (ловит Cisco даже в чистой сессии, когда приглашение вверху и низ
+    // экрана пуст), затем по имени хоста. Приватно — наружу только ярлык.
+    () => {
+      const screen = readTerminalScreen(activeId, 40);
+      const prompt = readTerminalPromptLine(activeId);
+      // Приглашение кладём ПОСЛЕДНЕЙ строкой — детект по «hostname#/>» смотрит хвост.
+      const combined = `${screen}\n${prompt}`;
+      return (
+        detectPlatform(combined) ?? guessOs(activeSession?.name ?? activeSession?.host ?? null)
+      );
+    },
   );
   // Hosts that have an open pane → "live" badge in the sidebar; the focused
   // pane's host additionally gets the blinking caret.

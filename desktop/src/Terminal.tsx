@@ -23,7 +23,7 @@ import { THEMES, xtermThemeOf } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { readClipboard, writeClipboard, copyTextVerbose } from "./clipboard";
 import { useIsMobile } from "./useIsMobile";
-import { registerTerminalReader, unregisterTerminalReader } from "./terminalBuffers";
+import { registerTerminalReaders, unregisterTerminalReader } from "./terminalBuffers";
 
 export interface TerminalAction {
   label: string;
@@ -317,19 +317,27 @@ export function TerminalView({
     termRef.current = term;
     fitRef.current = fit;
 
-    // Expose a screen-reader for the AI context feature. Reads the tail of the
-    // active buffer (visible rows + a little above), trimming trailing blanks.
-    registerTerminalReader(sessionId, (maxLines: number) => {
-      const buf = term.buffer.active;
-      const end = buf.baseY + term.rows; // exclusive bottom of the screen
-      const start = Math.max(0, end - maxLines);
-      const lines: string[] = [];
-      for (let y = start; y < end; y++) {
-        const line = buf.getLine(y);
-        lines.push(line ? line.translateToString(true) : "");
-      }
-      while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
-      return lines.join("\n");
+    // Expose readers for the AI features: the visible-screen tail (context mode)
+    // and the current prompt line under the cursor (platform detection — robust
+    // when a fresh session's prompt sits at the TOP and the bottom is blank).
+    registerTerminalReaders(sessionId, {
+      screen: (maxLines: number) => {
+        const buf = term.buffer.active;
+        const end = buf.baseY + term.rows; // exclusive bottom of the screen
+        const start = Math.max(0, end - maxLines);
+        const lines: string[] = [];
+        for (let y = start; y < end; y++) {
+          const line = buf.getLine(y);
+          lines.push(line ? line.translateToString(true) : "");
+        }
+        while (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+        return lines.join("\n");
+      },
+      promptLine: () => {
+        const buf = term.buffer.active;
+        const y = buf.baseY + buf.cursorY; // абсолютная строка курсора = приглашение
+        return buf.getLine(y)?.translateToString(true) ?? "";
+      },
     });
 
     // Mobile: declare the hidden input as inputmode="none" so the soft keyboard

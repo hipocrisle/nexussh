@@ -51,9 +51,30 @@ export async function aiSuggest(
  *  даже в MVP-режиме без контекста. */
 export function guessOs(hostLabel?: string | null): string {
   const s = (hostLabel || "").toLowerCase();
-  if (/(cisco|ios|catalyst|nexus|switch|router)/.test(s)) return "cisco-ios";
+  if (/(cisco|ios|catalyst|nexus|nx-?os|\bsw\d|switch|router|\brtr\b|\basa\b)/.test(s)) return "cisco-ios";
   if (/(esxi|vmware|vsphere)/.test(s)) return "esxi";
   if (/(mikrotik|routeros)/.test(s)) return "routeros";
   if (/(juniper|junos)/.test(s)) return "junos";
   return "linux";
+}
+
+/** Определить платформу по ВЫВОДУ терминала (последние строки). Сильные сигнатуры
+ *  сетевых ОС — чтобы не выдавать linux-команды на Cisco и т.п. Возвращает ярлык
+ *  или null (тогда падаем на guessOs по имени хоста). ПРИВАТНО: наружу уходит
+ *  только ярлык платформы, НЕ текст экрана — работает и без «AI видит экран». */
+export function detectPlatform(screenTail?: string | null): string | null {
+  const t = (screenTail || "").toLowerCase();
+  if (!t.trim()) return null;
+  // Cisco IOS/IOS-XE/NX-OS — очень характерные маркеры.
+  if (
+    /\(config[^)]*\)#/.test(t) || // config-режим: hostname(config)# / (config-if)#
+    /% (invalid input|incomplete command|ambiguous command|bad|unknown command)/.test(t) ||
+    /building configuration|line protocol is|show running-config|\bcisco ios\b|ios[ -]xe|nx-?os|catalyst/.test(t) ||
+    /(gigabit|fast|ten-?gig)ethernet\d|\bvlan\d+\b.*\bactive\b/.test(t)
+  )
+    return "cisco-ios";
+  if (/\[[\w.-]+@[\w.-]+\]\s*>|routeros|mikrotik/.test(t)) return "routeros";
+  if (/junos|\{master(:\d+)?\}|\bjuniper\b/.test(t)) return "junos";
+  if (/vyos@|\bvyos\b/.test(t)) return "vyos";
+  return null;
 }

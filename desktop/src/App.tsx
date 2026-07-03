@@ -59,6 +59,7 @@ import { listSnippets, expandPlaceholders } from "./snippets";
 import { useAiAssistant } from "./useAiAssistant";
 import { readTerminalScreen } from "./terminalBuffers";
 import { redactSecrets } from "./redactSecrets";
+import { detectPlatform, guessOs } from "./ai";
 import { ConnectError } from "./ConnectError";
 import { parseConnectError } from "./connect-error";
 const UpdatePanel = lazy(() =>
@@ -607,6 +608,9 @@ function App() {
       const raw = readTerminalScreen(activeId, 40);
       return raw ? redactSecrets(raw) : null;
     },
+    // Платформа: сначала по выводу терминала (Cisco/Mikrotik/…), потом по имени
+    // хоста. Приватно — наружу только ярлык. Читаем небольшой хвост экрана.
+    () => detectPlatform(readTerminalScreen(activeId, 15)) ?? guessOs(activeSession?.name ?? activeSession?.host ?? null),
   );
   // Hosts that have an open pane → "live" badge in the sidebar; the focused
   // pane's host additionally gets the blinking caret.

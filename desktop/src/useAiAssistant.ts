@@ -38,6 +38,9 @@ export function useAiAssistant(
   // Поставщик контекста экрана (App): читает активный терминал + редактирует
   // секреты. Вызывается только когда включён тумблер И у юзера есть право.
   getScreenContext?: () => string | null,
+  // Определитель платформы (App): по выводу терминала (Cisco/Mikrotik/…) с
+  // фолбэком на имя хоста. Наружу — только ярлык, не экран.
+  getOs?: () => string,
 ) {
   const [status, setStatus] = useState<AiStatus | null>(null);
   const [query, setQuery] = useState("");
@@ -55,6 +58,8 @@ export function useAiAssistant(
   hostRef.current = hostLabel;
   const ctxProviderRef = useRef(getScreenContext);
   ctxProviderRef.current = getScreenContext;
+  const osProviderRef = useRef(getOs);
+  osProviderRef.current = getOs;
 
   const refreshStatus = useCallback(() => {
     return aiStatus()
@@ -89,7 +94,8 @@ export function useAiAssistant(
       // буфер, если контекст не запрошен.
       const wantCtx = useCtx && status?.context_allowed === true;
       const ctx = wantCtx ? (ctxProviderRef.current?.() ?? null) : null;
-      const r = await aiSuggest(q, guessOs(hostRef.current), ctx);
+      const os = osProviderRef.current?.() || guessOs(hostRef.current);
+      const r = await aiSuggest(q, os, ctx);
       setItems(r.suggestions);
       setAnswer(r.answer);
       setSel(0);

@@ -702,33 +702,6 @@ function App() {
   const [vaultPanelOpen, setVaultPanelOpen] = useState(false);
   const [syncPanelOpen, setSyncPanelOpen] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  // Инлайн-агент (эксперимент): "/agent " в консоли захватывается инлайн и
-  // зеркалится в AI-панель, прижатую к низу (док). Фазы: update (набор) / submit
-  // (Enter) / cancel (Esc/Ctrl-C). ai берём через ref — слушатель монтируется раз.
-  const [aiDock, setAiDock] = useState(false);
-  const aiRef = useRef(ai);
-  aiRef.current = ai;
-  useEffect(() => {
-    const onAgent = (e: Event) => {
-      const { phase, query } = (e as CustomEvent).detail as {
-        phase: "update" | "submit" | "cancel";
-        query: string;
-      };
-      if (phase === "cancel") {
-        setAiPanelOpen(false);
-        setAiDock(false);
-        if (!isMobile) focusActiveTerminal();
-        return;
-      }
-      setAiDock(true);
-      setAiPanelOpen(true);
-      if (phase === "update") aiRef.current.setQuery(query);
-      else if (phase === "submit") aiRef.current.ask(query);
-    };
-    window.addEventListener("nx:agent", onAgent);
-    return () => window.removeEventListener("nx:agent", onAgent);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // Хосты для палитры: грузим при открытии (listHosts async) + рефреш по событию.
   const [paletteHosts, setPaletteHosts] = useState<HostRecord[]>([]);
@@ -1578,7 +1551,6 @@ function App() {
       }
       if (meta && e.shiftKey && e.code === "KeyA") {
         e.preventDefault();
-        setAiDock(false); // хоткей — центральная панель
         setAiPanelOpen((v) => {
           const next = !v;
           // При закрытии хоткеем — вернуть фокус в терминал (как и кнопка/Esc),
@@ -4095,10 +4067,8 @@ function App() {
         />
         <AiPanel
           open={aiPanelOpen}
-          dock={aiDock && !isMobile}
           onClose={() => {
             setAiPanelOpen(false);
-            setAiDock(false);
             // Вернуть фокус в терминал, чтобы после сворачивания панели курсор
             // сразу был в сессии (без клика по окну). На мобиле не трогаем —
             // focus всплывает клавиатуру.

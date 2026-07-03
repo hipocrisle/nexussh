@@ -24,7 +24,6 @@ import { fontStackOf } from "./settings/fonts";
 import { readClipboard, writeClipboard, copyTextVerbose } from "./clipboard";
 import { useIsMobile } from "./useIsMobile";
 import { registerTerminalReaders, unregisterTerminalReader } from "./terminalBuffers";
-import { makeAgentInterceptor } from "./agentInterceptor";
 
 export interface TerminalAction {
   label: string;
@@ -861,22 +860,11 @@ export function TerminalView({
         );
       }
     }
-    // ─── Inline agent (эксперимент, Фаза 0) — вынесено в agentInterceptor ────
-    // Ловим "/agent " в начале строки, захватываем весь запрос ИНЛАЙН (в шелл не
-    // уходит), зеркалим в док-панель, Enter — спрашиваем. Логика чистая и
-    // юнит-протестирована (см. agentInterceptor.test).
-    const agent = makeAgentInterceptor({
-      send,
-      isAltScreen: () => term.buffer.active.type === "alternate",
-      emit: (phase, query) =>
-        window.dispatchEvent(
-          new CustomEvent("nx:agent", { detail: { sessionId, phase, query } }),
-        ),
-    });
-
     const onDataDisposable = term.onData((data) => {
+      // Reached only for input we didn't intercept above (e.g. IME composition,
+      // desktop). Send as-is.
       dbg(`onData '${esc(data).slice(0, 24)}'`);
-      agent(data);
+      send(data);
     });
     const onResizeDisposable = term.onResize(({ cols, rows }) => {
       sshResize(sessionId, cols, rows).catch(console.error);

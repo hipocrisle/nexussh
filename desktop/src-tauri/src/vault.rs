@@ -246,10 +246,25 @@ fn persist(u: &Unlocked) -> Result<(), VaultError> {
 }
 
 fn config_vault_path(app: &tauri::AppHandle) -> Option<PathBuf> {
-    let store = app.store(CONFIG_FILE).ok()?;
-    store
-        .get(CFG_VAULT_PATH)
-        .and_then(|v| v.as_str().map(PathBuf::from))
+    // 1) Сохранённый указатель (vault-config.json).
+    if let Ok(store) = app.store(CONFIG_FILE) {
+        if let Some(p) = store
+            .get(CFG_VAULT_PATH)
+            .and_then(|v| v.as_str().map(PathBuf::from))
+        {
+            return Some(p);
+        }
+    }
+    // 2) SELF-HEAL: указатель потерялся (сброс/повреждение vault-config.json),
+    //    но дефолтный vault.age на месте — берём его. Иначе рассинхрон
+    //    «configured=false, а vault_create говорит already exists» и юзер
+    //    заблокирован (не открыть, не создать). Указатель восстановим при анлоке.
+    let def = default_vault_path(app).ok()?;
+    if def.exists() {
+        Some(def)
+    } else {
+        None
+    }
 }
 
 fn default_vault_path(app: &tauri::AppHandle) -> Result<PathBuf, VaultError> {
@@ -356,6 +371,9 @@ pub async fn vault_unlock(
             (map, dek, recipient, wrapped)
         }
     };
+    // Перезаписать указатель на найденный путь — восстанавливает потерянный
+    // vault-config.json (self-heal), чтобы статус/анлок дальше работали штатно.
+    let _ = set_config_vault_path(&app, &path);
     *state.inner.lock().unwrap() = Some(Unlocked {
         secrets: map,
         passphrase: master_password,

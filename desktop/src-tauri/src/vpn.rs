@@ -485,6 +485,243 @@ fn attach_to_job(child: &tokio::process::Child) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Corp VPN (Cisco AnyConnect / ocserv) via openconnect + ocproxy → SOCKS.
+//
+// Same userspace-SOCKS model as the xray built-in VPN: openconnect connects the
+// AnyConnect tunnel but, with `--script-tun`, hands packets to `ocproxy` instead
+// of a TUN device — ocproxy runs a userspace lwIP stack and exposes a SOCKS5
+// proxy on 127.0.0.1:<port>. No TUN, no root/elevation; NexuSSH routes its SSH/
+// SFTP through that SOCKS exactly like it does for xray. TCP-only (SSH is TCP).
+// Mechanism validated end-to-end 2026-07-18 against a test ocserv.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A saved corporate-VPN endpoint. The password is NEVER stored here — it is
+/// supplied per-connect (prompted, like an SSH 2FA/password prompt). The server
+/// cert pin is captured via TOFU on first connect (like an SSH host key).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpVpnProfile {
+    /// Display name, e.g. "Работа".
+    pub name: String,
+    /// ocserv/AnyConnect server: `host`, `host:port`, or `https://host:port`.
+    pub server: String,
+    /// Saved username (optional default; the connect flow may override it).
+    #[serde(default)]
+    pub username: String,
+    /// Trusted server cert pin `pin-sha256:BASE64` (TOFU). Empty = not yet
+    /// trusted → the connect flow must probe the pin and get user approval first.
+    #[serde(default)]
+    pub server_cert: String,
+    /// AnyConnect auth group (`--authgroup`), if the server uses one. Empty = none.
+    #[serde(default)]
+    pub authgroup: String,
+}
+
+/// Normalize a server field into an `https://…` URL openconnect accepts.
+fn oc_server_url(server: &str) -> String {
+    let s = server.trim().trim_end_matches('/');
+    if s.starts_with("https://") {
+        s.to_string()
+    } else if let Some(rest) = s.strip_prefix("http://") {
+        format!("https://{rest}")
+    } else {
+        format!("https://{s}")
+    }
+}
+
+/// Build the openconnect argv for a SOCKS-mode (ocproxy) connect. The password is
+/// fed on stdin (`--passwd-on-stdin`), never on argv — argv is world-readable via
+/// /proc/<pid>/cmdline, so a password there would leak to other local users.
+/// `--non-inter` guarantees openconnect never blocks on a tty prompt (untrusted
+/// cert / missing field fail fast instead of hanging a headless child).
+fn openconnect_args(
+    profile: &CorpVpnProfile,
+    username: &str,
+    socks_port: u16,
+    ocproxy_bin: &std::path::Path,
+) -> Vec<String> {
+    let mut a = vec![
+        "--protocol=anyconnect".to_string(),
+        format!("--user={username}"),
+        "--passwd-on-stdin".to_string(),
+        "--non-inter".to_string(),
+    ];
+    // SOCKS transport differs by platform. Stock openconnect exposes a userspace
+    // SOCKS only via `--script-tun` + ocproxy over a UNIX socket — which does NOT
+    // work on Windows. So on Windows we ship the openconnect fork that adds a
+    // native `--socks5-port` (SOCKS built in, no ocproxy, no unix socket); on
+    // Unix we use the stock openconnect + bundled/system ocproxy.
+    #[cfg(windows)]
+    {
+        let _ = ocproxy_bin; // native SOCKS on Windows — ocproxy not used
+        a.push("--socks5-port".to_string());
+        a.push(socks_port.to_string());
+    }
+    #[cfg(not(windows))]
+    {
+        a.push("--script-tun".to_string());
+        // openconnect runs the script via the shell → quote the path (it may live
+        // under an app dir with spaces). ocproxy -D <port> = SOCKS5 listen.
+        a.push(format!("--script=\"{}\" -D {}", ocproxy_bin.display(), socks_port));
+    }
+    if !profile.server_cert.trim().is_empty() {
+        a.push(format!("--servercert={}", profile.server_cert.trim()));
+    }
+    if !profile.authgroup.trim().is_empty() {
+        a.push(format!("--authgroup={}", profile.authgroup.trim()));
+    }
+    a.push(oc_server_url(&profile.server));
+    a
+}
+
+/// Extract the `pin-sha256:BASE64` token openconnect prints when it rejects an
+/// untrusted / mismatched server certificate. Used by the TOFU probe.
+pub fn parse_cert_pin(output: &str) -> Option<String> {
+    let idx = output.find("pin-sha256:")?;
+    let after = &output[idx + "pin-sha256:".len()..];
+    let b64: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
+        .collect();
+    if b64.is_empty() {
+        None
+    } else {
+        Some(format!("pin-sha256:{b64}"))
+    }
+}
+
+/// Locate a corp-VPN helper binary (openconnect / ocproxy). Prefers one bundled
+/// next to the app executable (Windows ships the .exe + DLLs there); on Linux it
+/// falls back to the system copy on PATH, since the deb/rpm declares openconnect +
+/// ocproxy as dependencies (which also drag in their shared libs — openconnect is
+/// NOT a static single binary like xray, so we can't just ship the executable).
+fn corp_bin_path(name: &str) -> std::path::PathBuf {
+    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    // 1) bundled next to the app executable.
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
+        let cand = dir.join(&file);
+        if cand.exists() {
+            return cand;
+        }
+    }
+    // 2) system PATH (Linux package dependency).
+    if let Some(found) = which_on_path(&file) {
+        return found;
+    }
+    // 3) fall back to the bare name so the spawn error names the missing binary.
+    std::path::PathBuf::from(file)
+}
+
+/// Minimal `which`: return the first PATH entry containing an executable `file`.
+fn which_on_path(file: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let cand = dir.join(file);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+fn openconnect_bin_path() -> std::path::PathBuf {
+    corp_bin_path("openconnect")
+}
+fn ocproxy_bin_path() -> std::path::PathBuf {
+    corp_bin_path("ocproxy")
+}
+
+/// Feed the password to a spawned child's stdin then close it (openconnect reads a
+/// single line for `--passwd-on-stdin`). Kept separate so it's easy to see the
+/// password only ever travels via the pipe, never argv.
+async fn feed_password(child: &mut tokio::process::Child, password: &str) {
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let line = format!("{password}\n");
+        let _ = stdin.write_all(line.as_bytes()).await;
+        let _ = stdin.shutdown().await;
+    }
+}
+
+/// Spawn openconnect+ocproxy for `profile`, exposing a SOCKS5 proxy on
+/// 127.0.0.1:`socks_port`. `kill_on_drop` tears the tunnel down with the owning
+/// SSH session. Requires a trusted `profile.server_cert` (call the probe first if
+/// empty). Userspace only — no TUN, no elevation.
+pub async fn spawn_openconnect(
+    profile: &CorpVpnProfile,
+    password: &str,
+    socks_port: u16,
+) -> std::io::Result<tokio::process::Child> {
+    let username = if profile.username.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "corp VPN: username required",
+        ));
+    } else {
+        profile.username.trim()
+    };
+    let ocproxy = ocproxy_bin_path();
+    let args = openconnect_args(profile, username, socks_port, &ocproxy);
+    let mut cmd = tokio::process::Command::new(openconnect_bin_path());
+    cmd.args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn()?;
+    feed_password(&mut child, password).await;
+    #[cfg(windows)]
+    attach_to_job(&child);
+    Ok(child)
+}
+
+/// TOFU probe: connect just far enough for openconnect to present the server cert,
+/// pinned against a deliberately-wrong fingerprint so openconnect prints the
+/// server's real `pin-sha256:…` and exits. Returns that pin for the UI to show
+/// the user (trust prompt), mirroring SSH host-key TOFU. No password needed — the
+/// cert check happens during the TLS handshake, before authentication.
+pub async fn openconnect_probe_cert(profile: &CorpVpnProfile) -> Result<String, String> {
+    let ocproxy = ocproxy_bin_path();
+    // Bogus pin forces a mismatch → openconnect prints the real pin.
+    let bogus = CorpVpnProfile {
+        server_cert: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        ..profile.clone()
+    };
+    let user = if bogus.username.trim().is_empty() { "probe" } else { bogus.username.trim() };
+    let args = openconnect_args(&bogus, user, 0, &ocproxy);
+    let mut cmd = tokio::process::Command::new(openconnect_bin_path());
+    cmd.args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let mut child = cmd.spawn().map_err(|e| format!("openconnect spawn: {e}"))?;
+    // No real password; close stdin so openconnect doesn't block waiting for it.
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait_with_output())
+        .await
+        .map_err(|_| "cert probe timed out".to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()))?;
+    let mut combined = String::from_utf8_lossy(&out.stderr).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stdout));
+    parse_cert_pin(&combined)
+        .ok_or_else(|| format!("could not read server cert pin from openconnect output: {}",
+            combined.lines().rev().take(4).collect::<Vec<_>>().join(" | ")))
+}
+
+/// Tauri command: probe a corp-VPN server's cert pin for the TOFU trust prompt.
+#[tauri::command]
+pub async fn corp_vpn_probe_cert(profile: CorpVpnProfile) -> Result<String, String> {
+    openconnect_probe_cert(&profile).await
+}
+
 #[tauri::command]
 pub fn vpn_parse_subscription(sub_text: String) -> Result<Vec<VpnNode>, String> {
     let nodes = parse_subscription(&sub_text);
@@ -598,5 +835,103 @@ mod xray_json_tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].uuid, "uuid-1");
         assert_eq!(nodes[0].security, "reality");
+    }
+}
+
+#[cfg(test)]
+mod corp_vpn_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn prof() -> CorpVpnProfile {
+        CorpVpnProfile {
+            name: "Работа".into(),
+            server: "vpn.corp.example:4443".into(),
+            username: "alice".into(),
+            server_cert: "pin-sha256:U8sH35+o9alC7JK6QcQmiQ6Q2hfQPcTPMDPSWyNV6fI=".into(),
+            authgroup: String::new(),
+        }
+    }
+
+    #[test]
+    fn server_url_normalization() {
+        assert_eq!(oc_server_url("vpn.corp.example"), "https://vpn.corp.example");
+        assert_eq!(oc_server_url("vpn.corp.example:4443"), "https://vpn.corp.example:4443");
+        assert_eq!(oc_server_url("https://vpn.corp.example:4443/"), "https://vpn.corp.example:4443");
+        assert_eq!(oc_server_url("http://vpn.corp.example"), "https://vpn.corp.example");
+        assert_eq!(oc_server_url("  vpn.corp.example/  "), "https://vpn.corp.example");
+    }
+
+    #[test]
+    fn args_have_the_validated_recipe() {
+        let a = openconnect_args(&prof(), "alice", 11080, Path::new("/opt/nexussh/ocproxy"));
+        assert!(a.contains(&"--protocol=anyconnect".to_string()));
+        assert!(a.contains(&"--user=alice".to_string()));
+        assert!(a.contains(&"--passwd-on-stdin".to_string()), "password must go via stdin, not argv");
+        assert!(a.contains(&"--non-inter".to_string()), "must never block on a tty prompt");
+        #[cfg(not(windows))]
+        {
+            assert!(a.contains(&"--script-tun".to_string()));
+            assert!(a.iter().any(|s| s == "--script=\"/opt/nexussh/ocproxy\" -D 11080"));
+        }
+        #[cfg(windows)]
+        {
+            // Windows fork: native SOCKS, no ocproxy/--script-tun.
+            assert!(a.contains(&"--socks5-port".to_string()));
+            assert!(a.contains(&"11080".to_string()));
+            assert!(!a.contains(&"--script-tun".to_string()));
+        }
+        assert!(a.iter().any(|s| s.starts_with("--servercert=pin-sha256:")));
+        // server URL is the last positional arg
+        assert_eq!(a.last().unwrap(), "https://vpn.corp.example:4443");
+    }
+
+    #[test]
+    fn password_never_in_argv() {
+        // openconnect_args takes no password at all — proves it can't leak to argv.
+        let a = openconnect_args(&prof(), "alice", 11080, Path::new("ocproxy"));
+        assert!(!a.iter().any(|s| s.contains("hunter2") || s.to_lowercase().contains("passw") && s.contains('=') && !s.starts_with("--passwd-on-stdin")));
+    }
+
+    #[test]
+    fn no_servercert_arg_when_untrusted() {
+        let mut p = prof();
+        p.server_cert = String::new();
+        let a = openconnect_args(&p, "alice", 11080, Path::new("ocproxy"));
+        assert!(!a.iter().any(|s| s.starts_with("--servercert")),
+            "untrusted profile → no pin arg (probe/TOFU first)");
+    }
+
+    #[test]
+    fn authgroup_included_when_set() {
+        let mut p = prof();
+        p.authgroup = "employees".into();
+        let a = openconnect_args(&p, "alice", 11080, Path::new("ocproxy"));
+        assert!(a.contains(&"--authgroup=employees".to_string()));
+    }
+
+    #[test]
+    fn parses_pin_from_openconnect_output() {
+        let out = "Server certificate verify failed: signer not found\n\
+                   None of the 1 fingerprint(s) specified via --servercert match \
+                   server's certificate: pin-sha256:U8sH35+o9alC7JK6QcQmiQ6Q2hfQPcTPMDPSWyNV6fI=\n\
+                   SSL connection failure: Error in the certificate.";
+        assert_eq!(
+            parse_cert_pin(out).as_deref(),
+            Some("pin-sha256:U8sH35+o9alC7JK6QcQmiQ6Q2hfQPcTPMDPSWyNV6fI=")
+        );
+    }
+
+    #[test]
+    fn pin_parse_none_when_absent() {
+        assert_eq!(parse_cert_pin("Connected to server\nCSTP connected."), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn which_finds_system_binary_and_rejects_bogus() {
+        // `sh` is on PATH on every unix; a random name never is.
+        assert!(which_on_path("sh").is_some(), "sh should be found on PATH");
+        assert!(which_on_path("nexussh-no-such-binary-zzz").is_none());
     }
 }

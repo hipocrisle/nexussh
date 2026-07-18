@@ -58,7 +58,7 @@ import {
   RowLabel,
   ToggleRow,
 } from "./components/primitives";
-import { loadProfiles, type VpnProfile } from "./vpn";
+import { loadProfiles, type VpnProfile, loadCorpProfiles, type CorpVpnProfile } from "./vpn";
 import { Select } from "./Select";
 
 type AuthKind = "password" | "key" | "vault";
@@ -145,6 +145,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     { initial?: PortForward } | null
   >(null);
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
+  const [corpVpnProfileId, setCorpVpnProfileId] = useState("");
+  const [corpProfiles] = useState<CorpVpnProfile[]>(() => loadCorpProfiles());
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
@@ -165,6 +167,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setUseVpn(!!initial.useVpn);
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
+    setCorpVpnProfileId(initial.corpVpnProfileId ?? "");
     setSync(!!initial.sync);
     setForwards(initial.forwards ? initial.forwards.map((f) => ({ ...f })) : []);
     {
@@ -341,9 +344,12 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         note: note.trim() || undefined,
         lastUsedAt: initial?.lastUsedAt,
         alwaysAskPassword: auth.kind === "password" ? alwaysAskPassword : undefined,
-        useVpn: useVpn || undefined,
-        vpnProfileId: useVpn ? vpnProfileId || undefined : undefined,
-        vpnExit: useVpn ? vpnExit : undefined,
+        // Corp VPN takes precedence over the xray built-in VPN (mutually
+        // exclusive — a host routes through exactly one transport).
+        corpVpnProfileId: corpVpnProfileId || undefined,
+        useVpn: corpVpnProfileId ? undefined : useVpn || undefined,
+        vpnProfileId: corpVpnProfileId ? undefined : useVpn ? vpnProfileId || undefined : undefined,
+        vpnExit: corpVpnProfileId ? undefined : useVpn ? vpnExit : undefined,
         // Folder = category: a host in a folder keeps its category (set by where
         // it lives / moved to); the per-host toggle only applies to folder-less
         // hosts. Prevents one host dragging its whole folder into the cloud.
@@ -599,7 +605,14 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
              *  xray sidecar; per-host VPN is desktop-only). */}
             {!isMobile && (
             <Card icon={<Globe size={12} />} label={t("dialog.col_transport")}>
-            <ToggleRow label={t("dialog.use_vpn")} value={useVpn} onChange={setUseVpn} />
+            <ToggleRow
+              label={t("dialog.use_vpn")}
+              value={useVpn}
+              onChange={(v) => {
+                setUseVpn(v);
+                if (v) setCorpVpnProfileId(""); // xray and corp VPN are mutually exclusive
+              }}
+            />
             {useVpn &&
               (vpnProfiles.length === 0 ? (
                 <p className="text-nx-warning text-meta font-mono mt-2">
@@ -638,6 +651,30 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                   )}
                 </div>
               ))}
+            {corpProfiles.length > 0 && (
+              <div className="mt-3">
+                <RowLabel>{t("dialog.corp_vpn")}</RowLabel>
+                <Select
+                  value={corpVpnProfileId}
+                  onChange={(v) => {
+                    setCorpVpnProfileId(v);
+                    if (v) setUseVpn(false); // corp and xray VPN are mutually exclusive
+                  }}
+                  placeholder={t("dialog.corp_vpn_none")}
+                  options={[
+                    { value: "", label: t("dialog.corp_vpn_none") },
+                    ...corpProfiles.map((p) => ({ value: p.id, label: p.name })),
+                  ]}
+                  className="mt-1.5"
+                />
+                {corpVpnProfileId &&
+                  !corpProfiles.find((p) => p.id === corpVpnProfileId)?.serverCert && (
+                    <p className="text-nx-warning text-meta font-mono mt-2">
+                      ⚠ {t("dialog.corp_vpn_untrusted")}
+                    </p>
+                  )}
+              </div>
+            )}
             </Card>
             )}
 

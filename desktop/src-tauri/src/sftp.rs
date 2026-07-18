@@ -212,7 +212,26 @@ pub async fn sftp_connect(
     // fails fast — mirrors ssh.rs. Separate from post-connect keepalive.
     let timeout = crate::ssh::connect_timeout(args.timeout);
     let establish = async {
-        if let Some(node) = &args.vpn {
+        if let Some(corp) = &args.corp_vpn {
+            let socks_port = crate::ssh::free_local_port()?;
+            let child = crate::vpn::spawn_openconnect(&corp.profile, &corp.password, socks_port)
+                .await
+                .map_err(|e| SftpError::Other(format!("openconnect spawn: {e}")))?;
+            crate::ssh::wait_socks_ready(socks_port)
+                .await
+                .map_err(|e| SftpError::Other(e.to_string()))?;
+            let proxy = format!("127.0.0.1:{socks_port}");
+            let stream = crate::ssh::socks_connect_with_retry(
+                proxy.as_str(),
+                &args.host,
+                args.port,
+            )
+            .await
+            .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
+            let session =
+                client::connect_stream(config, stream.into_inner(), handler()).await?;
+            Ok::<_, SftpError>((session, Some(child)))
+        } else if let Some(node) = &args.vpn {
             let socks_port = crate::ssh::free_local_port()?;
             let child = crate::vpn::spawn_xray(node, socks_port)
                 .map_err(|e| SftpError::Other(format!("xray spawn: {e}")))?;

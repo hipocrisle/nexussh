@@ -46,6 +46,13 @@ export interface ConnectArgs {
   /** When set, route the SSH connection through the built-in xray SOCKS proxy
    *  egressing via this node. */
   vpn?: VpnNode | null;
+  /** When set, route through a corporate VPN (Cisco AnyConnect / ocserv) via
+   *  openconnect+ocproxy SOCKS. Mutually exclusive with `vpn`. The password is
+   *  supplied per-connect (never persisted). Backend shape (serde snake_case). */
+  corp_vpn?: {
+    profile: { name: string; server: string; username: string; server_cert: string; authgroup: string };
+    password: string;
+  } | null;
   /** Opt-in to weak legacy algorithms for old gear. OFF by default. */
   allow_legacy?: boolean;
   /** When host-list encryption is on, pin host keys in the vault not the file. */

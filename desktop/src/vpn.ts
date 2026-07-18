@@ -148,3 +148,87 @@ export function resolveExit(profile: VpnProfile, exit?: string | null): VpnNode 
   const auto = profile.nodes.find((n) => /авто|auto/i.test(n.tag));
   return auto ?? profile.nodes[0];
 }
+
+// ─── Corporate VPN (Cisco AnyConnect / ocserv via openconnect+ocproxy) ────────
+// Same local-only storage as xray profiles (never synced). The password is NEVER
+// stored — it's prompted at connect time. The server cert pin is captured via a
+// TOFU "trust" action (here in settings) so connect only needs the password.
+
+export interface CorpVpnProfile {
+  id: string;
+  name: string;
+  /** host, host:port, or https://host:port */
+  server: string;
+  username: string;
+  /** Trusted server cert pin `pin-sha256:…` (TOFU). Empty = not yet trusted. */
+  serverCert: string;
+  /** AnyConnect auth group (optional). */
+  authgroup: string;
+}
+
+/** Backend (serde snake_case) shape of a corp profile — password is separate. */
+export interface CorpVpnBackend {
+  name: string;
+  server: string;
+  username: string;
+  server_cert: string;
+  authgroup: string;
+}
+
+/** Map a stored profile to the backend shape the Rust commands expect. */
+export function toCorpBackend(p: CorpVpnProfile): CorpVpnBackend {
+  return {
+    name: p.name,
+    server: p.server,
+    username: p.username,
+    server_cert: p.serverCert,
+    authgroup: p.authgroup,
+  };
+}
+
+const LS_CORP = "nexussh.corpVpnProfiles";
+
+export function loadCorpProfiles(): CorpVpnProfile[] {
+  try {
+    const raw = localStorage.getItem(LS_CORP);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveCorpProfiles(list: CorpVpnProfile[]) {
+  localStorage.setItem(LS_CORP, JSON.stringify(list));
+}
+
+export function getCorpProfile(id: string | null | undefined): CorpVpnProfile | undefined {
+  if (!id) return undefined;
+  return loadCorpProfiles().find((p) => p.id === id);
+}
+
+export function addCorpProfile(
+  p: Omit<CorpVpnProfile, "id">,
+): CorpVpnProfile {
+  const profile: CorpVpnProfile = { ...p, id: "corp-" + crypto.randomUUID() };
+  saveCorpProfiles([...loadCorpProfiles(), profile]);
+  return profile;
+}
+
+export function updateCorpProfile(id: string, patch: Partial<CorpVpnProfile>) {
+  const list = loadCorpProfiles();
+  const i = list.findIndex((p) => p.id === id);
+  if (i < 0) return;
+  list[i] = { ...list[i], ...patch, id };
+  saveCorpProfiles(list);
+}
+
+export function removeCorpProfile(id: string) {
+  saveCorpProfiles(loadCorpProfiles().filter((p) => p.id !== id));
+}
+
+/** TOFU probe: ask the backend for the server's cert pin (to show + trust). */
+export async function corpVpnProbeCert(p: CorpVpnProfile): Promise<string> {
+  return await invoke<string>("corp_vpn_probe_cert", { profile: toCorpBackend(p) });
+}

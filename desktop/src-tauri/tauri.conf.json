@@ -29,6 +29,10 @@
     "targets": ["deb", "rpm", "nsis"],
     "createUpdaterArtifacts": true,
     "externalBin": ["binaries/xray"],
+    "linux": {
+      "deb": { "depends": ["openconnect", "ocproxy"] },
+      "rpm": { "depends": ["openconnect"] }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

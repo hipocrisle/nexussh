@@ -55,6 +55,10 @@ export interface HostRecord {
   vpnProfileId?: string;
   /** Chosen exit node tag, or "auto". */
   vpnExit?: string;
+  /** Local corporate-VPN profile id (Cisco AnyConnect / ocserv, see vpn.ts). When
+   *  set, the connection routes through openconnect+ocproxy SOCKS instead of the
+   *  xray built-in VPN. Stays local (never synced). Password prompted per-connect. */
+  corpVpnProfileId?: string;
   /** Per-host session-history override. `undefined` = inherit the global on/off
    *  + mode; `"off"` = never record; `"light"`/`"full"` = force-record this host
    *  in that mode regardless of the global mode. (`boolean` kept for back-compat

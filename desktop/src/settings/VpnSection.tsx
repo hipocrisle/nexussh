@@ -4,7 +4,7 @@
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Trash2, Plus } from "lucide-react";
+import { RefreshCw, Trash2, Plus, ShieldCheck, ShieldAlert } from "lucide-react";
 import { ThemePalette } from "./themes";
 import { Section, Row, TextField } from "./primitives";
 import {
@@ -13,6 +13,12 @@ import {
   refreshProfile,
   removeProfile,
   type VpnProfile,
+  loadCorpProfiles,
+  addCorpProfile,
+  updateCorpProfile,
+  removeCorpProfile,
+  corpVpnProbeCert,
+  type CorpVpnProfile,
 } from "../vpn";
 
 interface Props {
@@ -60,6 +66,51 @@ export function VpnSection({ t }: Props) {
     if (!confirm(tr("settings.vpn.delete_confirm"))) return;
     removeProfile(id);
     setProfiles(loadProfiles());
+  }
+
+  // --- corporate VPN (AnyConnect / ocserv) ---------------------------------
+  const [corp, setCorp] = useState<CorpVpnProfile[]>(() => loadCorpProfiles());
+  const [cName, setCName] = useState("");
+  const [cServer, setCServer] = useState("");
+  const [cUser, setCUser] = useState("");
+  const [cGroup, setCGroup] = useState("");
+  const [cBusy, setCBusy] = useState(false);
+  const [cError, setCError] = useState<string | null>(null);
+
+  function onAddCorp() {
+    if (!cServer.trim() || !cUser.trim()) return;
+    addCorpProfile({
+      name: cName.trim() || cServer.trim(),
+      server: cServer.trim(),
+      username: cUser.trim(),
+      serverCert: "",
+      authgroup: cGroup.trim(),
+    });
+    setCorp(loadCorpProfiles());
+    setCName(""); setCServer(""); setCUser(""); setCGroup("");
+    setCError(null);
+  }
+
+  async function onTrustCorp(p: CorpVpnProfile) {
+    setCBusy(true);
+    setCError(null);
+    try {
+      const pin = await corpVpnProbeCert(p);
+      if (confirm(tr("settings.vpn.corp.trust_confirm", { server: p.server, pin }))) {
+        updateCorpProfile(p.id, { serverCert: pin });
+        setCorp(loadCorpProfiles());
+      }
+    } catch (e) {
+      setCError(String(e));
+    } finally {
+      setCBusy(false);
+    }
+  }
+
+  function onDeleteCorp(id: string) {
+    if (!confirm(tr("settings.vpn.delete_confirm"))) return;
+    removeCorpProfile(id);
+    setCorp(loadCorpProfiles());
   }
 
   const btn = "inline-flex items-center gap-1.5 px-3 py-2 font-mono text-xs rounded disabled:opacity-40";
@@ -127,6 +178,75 @@ export function VpnSection({ t }: Props) {
                 <button
                   type="button"
                   onClick={() => onDelete(p.id)}
+                  title={tr("settings.vpn.delete")}
+                  className="p-1.5"
+                  style={{ color: t.error }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Row>
+
+      <Row label={tr("settings.vpn.corp.add")} hint={tr("settings.vpn.corp.add_hint")} t={t}>
+        <div className="space-y-2 max-w-md">
+          <TextField value={cName} onChange={setCName} placeholder={tr("settings.vpn.corp.name_ph")} t={t} />
+          <TextField value={cServer} onChange={setCServer} placeholder={tr("settings.vpn.corp.server_ph")} t={t} />
+          <TextField value={cUser} onChange={setCUser} placeholder={tr("settings.vpn.corp.user_ph")} t={t} />
+          <TextField value={cGroup} onChange={setCGroup} placeholder={tr("settings.vpn.corp.group_ph")} t={t} />
+          <button type="button" onClick={onAddCorp} disabled={!cServer.trim() || !cUser.trim()} className={btn} style={btnStyle}>
+            <Plus size={12} /> {tr("settings.vpn.corp.add_btn")}
+          </button>
+          {cError && (
+            <div className="font-mono text-[11px] break-all" style={{ color: t.error }}>✗ {cError}</div>
+          )}
+        </div>
+      </Row>
+
+      <Row label={tr("settings.vpn.corp.profiles")} hint={tr("settings.vpn.corp.profiles_hint")} t={t}>
+        {corp.length === 0 ? (
+          <div className="font-mono text-xs" style={{ color: t.textMuted }}>
+            {tr("settings.vpn.corp.empty")}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {corp.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 rounded p-3"
+                style={{ background: t.bgPanel, border: `1px solid ${t.border}` }}
+              >
+                <div className="min-w-0 flex-1 font-mono text-xs">
+                  <div className="truncate" style={{ color: t.textPrimary }}>{p.name}</div>
+                  <div className="text-[11px] mt-0.5 truncate" style={{ color: t.textMuted }}>
+                    {p.username}@{p.server}
+                  </div>
+                  <div
+                    className="text-[11px] mt-0.5 flex items-center gap-1"
+                    style={{ color: p.serverCert ? t.textSoft : t.error }}
+                  >
+                    {p.serverCert ? (
+                      <><ShieldCheck size={11} /> {tr("settings.vpn.corp.trusted")}</>
+                    ) : (
+                      <><ShieldAlert size={11} /> {tr("settings.vpn.corp.untrusted")}</>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onTrustCorp(p)}
+                  disabled={cBusy}
+                  title={tr("settings.vpn.corp.trust")}
+                  className="p-1.5 disabled:opacity-40"
+                  style={{ color: t.textSoft }}
+                >
+                  <ShieldCheck size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteCorp(p.id)}
                   title={tr("settings.vpn.delete")}
                   className="p-1.5"
                   style={{ color: t.error }}

@@ -91,6 +91,14 @@ pub enum AuthMethod {
     Vault { key: String },
 }
 
+/// Corp-VPN connect payload: a saved profile plus the per-connect password
+/// (never persisted — collected at connect time like an SSH password/2FA).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CorpVpnConnect {
+    pub profile: crate::vpn::CorpVpnProfile,
+    pub password: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConnectArgs {
     pub host: String,
@@ -105,6 +113,12 @@ pub struct ConnectArgs {
     /// the chosen profile+exit into a node and passes it here.
     #[serde(default)]
     pub vpn: Option<crate::vpn::VpnNode>,
+    /// When set, route the SSH TCP connection through a corporate VPN (Cisco
+    /// AnyConnect / ocserv) via openconnect+ocproxy SOCKS. Mutually exclusive with
+    /// `vpn` (corp takes precedence if both are somehow set). The password is
+    /// supplied per-connect and lives only for the duration of the spawn.
+    #[serde(default)]
+    pub corp_vpn: Option<CorpVpnConnect>,
     /// Opt-in to weak legacy algorithms (3DES/CBC/SHA-1 KEX+MAC, ssh-rsa) for
     /// reaching old gear (Cisco IOS / ESXi). OFF by default so a MITM can't
     /// downgrade a modern host — the legacy set is offered only for hosts the
@@ -864,7 +878,20 @@ pub async fn ssh_connect(
     // post-connect keepalive timeout configured above.
     let timeout = connect_timeout(args.timeout);
     let establish = async {
-        if let Some(node) = &args.vpn {
+        if let Some(corp) = &args.corp_vpn {
+            let socks_port = free_local_port()?;
+            let child = crate::vpn::spawn_openconnect(&corp.profile, &corp.password, socks_port)
+                .await
+                .map_err(|e| SshError::Other(format!("openconnect spawn: {e}")))?;
+            wait_socks_ready(socks_port).await?;
+            let proxy = format!("127.0.0.1:{socks_port}");
+            let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
+                .await
+                .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
+            let session =
+                client::connect_stream(config, stream.into_inner(), handler).await?;
+            Ok::<_, SshError>((session, Some(child)))
+        } else if let Some(node) = &args.vpn {
             let socks_port = free_local_port()?;
             let child = crate::vpn::spawn_xray(node, socks_port)
                 .map_err(|e| SshError::Other(format!("xray spawn: {e}")))?;

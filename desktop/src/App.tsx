@@ -95,7 +95,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit } from "./vpn";
+import { getProfile, resolveExit, getCorpProfile, toCorpBackend, type CorpVpnProfile } from "./vpn";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
 import { tunnelOpen, tunnelList, TunnelInfo, PortForward } from "./tunnel";
 import {
@@ -875,7 +875,7 @@ function App() {
     // path that asks for a password (quick-connect, always-ask, reconnect). An
     // offline host says "unreachable" instead of being mistaken for a wrong
     // password. Skip VPN hosts (SOCKS path); fail-open if the probe errors.
-    if (!resolveHostVpn(h)) {
+    if (!resolveHostVpn(h) && !h.corpVpnProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -888,6 +888,46 @@ function App() {
         { id: crypto.randomUUID(), user: h.user, host: h.host, resolve },
       ]),
     );
+  }
+
+  // Corp-VPN password cache — kept in memory for the session only (never
+  // persisted), so reconnects don't re-prompt. Cleared on app restart.
+  const corpPwCache = useRef(new Map<string, string>());
+
+  /** Prompt for a corp-VPN login password, reusing the PasswordPrompt UI
+   *  (username pre-filled from the profile → it only asks the password). */
+  function askCorpVpnPassword(p: CorpVpnProfile): Promise<string | null> {
+    return new Promise((resolve) =>
+      setPwQueue((q) => [
+        ...q,
+        {
+          id: crypto.randomUUID(),
+          user: p.username,
+          host: p.server,
+          resolve: (v) => resolve(v ? v.password : null),
+        },
+      ]),
+    );
+  }
+
+  /** Resolve a host's corp-VPN choice into the backend `corp_vpn` payload, or
+   *  null if the host doesn't use one. Throws (caught by each connect site's
+   *  try/catch → shown as the session error) when the server cert isn't trusted
+   *  yet or the user cancels the password prompt — both must abort the connect
+   *  rather than silently fall through to a direct/unprotected connection. */
+  async function resolveHostCorpVpn(h: HostRecord): Promise<ConnectArgs["corp_vpn"] | null> {
+    if (!h.corpVpnProfileId) return null;
+    const p = getCorpProfile(h.corpVpnProfileId);
+    if (!p) return null;
+    if (!p.serverCert) throw new Error(t("app.corp_untrusted"));
+    let pw = corpPwCache.current.get(p.id);
+    if (!pw) {
+      const entered = await askCorpVpnPassword(p);
+      if (!entered) throw new Error(t("app.corp_password_required"));
+      pw = entered;
+      corpPwCache.current.set(p.id, pw);
+    }
+    return { profile: toCorpBackend(p), password: pw };
   }
   // Same predicate openHost/openSftp/kickoffConnect use to decide a host needs
   // an INTERACTIVE password prompt on connect. Restore makes such hosts dormant
@@ -1423,6 +1463,7 @@ function App() {
         port: h.port,
         user: h.user,
         auth,
+        corp_vpn: await resolveHostCorpVpn(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
@@ -1908,7 +1949,7 @@ function App() {
     // host should say "unreachable", not be mistaken for a wrong password after
     // a long hang. Skip for VPN hosts (they go through SOCKS — a direct TCP
     // probe would falsely fail). Fail-open if the probe itself errors.
-    if (!resolveHostVpn(h)) {
+    if (!resolveHostVpn(h) && !h.corpVpnProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -1949,6 +1990,7 @@ function App() {
         port: h.port,
         user: h.user,
         auth,
+        corp_vpn: await resolveHostCorpVpn(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
@@ -1968,7 +2010,7 @@ function App() {
       // its OWN SSH connection in the backend, so it needs the resolved auth.
       const autoForwards = (h.forwards ?? []).filter((f) => f.autoStart);
       if (autoForwards.length > 0) {
-        const fwdArgs = buildConnectArgs(h, auth);
+        const fwdArgs = await buildConnectArgs(h, auth);
         const fwdLabel = h.name || `${h.user}@${h.host}`;
         for (const f of autoForwards) {
           tunnelOpen(fwdArgs, {
@@ -2001,12 +2043,13 @@ function App() {
   // Build the base ConnectArgs for a host with a resolved auth (handles the
   // shared shape used by SFTP and tunnels). The caller resolves "always ask"
   // first and passes the effective auth/user via the host it hands in.
-  function buildConnectArgs(h: HostRecord, auth: AuthMethod): ConnectArgs {
+  async function buildConnectArgs(h: HostRecord, auth: AuthMethod): Promise<ConnectArgs> {
     return {
       host: h.host,
       port: h.port,
       user: h.user,
       auth,
+      corp_vpn: await resolveHostCorpVpn(h),
       vpn: resolveHostVpn(h),
       allow_legacy: h.allowLegacy,
       encrypt_known_hosts: hostsEncrypted(),
@@ -2026,7 +2069,7 @@ function App() {
       h = { ...h, user: creds.user };
       auth = { kind: "password", password: creds.password };
     }
-    return buildConnectArgs(h, auth);
+    return await buildConnectArgs(h, auth);
   }
 
   async function openSftp(h: HostRecord) {
@@ -2048,7 +2091,7 @@ function App() {
     // to sit behind, so no-op (prior fallback behaviour).
     if (!activeId) return;
     const entry = {
-      args: buildConnectArgs(h, auth),
+      args: await buildConnectArgs(h, auth),
       title: `${h.user}@${h.host}`,
       collapsed: false, // a fresh open is always visible
     };
@@ -2088,7 +2131,7 @@ function App() {
     setTunnelsPanel({
       open: true,
       newTunnel: {
-        connectArgs: buildConnectArgs(host, auth),
+        connectArgs: await buildConnectArgs(host, auth),
         label: host.name || `${host.user}@${host.host}`,
         host: h,
       },
@@ -2113,7 +2156,7 @@ function App() {
       host = { ...h, user: creds.user };
       auth = { kind: "password", password: creds.password };
     }
-    return await tunnelOpen(buildConnectArgs(host, auth), {
+    return await tunnelOpen(await buildConnectArgs(host, auth), {
       localPort: fwd.localPort,
       remoteHost: fwd.remoteHost,
       remotePort: fwd.remotePort,
@@ -2394,6 +2437,7 @@ function App() {
         port: h.port,
         user: h.user,
         auth,
+        corp_vpn: await resolveHostCorpVpn(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),

@@ -333,6 +333,7 @@ pub fn run() {
             import_sources::read_text_file,
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
+            vpn::corp_vpn_probe_cert,
             window_composited,
             nudge_repaint,
             history::history_list,

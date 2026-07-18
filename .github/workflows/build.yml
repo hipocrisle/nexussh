@@ -106,6 +106,57 @@ jobs:
           rm -rf xray.zip xray_tmp
           ls -la "$OUT"
 
+      # Windows corp-VPN sidecar: openconnect with a NATIVE SOCKS5 proxy
+      # (--socks5-port). Stock openconnect can only expose userspace SOCKS via
+      # `--script-tun` + ocproxy over a UNIX socket, which does NOT work on
+      # Windows. We build the SOCKS5 fork OURSELVES from source (not a
+      # third-party prebuilt binary — supply chain) via MSYS2 UCRT64, statically
+      # linked so the single .exe runs without extra DLLs next to the app.
+      - name: Set up MSYS2 (Windows openconnect build)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git base-devel
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-autotools
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gnutls
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4
+
+      - name: Build openconnect SOCKS5 fork (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        env:
+          OC_FORK_REPO: https://github.com/eric15342335/openconnect
+          # Pinned to tag socks5-tun-v1 (reviewed): the SOCKS5+lwIP feature commit.
+          OC_FORK_REF: 449970044a9ad0374d121579832aa8b1b4a029f5
+        run: |
+          set -e
+          git clone "$OC_FORK_REPO" oc-src
+          cd oc-src
+          git checkout "$OC_FORK_REF"
+          # The fork vendors lwIP as a git submodule — required for socks5-tun.
+          git submodule update --init --recursive
+          ./autogen.sh
+          ./configure --enable-socks5-tun --with-gnutls --without-openssl \
+            --disable-nls --without-libpcsclite --without-libproxy \
+            --without-gssapi --without-stoken --without-libpskc \
+            CFLAGS="-O2 -s -static"
+          make -j$(nproc)
+          OUT="$(cygpath -u "$GITHUB_WORKSPACE")/desktop/src-tauri/binaries/openconnect-x86_64-pc-windows-msvc.exe"
+          cp openconnect.exe "$OUT"
+          # Copy any non-system DLLs the exe still imports next to it (fallback if
+          # -static didn't fully absorb gnutls/libxml2). System DLLs are skipped.
+          for dll in $(ldd openconnect.exe | grep -i ucrt64 | awk '{print $3}'); do
+            cp -v "$dll" "$(dirname "$OUT")/" || true
+          done
+          ls -la "$(dirname "$OUT")"
+
       - name: Clean prior bundle artifacts (avoid stale cached versions)
         working-directory: desktop/src-tauri
         shell: bash

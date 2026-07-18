@@ -119,7 +119,7 @@ jobs:
           msystem: UCRT64
           update: true
           install: >-
-            git base-devel
+            git base-devel jq unzip
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-autotools
             mingw-w64-ucrt-x86_64-pkgconf

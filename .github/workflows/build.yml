@@ -143,7 +143,10 @@ jobs:
           # The fork vendors lwIP as a git submodule — required for socks5-tun.
           git submodule update --init --recursive
           ./autogen.sh
+          # --with-vpnc-script is required by configure even though the SOCKS5
+          # path (--socks5-port) never invokes it — pass a placeholder.
           ./configure --enable-socks5-tun --with-gnutls --without-openssl \
+            --with-vpnc-script=vpnc-script \
             --disable-nls --without-libpcsclite --without-libproxy \
             --without-gssapi --without-stoken --without-libpskc \
             CFLAGS="-O2 -s -static"

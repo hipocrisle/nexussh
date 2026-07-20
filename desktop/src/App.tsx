@@ -95,7 +95,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit, getCorpProfile, toCorpBackend, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID } from "./vpn";
+import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID } from "./vpn";
 import { BackendProgress } from "./BackendProgress";
 import { CorpVpnStatus } from "./CorpVpnStatus";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
@@ -914,9 +914,6 @@ function App() {
     );
   }
 
-  // Corp-VPN password cache — kept in memory for the session only (never
-  // persisted), so reconnects don't re-prompt. Cleared on app restart.
-  const corpPwCache = useRef(new Map<string, string>());
 
   /** Prompt for a corp-VPN login password, reusing the PasswordPrompt UI
    *  (username pre-filled from the profile → it only asks the password). */
@@ -939,23 +936,30 @@ function App() {
    *  null if the host doesn't use one. Throws (caught by each connect site's
    *  try/catch → shown as the session error) when the server cert isn't trusted
    *  yet or the user cancels the password prompt — both must abort the connect
-   *  rather than silently fall through to a direct/unprotected connection. */
+   *  rather than silently fall through to a direct/unprotected connection.
+   *
+   *  The tunnel is SHARED per profile: if it's already up (another host is using
+   *  it, or it's within the teardown grace window) we reuse it and ask for
+   *  NOTHING — the password is only needed to establish a fresh tunnel. So the
+   *  password's lifetime matches the tunnel's: prompted on first connect, reused
+   *  by every host meanwhile, asked again only after the tunnel has torn down. */
   async function resolveHostCorpVpn(h: HostRecord): Promise<ConnectArgs["corp_vpn"] | null> {
     if (!h.corpVpnProfileId) return null;
     const p = getCorpProfile(h.corpVpnProfileId);
     if (!p) return null;
     if (!p.serverCert) throw new Error(t("app.corp_untrusted"));
-    let pw = corpPwCache.current.get(p.id);
-    if (!pw) {
-      const entered = await askCorpVpnPassword(p);
-      if (!entered) throw new Error(t("app.corp_password_required"));
-      pw = entered;
-      corpPwCache.current.set(p.id, pw);
+    const backend = toCorpBackend(p);
+    // Live tunnel? Reuse it — no backend download, no password prompt.
+    if (await corpTunnelActive(p).catch(() => false)) {
+      return { profile: backend, password: "" };
     }
-    // Ensure the openconnect backend binary is downloaded (on-demand, verified) —
-    // the <BackendProgress/> overlay shows automatically during the download.
+    // Fresh tunnel needed: make sure the backend binary is present (the
+    // <BackendProgress/> overlay shows during any download), then ask the
+    // VPN password once.
     await ensureVpnBackend(VPN_BACKEND_ID);
-    return { profile: toCorpBackend(p), password: pw };
+    const entered = await askCorpVpnPassword(p);
+    if (!entered) throw new Error(t("app.corp_password_required"));
+    return { profile: backend, password: entered };
   }
   // Same predicate openHost/openSftp/kickoffConnect use to decide a host needs
   // an INTERACTIVE password prompt on connect. Restore makes such hosts dormant

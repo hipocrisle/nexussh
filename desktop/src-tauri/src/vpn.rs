@@ -12,6 +12,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -839,6 +840,175 @@ pub async fn establish_corp_tunnel(
     }
 }
 
+// ── Shared corp-VPN tunnel manager ───────────────────────────────────────────
+// ONE openconnect tunnel per (server, user, authgroup) identity, shared by every
+// SSH / SFTP / port-forward that routes through the same profile. Reference-
+// counted: the tunnel is established on the first acquire (password prompted
+// once), REUSED without re-auth by later acquires (so N concurrent hosts on one
+// profile don't each open a second ocserv session that the server would reject),
+// and torn down a short grace period after the LAST release — so neither the
+// tunnel nor the password lingers once nothing uses it.
+
+/// Identity that shares a tunnel: same server+user+group → same tunnel. (The
+/// password isn't part of the key — a live tunnel is reused as-is.)
+fn tunnel_key(p: &CorpVpnProfile) -> String {
+    format!(
+        "{}\u{0}{}\u{0}{}",
+        p.server.trim(),
+        p.username.trim(),
+        p.authgroup.trim()
+    )
+}
+
+struct TunnelEntry {
+    socks_port: u16,
+    child: tokio::process::Child,
+    refcount: usize,
+    /// Bumped on every acquire-reuse and every teardown-schedule; a scheduled
+    /// teardown only fires if the generation still matches, so a re-acquire
+    /// during the grace window (or a later schedule) cancels the stale timer.
+    generation: u64,
+}
+
+#[derive(Default)]
+pub struct CorpTunnelManager {
+    inner: tokio::sync::Mutex<HashMap<String, TunnelEntry>>,
+}
+
+static CORP_TUNNELS: std::sync::OnceLock<CorpTunnelManager> = std::sync::OnceLock::new();
+fn tunnels() -> &'static CorpTunnelManager {
+    CORP_TUNNELS.get_or_init(CorpTunnelManager::default)
+}
+
+const TEARDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A live reference to a shared tunnel. SSH/SFTP/forward sessions hold one; when
+/// dropped it releases the tunnel (scheduling teardown after the grace period if
+/// it was the last user). Dial the tunnel through `socks_port`.
+pub struct TunnelGuard {
+    key: String,
+    pub socks_port: u16,
+}
+
+impl Drop for TunnelGuard {
+    fn drop(&mut self) {
+        let key = std::mem::take(&mut self.key);
+        // release is async; hand it to the runtime. Safe even during shutdown —
+        // if there's no runtime the tunnel is dying with the process anyway.
+        if let Ok(h) = tokio::runtime::Handle::try_current() {
+            h.spawn(async move { release_tunnel(&key).await });
+        }
+    }
+}
+
+/// Acquire (establishing if needed) the shared tunnel for `profile`. A live
+/// tunnel is reused without the password; only a first/dead tunnel needs it.
+pub async fn acquire_tunnel(
+    app: &AppHandle,
+    profile: &CorpVpnProfile,
+    password: &str,
+) -> Result<TunnelGuard, String> {
+    let key = tunnel_key(profile);
+    let mut map = tunnels().inner.lock().await;
+    if let Some(e) = map.get_mut(&key) {
+        // Reuse only if the tunnel process is still alive.
+        if matches!(e.child.try_wait(), Ok(None)) {
+            e.refcount += 1;
+            e.generation += 1; // cancel any pending teardown
+            let _ = app.emit("corp-vpn-status", json!({ "phase": "up" }));
+            return Ok(TunnelGuard {
+                key,
+                socks_port: e.socks_port,
+            });
+        }
+        // Tunnel died (server dropped it, crash) — drop the stale entry, re-establish.
+        map.remove(&key);
+    }
+    let socks_port = crate::ssh::free_local_port().map_err(|e| e.to_string())?;
+    let child = establish_corp_tunnel(app, profile, password, socks_port).await?;
+    map.insert(
+        key.clone(),
+        TunnelEntry {
+            socks_port,
+            child,
+            refcount: 1,
+            generation: 0,
+        },
+    );
+    Ok(TunnelGuard { key, socks_port })
+}
+
+/// Drop one reference; when the last goes, schedule teardown after the grace
+/// window (cancelled if the tunnel is re-acquired meanwhile).
+async fn release_tunnel(key: &str) {
+    let generation = {
+        let mut map = tunnels().inner.lock().await;
+        let Some(e) = map.get_mut(key) else { return };
+        e.refcount = e.refcount.saturating_sub(1);
+        if e.refcount > 0 {
+            return;
+        }
+        e.generation += 1;
+        e.generation
+    };
+    let key = key.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(TEARDOWN_GRACE).await;
+        let mut map = tunnels().inner.lock().await;
+        // Tear down only if still idle AND untouched since we scheduled (a
+        // re-acquire would have bumped refcount and generation).
+        let still_idle = map
+            .get(&key)
+            .map(|e| e.refcount == 0 && e.generation == generation)
+            .unwrap_or(false);
+        if still_idle {
+            if let Some(mut e) = map.remove(&key) {
+                let _ = e.child.kill().await;
+            }
+        }
+    });
+}
+
+/// Kill every live shared tunnel, synchronously — for app exit. The tunnel
+/// children live in a `static` map that never runs Drop (so kill_on_drop won't
+/// fire on quit), which on Unix would orphan openconnect+ocproxy. `start_kill`
+/// just sends the signal (no await / runtime needed). Windows also has the Job
+/// Object as a backstop. Best-effort: skips if the map is momentarily locked.
+pub fn shutdown_all_tunnels() {
+    if let Some(mgr) = CORP_TUNNELS.get() {
+        if let Ok(mut map) = mgr.inner.try_lock() {
+            for e in map.values_mut() {
+                let _ = e.child.start_kill();
+            }
+            map.clear();
+        }
+    }
+}
+
+/// Whether a shared tunnel for this profile is currently up (so the connect flow
+/// can skip the password prompt and reuse it). Keyed by server+user+group like
+/// the tunnel itself.
+#[tauri::command]
+pub async fn corp_tunnel_active(profile: CorpVpnProfile) -> bool {
+    let key = tunnel_key(&profile);
+    let mut map = tunnels().inner.lock().await;
+    match map.get_mut(&key) {
+        Some(e) => matches!(e.child.try_wait(), Ok(None)),
+        None => false,
+    }
+}
+
+/// What a session holds to keep its transport alive for its whole lifetime:
+/// - `Xray`  — the bundled xray sidecar (killed on drop via kill_on_drop).
+/// - `Corp`  — a shared corp-VPN tunnel reference (releases on drop; the tunnel
+///             itself is torn down only when the LAST holder releases + grace).
+/// - `None`  — a direct connection, nothing to hold.
+pub enum TransportHold {
+    None,
+    Xray(tokio::process::Child),
+    Corp(TunnelGuard),
+}
+
 /// TOFU probe: connect just far enough for openconnect to present the server cert,
 /// pinned against a deliberately-wrong fingerprint so openconnect prints the
 /// server's real `pin-sha256:…` and exits. Returns that pin for the UI to show
@@ -853,7 +1023,12 @@ pub async fn openconnect_probe_cert(profile: &CorpVpnProfile) -> Result<String, 
         ..profile.clone()
     };
     let user = if bogus.username.trim().is_empty() { "probe" } else { bogus.username.trim() };
-    let args = openconnect_args(&bogus, user, 0, &ocproxy);
+    // The probe never actually opens a SOCKS listener (the bogus cert is rejected
+    // during the TLS handshake, before any tunnel/SOCKS setup), but the Windows
+    // openconnect fork VALIDATES `--socks5-port` up front and rejects 0 ("must be
+    // between 1 and 65535"). So hand it a real free port instead of 0.
+    let probe_port = crate::ssh::free_local_port().unwrap_or(11080);
+    let args = openconnect_args(&bogus, user, probe_port, &ocproxy);
     let mut cmd = tokio::process::Command::new(openconnect_bin_path());
     cmd.args(&args)
         .stdin(std::process::Stdio::piped())
@@ -938,6 +1113,31 @@ mod tests {
 
     fn lines(s: &[&str]) -> Vec<String> {
         s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn tunnel_key_shares_by_server_user_group() {
+        let base = CorpVpnProfile {
+            name: "A".into(),
+            server: "vpn.corp:4443".into(),
+            username: "ivan".into(),
+            server_cert: "pin-sha256:x".into(),
+            authgroup: "grp".into(),
+        };
+        // Same server+user+group → same key (shares one tunnel), even if the
+        // display name / trusted cert differ.
+        let same = CorpVpnProfile {
+            name: "B".into(),
+            server_cert: "pin-sha256:y".into(),
+            ..base.clone()
+        };
+        assert_eq!(tunnel_key(&base), tunnel_key(&same));
+        // Different user → different tunnel.
+        let other_user = CorpVpnProfile { username: "petr".into(), ..base.clone() };
+        assert_ne!(tunnel_key(&base), tunnel_key(&other_user));
+        // Different group → different tunnel.
+        let other_grp = CorpVpnProfile { authgroup: "grp2".into(), ..base.clone() };
+        assert_ne!(tunnel_key(&base), tunnel_key(&other_grp));
     }
 
     #[test]

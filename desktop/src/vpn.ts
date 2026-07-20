@@ -233,6 +233,12 @@ export async function corpVpnProbeCert(p: CorpVpnProfile): Promise<string> {
   return await invoke<string>("corp_vpn_probe_cert", { profile: toCorpBackend(p) });
 }
 
+/** Whether a shared corp-VPN tunnel for this profile is already up — the connect
+ *  flow skips the password prompt and reuses it when so. */
+export async function corpTunnelActive(p: CorpVpnProfile): Promise<boolean> {
+  return await invoke<boolean>("corp_tunnel_active", { profile: toCorpBackend(p) });
+}
+
 // ─── On-demand VPN backends (openconnect, ...) ────────────────────────────────
 // Backend binaries aren't bundled — they're downloaded on first use into a
 // per-user dir (verified via a sha256 manifest). `ensureVpnBackend` must be

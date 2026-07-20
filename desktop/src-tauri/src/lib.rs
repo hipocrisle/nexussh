@@ -335,6 +335,7 @@ pub fn run() {
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
             vpn::corp_vpn_probe_cert,
+            vpn::corp_tunnel_active,
             backends::backend_status,
             backends::backend_ensure,
             window_composited,
@@ -348,6 +349,14 @@ pub fn run() {
             history::history_start,
             history::history_pause,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Kill shared corp-VPN tunnels on exit — their openconnect children
+            // live in a static map that never runs Drop, so without this they'd
+            // orphan on Unix (Windows has the Job Object as a backstop).
+            if let tauri::RunEvent::Exit = event {
+                crate::vpn::shutdown_all_tunnels();
+            }
+        });
 }

@@ -70,8 +70,9 @@ struct TunnelHandle {
     conn_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     /// Keep the SSH transport alive for the tunnel's lifetime.
     _conn: Arc<client::Handle<TofuHandler>>,
-    /// xray child for VPN-routed tunnels (kill_on_drop tears it down with us).
-    _xray: Option<tokio::process::Child>,
+    /// Transport backing this forward (xray sidecar, shared corp-VPN tunnel
+    /// reference, or none) — torn down / released when the forward is dropped.
+    _transport: crate::vpn::TransportHold,
 }
 
 #[derive(Default)]
@@ -90,7 +91,7 @@ async fn connect_and_auth(
     app: &AppHandle,
     vault: &State<'_, crate::vault::VaultState>,
     args: &ConnectArgs,
-) -> Result<(client::Handle<TofuHandler>, Option<tokio::process::Child>), TunnelError> {
+) -> Result<(client::Handle<TofuHandler>, crate::vpn::TransportHold), TunnelError> {
     let config = Arc::new({
         let mut c = client::Config::default();
         c.preferred = crate::ssh::preferred_for(args.allow_legacy);
@@ -120,23 +121,17 @@ async fn connect_and_auth(
     let timeout = crate::ssh::connect_timeout(args.timeout);
     let establish = async {
         if let Some(corp) = &args.corp_vpn {
-            let socks_port = crate::ssh::free_local_port()?;
-            let child = crate::vpn::establish_corp_tunnel(
-                app,
-                &corp.profile,
-                &corp.password,
-                socks_port,
-            )
-            .await
-            .map_err(TunnelError::Other)?;
-            let proxy = format!("127.0.0.1:{socks_port}");
+            let guard = crate::vpn::acquire_tunnel(app, &corp.profile, &corp.password)
+                .await
+                .map_err(TunnelError::Other)?;
+            let proxy = format!("127.0.0.1:{}", guard.socks_port);
             let stream =
                 crate::ssh::socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
                     .await
                     .map_err(|e| TunnelError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler()).await?;
-            Ok::<_, TunnelError>((session, Some(child)))
+            Ok::<_, TunnelError>((session, crate::vpn::TransportHold::Corp(guard)))
         } else if let Some(node) = &args.vpn {
             let socks_port = crate::ssh::free_local_port()?;
             let child = crate::vpn::spawn_xray(node, socks_port)
@@ -151,13 +146,16 @@ async fn connect_and_auth(
                     .map_err(|e| TunnelError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler()).await?;
-            Ok::<_, TunnelError>((session, Some(child)))
+            Ok::<_, TunnelError>((session, crate::vpn::TransportHold::Xray(child)))
         } else {
             let addr = format!("{}:{}", args.host, args.port);
-            Ok((client::connect(config, addr.as_str(), handler()).await?, None))
+            Ok((
+                client::connect(config, addr.as_str(), handler()).await?,
+                crate::vpn::TransportHold::None,
+            ))
         }
     };
-    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+    let (mut session, transport_hold) = match tokio::time::timeout(timeout, establish).await {
         Ok(res) => res?,
         Err(_) => {
             return Err(TunnelError::Other(format!(
@@ -200,7 +198,7 @@ async fn connect_and_auth(
     if !auth_ok {
         return Err(TunnelError::AuthFailed);
     }
-    Ok((session, xray_child))
+    Ok((session, transport_hold))
 }
 
 #[tauri::command]
@@ -214,7 +212,7 @@ pub async fn ssh_tunnel_open(
     remote_port: u16,
     label: String,
 ) -> Result<TunnelInfo, TunnelError> {
-    let (session, xray_child) = connect_and_auth(&app, &vault, &args).await?;
+    let (session, transport_hold) = connect_and_auth(&app, &vault, &args).await?;
     let conn = Arc::new(session);
 
     // Bind the local listener BEFORE returning, so a busy port surfaces as a
@@ -277,7 +275,7 @@ pub async fn ssh_tunnel_open(
             accept_task,
             conn_tasks,
             _conn: conn,
-            _xray: xray_child,
+            _transport: transport_hold,
         },
     );
     Ok(info)

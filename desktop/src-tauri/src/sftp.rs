@@ -64,9 +64,9 @@ impl serde::Serialize for SftpError {
 struct SftpHandle {
     sftp: SftpSession,
     _conn: client::Handle<TofuHandler>,
-    /// xray child for VPN-routed SFTP — kill_on_drop tears the proxy down with
-    /// the session.
-    _xray: Option<tokio::process::Child>,
+    /// Transport backing this SFTP session (xray sidecar, shared corp-VPN tunnel
+    /// reference, or none) — torn down / released when the session is dropped.
+    _transport: crate::vpn::TransportHold,
 }
 
 #[derive(Default)]
@@ -213,16 +213,10 @@ pub async fn sftp_connect(
     let timeout = crate::ssh::connect_timeout(args.timeout);
     let establish = async {
         if let Some(corp) = &args.corp_vpn {
-            let socks_port = crate::ssh::free_local_port()?;
-            let child = crate::vpn::establish_corp_tunnel(
-                &app,
-                &corp.profile,
-                &corp.password,
-                socks_port,
-            )
-            .await
-            .map_err(SftpError::Other)?;
-            let proxy = format!("127.0.0.1:{socks_port}");
+            let guard = crate::vpn::acquire_tunnel(&app, &corp.profile, &corp.password)
+                .await
+                .map_err(SftpError::Other)?;
+            let proxy = format!("127.0.0.1:{}", guard.socks_port);
             let stream = crate::ssh::socks_connect_with_retry(
                 proxy.as_str(),
                 &args.host,
@@ -232,7 +226,7 @@ pub async fn sftp_connect(
             .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler()).await?;
-            Ok::<_, SftpError>((session, Some(child)))
+            Ok::<_, SftpError>((session, crate::vpn::TransportHold::Corp(guard)))
         } else if let Some(node) = &args.vpn {
             let socks_port = crate::ssh::free_local_port()?;
             let child = crate::vpn::spawn_xray(node, socks_port)
@@ -250,13 +244,16 @@ pub async fn sftp_connect(
             .map_err(|e| SftpError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler()).await?;
-            Ok::<_, SftpError>((session, Some(child)))
+            Ok::<_, SftpError>((session, crate::vpn::TransportHold::Xray(child)))
         } else {
             let addr = format!("{}:{}", args.host, args.port);
-            Ok((client::connect(config, addr.as_str(), handler()).await?, None))
+            Ok((
+                client::connect(config, addr.as_str(), handler()).await?,
+                crate::vpn::TransportHold::None,
+            ))
         }
     };
-    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+    let (mut session, transport_hold) = match tokio::time::timeout(timeout, establish).await {
         Ok(res) => res?,
         Err(_) => {
             return Err(SftpError::Other(format!(
@@ -310,7 +307,7 @@ pub async fn sftp_connect(
         Arc::new(SftpHandle {
             sftp,
             _conn: session,
-            _xray: xray_child,
+            _transport: transport_hold,
         }),
     );
     Ok(SftpConnectResult { sftp_id })

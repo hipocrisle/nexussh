@@ -259,9 +259,10 @@ struct ActiveSession {
     sender: mpsc::UnboundedSender<SessionCommand>,
     /// Output gate (see `OutputGate`). Shared with the session loop task.
     gate: Arc<Mutex<OutputGate>>,
-    /// Bundled xray proxy backing this session's transport (built-in VPN).
-    /// Held here so it's killed (kill_on_drop) when the session is removed.
-    _xray: Option<tokio::process::Child>,
+    /// Transport backing this session (built-in xray sidecar, a shared corp-VPN
+    /// tunnel reference, or none for a direct connection). Held here so it's
+    /// torn down / released when the session is removed.
+    _transport: crate::vpn::TransportHold,
 }
 
 
@@ -889,24 +890,19 @@ pub async fn ssh_connect(
     let timeout = connect_timeout(args.timeout);
     let establish = async {
         if let Some(corp) = &args.corp_vpn {
-            let socks_port = free_local_port()?;
-            // Brings up the tunnel and, on failure, returns openconnect's OWN
-            // reason (auth/cert/DNS) — not a downstream "host unreachable".
-            let child = crate::vpn::establish_corp_tunnel(
-                &app,
-                &corp.profile,
-                &corp.password,
-                socks_port,
-            )
-            .await
-            .map_err(SshError::Other)?;
-            let proxy = format!("127.0.0.1:{socks_port}");
+            // Acquire the SHARED corp tunnel (established once per profile, reused
+            // by every host on it). On first/failed bring-up this returns
+            // openconnect's OWN reason (auth/cert/DNS) — not "host unreachable".
+            let guard = crate::vpn::acquire_tunnel(&app, &corp.profile, &corp.password)
+                .await
+                .map_err(SshError::Other)?;
+            let proxy = format!("127.0.0.1:{}", guard.socks_port);
             let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
                 .await
                 .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler).await?;
-            Ok::<_, SshError>((session, Some(child)))
+            Ok::<_, SshError>((session, crate::vpn::TransportHold::Corp(guard)))
         } else if let Some(node) = &args.vpn {
             let socks_port = free_local_port()?;
             let child = crate::vpn::spawn_xray(node, socks_port)
@@ -918,14 +914,14 @@ pub async fn ssh_connect(
                 .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
             let session =
                 client::connect_stream(config, stream.into_inner(), handler).await?;
-            Ok::<_, SshError>((session, Some(child)))
+            Ok::<_, SshError>((session, crate::vpn::TransportHold::Xray(child)))
         } else {
             let addr = format!("{}:{}", args.host, args.port);
             let session = client::connect(config, addr.as_str(), handler).await?;
-            Ok((session, None))
+            Ok((session, crate::vpn::TransportHold::None))
         }
     };
-    let (mut session, xray_child) = match tokio::time::timeout(timeout, establish).await {
+    let (mut session, transport_hold) = match tokio::time::timeout(timeout, establish).await {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             // Handshake failed. If it was a host-key rejection (new key that
@@ -999,7 +995,7 @@ pub async fn ssh_connect(
         ActiveSession {
             sender: tx.clone(),
             gate: gate.clone(),
-            _xray: xray_child,
+            _transport: transport_hold,
         },
     );
 

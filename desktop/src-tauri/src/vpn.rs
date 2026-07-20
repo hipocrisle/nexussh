@@ -676,7 +676,7 @@ pub async fn spawn_openconnect(
             // provides (RHEL/Rocky need EPEL first); Windows ships it in-bundle.
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "openconnect not found — install it to use the corporate VPN \
+                "openconnect not found — install it to use the OpenConnect VPN \
                  (Debian/Ubuntu: apt install openconnect ocproxy; RHEL/Rocky: \
                  enable EPEL then dnf install openconnect)",
             )
@@ -715,7 +715,7 @@ pub async fn openconnect_probe_cert(profile: &CorpVpnProfile) -> Result<String, 
     cmd.creation_flags(0x0800_0000);
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            "openconnect not found — install it to use the corporate VPN \
+            "openconnect not found — install it to use the OpenConnect VPN \
              (Debian/Ubuntu: apt install openconnect ocproxy; RHEL/Rocky: \
              enable EPEL then dnf install openconnect)".to_string()
         } else {

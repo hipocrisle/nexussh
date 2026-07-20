@@ -68,7 +68,7 @@ export function VpnSection({ t }: Props) {
     setProfiles(loadProfiles());
   }
 
-  // --- corporate VPN (AnyConnect / ocserv) ---------------------------------
+  // --- OpenConnect (AnyConnect / ocserv) VPN profiles -----------------------
   const [corp, setCorp] = useState<CorpVpnProfile[]>(() => loadCorpProfiles());
   const [cName, setCName] = useState("");
   const [cServer, setCServer] = useState("");

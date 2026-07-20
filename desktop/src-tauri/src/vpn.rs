@@ -727,9 +727,15 @@ pub async fn openconnect_probe_cert(profile: &CorpVpnProfile) -> Result<String, 
             format!("openconnect spawn: {e}")
         }
     })?;
-    // No real password; close stdin so openconnect doesn't block waiting for it.
-    if let Some(stdin) = child.stdin.take() {
-        drop(stdin);
+    // openconnect (--passwd-on-stdin) reads a password from stdin BEFORE the TLS
+    // cert check — closing stdin makes its fgets() fail ("fgets (stdin)") and it
+    // exits before printing the pin. Feed a throwaway password: the bogus
+    // --servercert rejects the certificate long before this password is ever
+    // validated, so its value is irrelevant — we only want the printed pin.
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(b"x\n").await;
+        let _ = stdin.shutdown().await;
     }
     let out = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait_with_output())
         .await

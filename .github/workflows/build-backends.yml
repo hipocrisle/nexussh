@@ -1,0 +1,188 @@
+name: Build VPN backends
+
+# On-demand VPN backend binaries (statically linked, single-file) the app
+# downloads at runtime — NOT bundled in the installer, so the base client stays
+# lean and each VPN type ships its own backend. Published to a rolling `backends`
+# release with a sha256 manifest (backends.json) the app verifies against.
+#
+# openconnect backend (Cisco AnyConnect / ocserv):
+#   - Linux: STOCK openconnect (static musl, OpenSSL) + ocproxy (static musl),
+#     invoked via --script-tun + ocproxy (the fork's native SOCKS relies on a
+#     win32-only lwIP port, so we use the proven stock path on Linux).
+#   - Windows: the fork (native --socks5-port SOCKS5, one .exe, static via MSYS2).
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/build-backends.yml"
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    container: alpine:3.20
+    env:
+      OC_REPO: https://gitlab.com/openconnect/openconnect.git
+      OC_REF: v9.12
+      OCPROXY_REPO: https://github.com/cernekee/ocproxy
+      OCPROXY_REF: 88b1087f6ab2c860c8729478643e081b6e97f6d3  # tag v1.60 (pinned)
+    steps:
+      - name: Install static build toolchain (musl)
+        run: |
+          apk add --no-cache build-base autoconf automake libtool pkgconf git bash \
+            linux-headers gettext-dev \
+            openssl-dev openssl-libs-static \
+            libxml2-dev libxml2-static \
+            zlib-dev zlib-static \
+            lz4-dev lz4-static \
+            xz-dev xz-static \
+            libevent-dev libevent-static
+
+      - name: Build static openconnect (stock, OpenSSL)
+        run: |
+          set -e
+          git config --global --add safe.directory '*'
+          git clone --depth 1 --branch "$OC_REF" "$OC_REPO" oc-src
+          cd oc-src
+          ./autogen.sh
+          PKG_CONFIG="pkg-config --static" \
+          ./configure --without-gnutls --with-openssl \
+            --with-vpnc-script=vpnc-script \
+            --disable-nls --without-libpcsclite --without-libproxy \
+            --without-gssapi --without-stoken --without-libpskc \
+            LDFLAGS="-static -s" CFLAGS="-O2"
+          make -j"$(nproc)"
+          mkdir -p /out
+          cp openconnect /out/openconnect-linux-x86_64
+          file /out/openconnect-linux-x86_64
+          /out/openconnect-linux-x86_64 --version | head -1 || true
+
+      - name: Build static ocproxy
+        run: |
+          set -e
+          git clone "$OCPROXY_REPO" ocproxy-src
+          cd ocproxy-src
+          git checkout "$OCPROXY_REF"
+          ./autogen.sh
+          ./configure LDFLAGS="-static -s"
+          make -j"$(nproc)"
+          cp ocproxy /out/ocproxy-linux-x86_64
+          file /out/ocproxy-linux-x86_64
+
+      - name: Upload Linux backend artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backends-linux
+          path: /out/*
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    env:
+      # Fork with native Windows SOCKS5 (--socks5-port), pinned tag socks5-tun-v1.
+      OC_FORK_REPO: https://github.com/eric15342335/openconnect
+      OC_FORK_REF: 449970044a9ad0374d121579832aa8b1b4a029f5
+    steps:
+      - name: Set up MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git base-devel jq unzip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-autotools
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gnutls
+            mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-lz4
+
+      - name: Build openconnect fork (native SOCKS5, static)
+        shell: msys2 {0}
+        run: |
+          set -e
+          git clone "$OC_FORK_REPO" oc-src
+          cd oc-src
+          git checkout "$OC_FORK_REF"
+          git submodule update --init --recursive   # lwIP
+          ./autogen.sh
+          # --with-vpnc-script required by configure even though --socks5-port
+          # never invokes it. gnutls (MSYS2 ucrt64), static single .exe.
+          ./configure --enable-socks5-tun --with-gnutls --without-openssl \
+            --with-vpnc-script=vpnc-script \
+            --disable-nls --without-libpcsclite --without-libproxy \
+            --without-gssapi --without-stoken --without-libpskc \
+            CFLAGS="-O2 -s -static"
+          make -j"$(nproc)"
+          OUT="$(cygpath -u "$GITHUB_WORKSPACE")/out"
+          mkdir -p "$OUT"
+          cp openconnect.exe "$OUT/openconnect-windows-x86_64.exe"
+          file "$OUT/openconnect-windows-x86_64.exe"
+          # bundle any residual ucrt64 DLLs next to it (fallback if -static missed)
+          for dll in $(ldd openconnect.exe | grep -i ucrt64 | awk '{print $3}'); do
+            cp -v "$dll" "$OUT/" || true
+          done
+          ls -la "$OUT"
+
+      - name: Upload Windows backend artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backends-windows
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Assemble manifest + publish rolling `backends` release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
+          mkdir -p out
+          cp dl/backends-linux/* out/ 2>/dev/null || true
+          cp dl/backends-windows/* out/ 2>/dev/null || true
+          cd out
+          sha() { sha256sum "$1" | awk '{print $1}'; }
+
+          # Linux: two static single binaries.
+          lin=$(jq -n --arg oc "$(sha openconnect-linux-x86_64)" --arg op "$(sha ocproxy-linux-x86_64)" \
+            '[{name:"openconnect",asset:"openconnect-linux-x86_64",sha256:$oc},
+              {name:"ocproxy",asset:"ocproxy-linux-x86_64",sha256:$op}]')
+
+          # Windows: the fork .exe (not fully static) + every ucrt64 DLL it needs.
+          win=$(jq -n --arg oc "$(sha openconnect-windows-x86_64.exe)" \
+            '[{name:"openconnect",asset:"openconnect-windows-x86_64.exe",sha256:$oc}]')
+          for dll in *.dll; do
+            [ -e "$dll" ] || continue
+            win=$(echo "$win" | jq --arg n "$dll" --arg s "$(sha "$dll")" '. + [{name:$n,asset:$n,sha256:$s}]')
+          done
+
+          jq -n --argjson lin "$lin" --argjson win "$win" '{
+            openconnect: {
+              description: "Cisco AnyConnect / ocserv (openconnect)",
+              platforms: {
+                "linux-x86_64":   { invoke: "script-tun+ocproxy", files: $lin },
+                "windows-x86_64": { invoke: "socks5-port",        files: $win }
+              }
+            }
+          }' > backends.json
+          cat backends.json; ls -la
+
+          if ! gh release view backends --repo "$REPO" >/dev/null 2>&1; then
+            gh release create backends --repo "$REPO" --prerelease --target main \
+              --title backends --notes "Rolling VPN backend binaries (downloaded on-demand, verified via backends.json sha256)."
+          fi
+          # Upload every produced binary (Linux bins, Windows .exe + all DLLs) + manifest.
+          gh release upload backends \
+            openconnect-linux-x86_64 ocproxy-linux-x86_64 openconnect-windows-x86_64.exe *.dll backends.json \
+            --repo "$REPO" --clobber

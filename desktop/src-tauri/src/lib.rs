@@ -4,6 +4,7 @@ mod android_keepalive;
 mod android_updater;
 mod biometric;
 mod bundle;
+mod backends;
 mod cleanup;
 mod history;
 mod import_sources;
@@ -334,6 +335,8 @@ pub fn run() {
             vpn::vpn_parse_subscription,
             vpn::vpn_fetch_subscription,
             vpn::corp_vpn_probe_cert,
+            backends::backend_status,
+            backends::backend_ensure,
             window_composited,
             nudge_repaint,
             history::history_list,

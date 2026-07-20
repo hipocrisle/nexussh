@@ -18,6 +18,8 @@ import {
   updateCorpProfile,
   removeCorpProfile,
   corpVpnProbeCert,
+  ensureVpnBackend,
+  VPN_BACKEND_ID,
   type CorpVpnProfile,
 } from "../vpn";
 
@@ -68,7 +70,7 @@ export function VpnSection({ t }: Props) {
     setProfiles(loadProfiles());
   }
 
-  // --- corporate VPN (AnyConnect / ocserv) ---------------------------------
+  // --- OpenConnect (AnyConnect / ocserv) VPN profiles -----------------------
   const [corp, setCorp] = useState<CorpVpnProfile[]>(() => loadCorpProfiles());
   const [cName, setCName] = useState("");
   const [cServer, setCServer] = useState("");
@@ -95,6 +97,8 @@ export function VpnSection({ t }: Props) {
     setCBusy(true);
     setCError(null);
     try {
+      // Ensure the openconnect backend is downloaded first (probe runs it).
+      await ensureVpnBackend(VPN_BACKEND_ID);
       const pin = await corpVpnProbeCert(p);
       if (confirm(tr("settings.vpn.corp.trust_confirm", { server: p.server, pin }))) {
         updateCorpProfile(p.id, { serverCert: pin });

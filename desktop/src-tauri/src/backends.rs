@@ -115,10 +115,20 @@ fn sha256_file(p: &Path) -> std::io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
+/// HTTP agent with connect + READ timeouts so a stalled download can't hang the
+/// ensure forever (a body read past the initial call otherwise blocks with no
+/// deadline).
+fn http_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(20))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .user_agent("NexuSSH")
+        .build()
+}
+
 fn fetch_manifest() -> Result<serde_json::Value, String> {
-    ureq::get(MANIFEST_URL)
-        .timeout(std::time::Duration::from_secs(30))
-        .set("User-Agent", "NexuSSH")
+    http_agent()
+        .get(MANIFEST_URL)
         .call()
         .map_err(|e| format!("fetch backends manifest: {e}"))?
         .into_json()
@@ -144,10 +154,23 @@ fn write_exec(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-fn emit(app: &AppHandle, id: &str, done: usize, total: usize, file: &str, phase: &str) {
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    app: &AppHandle,
+    id: &str,
+    file_idx: usize,
+    file_count: usize,
+    file: &str,
+    bytes: u64,
+    bytes_total: u64,
+    phase: &str,
+) {
     let _ = app.emit(
         "backend-progress",
-        serde_json::json!({ "id": id, "done": done, "total": total, "file": file, "phase": phase }),
+        serde_json::json!({
+            "id": id, "fileIdx": file_idx, "fileCount": file_count, "file": file,
+            "bytes": bytes, "bytesTotal": bytes_total, "phase": phase
+        }),
     );
 }
 
@@ -159,7 +182,7 @@ pub fn ensure_backend(app: &AppHandle, id: &str) -> Result<HashMap<String, PathB
     // a download fails partway (the inner `?` returns early without a "done").
     let r = ensure_backend_inner(app, id);
     if r.is_err() {
-        emit(app, id, 0, 0, "", "error");
+        emit(app, id, 0, 0, "", 0, 0, "error");
     }
     r
 }
@@ -177,17 +200,33 @@ fn ensure_backend_inner(app: &AppHandle, id: &str) -> Result<HashMap<String, Pat
             out.insert(f.name.clone(), dest);
             continue;
         }
-        emit(app, id, i, total, &f.name, "download");
+        emit(app, id, i, total, &f.name, 0, 0, "download");
         let url = format!("{ASSET_BASE}{}", f.asset);
-        let resp = ureq::get(&url)
-            .timeout(std::time::Duration::from_secs(120))
-            .set("User-Agent", "NexuSSH")
+        let resp = http_agent()
+            .get(&url)
             .call()
             .map_err(|e| format!("download {}: {e}", f.asset))?;
-        let mut bytes = Vec::new();
-        resp.into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(|e| format!("read {}: {e}", f.asset))?;
+        let bytes_total: u64 = resp
+            .header("Content-Length")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        // Stream so the progress bar actually moves during the download (large
+        // Windows backend is ~15 MB) instead of sitting frozen on one file.
+        let mut reader = resp.into_reader();
+        let mut bytes: Vec<u8> = Vec::with_capacity(bytes_total as usize);
+        let mut buf = [0u8; 65536];
+        let mut got_bytes: u64 = 0;
+        loop {
+            let n = reader
+                .read(&mut buf)
+                .map_err(|e| format!("read {}: {e}", f.asset))?;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+            got_bytes += n as u64;
+            emit(app, id, i, total, &f.name, got_bytes, bytes_total, "download");
+        }
         let got = hex(&Sha256::digest(&bytes));
         if got != f.sha256 {
             return Err(format!(
@@ -198,7 +237,7 @@ fn ensure_backend_inner(app: &AppHandle, id: &str) -> Result<HashMap<String, Pat
         write_exec(&dest, &bytes).map_err(|e| format!("save {}: {e}", f.name))?;
         out.insert(f.name.clone(), dest);
     }
-    emit(app, id, total, total, "", "done");
+    emit(app, id, total, total, "", 0, 0, "done");
     Ok(out)
 }
 

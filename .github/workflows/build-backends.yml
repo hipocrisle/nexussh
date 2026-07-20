@@ -45,13 +45,19 @@ jobs:
           git clone --depth 1 --branch "$OC_REF" "$OC_REPO" oc-src
           cd oc-src
           ./autogen.sh
+          # NOTE: openconnect links its program via libtool, which ignores a plain
+          # -static in LDFLAGS (→ a musl-DYNAMIC binary that won't run on glibc).
+          # The fully-static binary needs libtool's -all-static, and only at the
+          # LINK step (make) — passing it to configure breaks the gcc probe.
+          # Verified locally: `make LDFLAGS="-all-static"` → statically linked,
+          # runs on a glibc host. Do NOT put -static/-all-static in configure.
           PKG_CONFIG="pkg-config --static" \
           ./configure --without-gnutls --with-openssl \
             --with-vpnc-script=vpnc-script \
             --disable-nls --without-libpcsclite --without-libproxy \
             --without-gssapi --without-stoken --without-libpskc \
-            LDFLAGS="-static -s" CFLAGS="-O2"
-          make -j"$(nproc)"
+            CFLAGS="-O2"
+          make -j"$(nproc)" LDFLAGS="-all-static -s"
           mkdir -p /out
           cp openconnect /out/openconnect-linux-x86_64
           file /out/openconnect-linux-x86_64

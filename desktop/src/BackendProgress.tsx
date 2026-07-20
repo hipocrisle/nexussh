@@ -10,9 +10,15 @@ import { Download } from "lucide-react";
 interface Prog {
   id: string;
   file: string;
-  done: number;
-  total: number;
+  fileIdx: number;
+  fileCount: number;
+  bytes: number;
+  bytesTotal: number;
   phase: string;
+}
+
+function mb(n: number): string {
+  return `${(n / 1048576).toFixed(1)} МБ`;
 }
 
 export function BackendProgress() {
@@ -34,7 +40,11 @@ export function BackendProgress() {
   }, []);
 
   if (!p) return null;
-  const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+  // Overall progress across all files: completed files + fraction of current one.
+  const frac = p.bytesTotal > 0 ? p.bytes / p.bytesTotal : 0;
+  const pct = p.fileCount
+    ? Math.round(((p.fileIdx + frac) / p.fileCount) * 100)
+    : 0;
 
   return (
     <div className="nx-scrim grid place-items-center">
@@ -44,12 +54,19 @@ export function BackendProgress() {
           <span className="text-lead">{t("backend.title")}</span>
         </div>
         <div className="text-meta text-nx-muted font-mono mb-3">{t("backend.hint")}</div>
-        <div className="text-micro font-mono text-nx-soft mb-2 truncate">
-          {(p.file || "…")} · {p.done}/{p.total}
+        <div className="flex items-center justify-between text-micro font-mono text-nx-soft mb-2">
+          <span className="truncate mr-2">
+            {p.file || "…"} · {p.fileIdx + 1}/{p.fileCount}
+          </span>
+          {p.bytesTotal > 0 && (
+            <span className="shrink-0">
+              {mb(p.bytes)} / {mb(p.bytesTotal)}
+            </span>
+          )}
         </div>
         <div className="h-1.5 rounded overflow-hidden bg-nx-divider">
           <div
-            className="h-full bg-nx-accent transition-all duration-300"
+            className="h-full bg-nx-accent transition-all duration-200"
             style={{ width: `${pct}%` }}
           />
         </div>

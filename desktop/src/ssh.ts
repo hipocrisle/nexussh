@@ -105,9 +105,12 @@ export async function sshConnect(
   // (saved-password/key/vault hosts skip the askPassword probe, so guarding only
   // there leaves a hole). A bogus/offline host fails fast here with a clear
   // message instead of a long SSH-handshake hang mistaken for bad creds. Skip
-  // VPN hosts (they reach the target via the SOCKS path). Fail-open if the probe
-  // itself errors, so a probe glitch never blocks a real connection.
-  if (!args.vpn) {
+  // VPN hosts — BOTH the built-in xray VPN (args.vpn) AND the OpenConnect corp
+  // VPN (args.corp_vpn): their target is only reachable through the tunnel's
+  // SOCKS path, so a DIRECT TCP probe here would always fail (private 10.x/behind-
+  // VPN addresses) and wrongly abort the connect BEFORE the tunnel is even
+  // brought up. Fail-open if the probe itself errors.
+  if (!args.vpn && !args.corp_vpn) {
     const reachable = await hostReachable(args.host, args.port, 5).catch(
       () => true,
     );

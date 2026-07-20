@@ -12,7 +12,9 @@ interface Props {
   /** Focused session, for the per-session segment. */
   activeHost?: string | null;
   activeStatus?: "connecting" | "connected" | "closed" | null;
-  activeVpn?: boolean;
+  /** Human label of the VPN the focused session routes through (any type), or
+   *  null for a direct connection. */
+  activeVpnLabel?: string | null;
   activeVpnExit?: string | null;
 }
 
@@ -21,7 +23,7 @@ export function StatusLine({
   connectingCount,
   activeHost = null,
   activeStatus = null,
-  activeVpn = false,
+  activeVpnLabel = null,
   activeVpnExit = null,
 }: Props) {
   const { t } = useTranslation();
@@ -62,8 +64,10 @@ export function StatusLine({
           >
             · {t(`status.conn_${activeStatus ?? "closed"}`)}
           </span>
-          <span className={activeVpn ? "text-nx-accent" : "text-nx-muted"}>
-            · {activeVpn ? `⛨ ${t("status.via_vpn")}${activeVpnExit && activeVpnExit !== "auto" ? ` (${activeVpnExit})` : ""}` : t("status.direct")}
+          <span className={activeVpnLabel ? "text-nx-accent" : "text-nx-muted"}>
+            · {activeVpnLabel
+              ? `⛨ ${activeVpnLabel}${activeVpnExit ? ` (${activeVpnExit})` : ""}`
+              : t("status.direct")}
           </span>
         </span>
       )}

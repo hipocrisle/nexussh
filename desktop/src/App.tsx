@@ -484,6 +484,25 @@ function resolveHostVpn(h: HostRecord): VpnNode | null {
   return resolveExit(profile, h.vpnExit) ?? null;
 }
 
+// Describe which VPN a host routes through, for the status bar (any type — xray
+// or OpenConnect). null = direct.
+function describeHostVpn(
+  h: HostRecord,
+): { label: string; exit: string | null } | null {
+  if (h.corpVpnProfileId) {
+    const p = getCorpProfile(h.corpVpnProfileId);
+    return { label: `${p?.name ?? "OpenConnect"} · OpenConnect`, exit: null };
+  }
+  if (h.useVpn && h.vpnProfileId) {
+    const p = getProfile(h.vpnProfileId);
+    return {
+      label: `${p?.name ?? "VPN"} · Xray`,
+      exit: h.vpnExit && h.vpnExit !== "auto" ? h.vpnExit : null,
+    };
+  }
+  return null;
+}
+
 function App() {
   const { t } = useTranslation();
   const [settings, setSettings] = useSettings();
@@ -4066,8 +4085,12 @@ function App() {
               : null
           }
           activeStatus={focusedSession?.status ?? null}
-          activeVpn={!!focusedSession?.host.useVpn}
-          activeVpnExit={focusedSession?.host.vpnExit ?? null}
+          activeVpnLabel={
+            focusedSession ? describeHostVpn(focusedSession.host)?.label ?? null : null
+          }
+          activeVpnExit={
+            focusedSession ? describeHostVpn(focusedSession.host)?.exit ?? null : null
+          }
         />
       )}
 

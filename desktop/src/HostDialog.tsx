@@ -56,7 +56,6 @@ import {
   Checkbox,
   SegCtl,
   RowLabel,
-  ToggleRow,
 } from "./components/primitives";
 import { loadProfiles, type VpnProfile, loadCorpProfiles, type CorpVpnProfile } from "./vpn";
 import { Select } from "./Select";
@@ -605,75 +604,83 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
              *  xray sidecar; per-host VPN is desktop-only). */}
             {!isMobile && (
             <Card icon={<Globe size={12} />} label={t("dialog.col_transport")}>
-            <ToggleRow
-              label={t("dialog.use_vpn")}
-              value={useVpn}
-              onChange={(v) => {
-                setUseVpn(v);
-                if (v) setCorpVpnProfileId(""); // xray and corp VPN are mutually exclusive
-              }}
-            />
-            {useVpn &&
-              (vpnProfiles.length === 0 ? (
-                <p className="text-nx-warning text-meta font-mono mt-2">
-                  ⚠ {t("dialog.vpn_no_profiles")}
-                </p>
-              ) : (
-                <div className="mt-2 space-y-3">
-                  <div>
-                    <RowLabel>{t("dialog.vpn_profile")}</RowLabel>
+            {/* One unified VPN picker across all types (Xray, OpenConnect, and
+             *  future L2TP/…). The value encodes the type + profile id as
+             *  "<type>:<id>" and is decoded back into the host's underlying
+             *  fields on change — always resetting the others, so there's no
+             *  mutual-exclusion toggle dance (that dance used to wipe the corp
+             *  selection when the xray toggle was flipped on then off). */}
+            {vpnProfiles.length === 0 && corpProfiles.length === 0 ? (
+              <p className="text-nx-muted text-meta font-mono">
+                {t("dialog.vpn_no_profiles_any")}
+              </p>
+            ) : (
+              <>
+                <RowLabel>{t("dialog.vpn")}</RowLabel>
+                <Select
+                  className="mt-1.5"
+                  value={
+                    corpVpnProfileId
+                      ? `corp:${corpVpnProfileId}`
+                      : useVpn && vpnProfileId
+                        ? `xray:${vpnProfileId}`
+                        : ""
+                  }
+                  onChange={(v) => {
+                    if (v.startsWith("corp:")) {
+                      setCorpVpnProfileId(v.slice(5));
+                      setUseVpn(false);
+                      setVpnProfileId("");
+                      setVpnExit("auto");
+                    } else if (v.startsWith("xray:")) {
+                      setUseVpn(true);
+                      setVpnProfileId(v.slice(5));
+                      setVpnExit("auto");
+                      setCorpVpnProfileId("");
+                    } else {
+                      setUseVpn(false);
+                      setVpnProfileId("");
+                      setVpnExit("auto");
+                      setCorpVpnProfileId("");
+                    }
+                  }}
+                  options={[
+                    { value: "", label: t("dialog.vpn_none") },
+                    ...vpnProfiles.map((p) => ({
+                      value: `xray:${p.id}`,
+                      label: `${p.name} · Xray`,
+                    })),
+                    ...corpProfiles.map((p) => ({
+                      value: `corp:${p.id}`,
+                      label: `${p.name} · OpenConnect`,
+                    })),
+                  ]}
+                />
+                {/* Xray: pick an exit node within the chosen subscription. */}
+                {useVpn && vpnProfileId && (
+                  <div className="mt-3">
+                    <RowLabel>{t("dialog.vpn_exit")}</RowLabel>
                     <Select
-                      value={vpnProfileId}
-                      onChange={(v) => {
-                        setVpnProfileId(v);
-                        setVpnExit("auto");
-                      }}
-                      placeholder={t("dialog.vpn_pick_profile")}
-                      options={vpnProfiles.map((p) => ({ value: p.id, label: p.name }))}
                       className="mt-1.5"
+                      value={vpnExit}
+                      onChange={(v) => setVpnExit(v)}
+                      options={[
+                        { value: "auto", label: t("dialog.vpn_auto") },
+                        ...(vpnProfiles.find((p) => p.id === vpnProfileId)?.nodes ?? []).map(
+                          (n) => ({ value: n.tag, label: n.tag }),
+                        ),
+                      ]}
                     />
                   </div>
-                  {vpnProfileId && (
-                    <div>
-                      <RowLabel>{t("dialog.vpn_exit")}</RowLabel>
-                      <Select
-                        value={vpnExit}
-                        onChange={(v) => setVpnExit(v)}
-                        options={[
-                          { value: "auto", label: t("dialog.vpn_auto") },
-                          ...(vpnProfiles.find((p) => p.id === vpnProfileId)?.nodes ?? []).map(
-                            (n) => ({ value: n.tag, label: n.tag }),
-                          ),
-                        ]}
-                        className="mt-1.5"
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-            {corpProfiles.length > 0 && (
-              <div className="mt-3">
-                <RowLabel>{t("dialog.corp_vpn")}</RowLabel>
-                <Select
-                  value={corpVpnProfileId}
-                  onChange={(v) => {
-                    setCorpVpnProfileId(v);
-                    if (v) setUseVpn(false); // corp and xray VPN are mutually exclusive
-                  }}
-                  placeholder={t("dialog.corp_vpn_none")}
-                  options={[
-                    { value: "", label: t("dialog.corp_vpn_none") },
-                    ...corpProfiles.map((p) => ({ value: p.id, label: p.name })),
-                  ]}
-                  className="mt-1.5"
-                />
+                )}
+                {/* OpenConnect: warn if the server cert isn't trusted yet. */}
                 {corpVpnProfileId &&
                   !corpProfiles.find((p) => p.id === corpVpnProfileId)?.serverCert && (
                     <p className="text-nx-warning text-meta font-mono mt-2">
                       ⚠ {t("dialog.corp_vpn_untrusted")}
                     </p>
                   )}
-              </div>
+              </>
             )}
             </Card>
             )}

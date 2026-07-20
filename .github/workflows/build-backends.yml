@@ -147,42 +147,42 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -e
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
           mkdir -p out
           cp dl/backends-linux/* out/ 2>/dev/null || true
           cp dl/backends-windows/* out/ 2>/dev/null || true
           cd out
           sha() { sha256sum "$1" | awk '{print $1}'; }
-          OC_L=$(sha openconnect-linux-x86_64)
-          OP_L=$(sha ocproxy-linux-x86_64)
-          OC_W=$(sha openconnect-windows-x86_64.exe)
-          cat > backends.json <<EOF
-          {
-            "openconnect": {
-              "description": "Cisco AnyConnect / ocserv (openconnect)",
-              "platforms": {
-                "linux-x86_64": {
-                  "invoke": "script-tun+ocproxy",
-                  "files": [
-                    { "name": "openconnect", "asset": "openconnect-linux-x86_64", "sha256": "${OC_L}" },
-                    { "name": "ocproxy", "asset": "ocproxy-linux-x86_64", "sha256": "${OP_L}" }
-                  ]
-                },
-                "windows-x86_64": {
-                  "invoke": "socks5-port",
-                  "files": [
-                    { "name": "openconnect", "asset": "openconnect-windows-x86_64.exe", "sha256": "${OC_W}" }
-                  ]
-                }
+
+          # Linux: two static single binaries.
+          lin=$(jq -n --arg oc "$(sha openconnect-linux-x86_64)" --arg op "$(sha ocproxy-linux-x86_64)" \
+            '[{name:"openconnect",asset:"openconnect-linux-x86_64",sha256:$oc},
+              {name:"ocproxy",asset:"ocproxy-linux-x86_64",sha256:$op}]')
+
+          # Windows: the fork .exe (not fully static) + every ucrt64 DLL it needs.
+          win=$(jq -n --arg oc "$(sha openconnect-windows-x86_64.exe)" \
+            '[{name:"openconnect",asset:"openconnect-windows-x86_64.exe",sha256:$oc}]')
+          for dll in *.dll; do
+            [ -e "$dll" ] || continue
+            win=$(echo "$win" | jq --arg n "$dll" --arg s "$(sha "$dll")" '. + [{name:$n,asset:$n,sha256:$s}]')
+          done
+
+          jq -n --argjson lin "$lin" --argjson win "$win" '{
+            openconnect: {
+              description: "Cisco AnyConnect / ocserv (openconnect)",
+              platforms: {
+                "linux-x86_64":   { invoke: "script-tun+ocproxy", files: $lin },
+                "windows-x86_64": { invoke: "socks5-port",        files: $win }
               }
             }
-          }
-          EOF
-          cat backends.json
-          ls -la
+          }' > backends.json
+          cat backends.json; ls -la
+
           if ! gh release view backends --repo "$REPO" >/dev/null 2>&1; then
             gh release create backends --repo "$REPO" --prerelease --target main \
               --title backends --notes "Rolling VPN backend binaries (downloaded on-demand, verified via backends.json sha256)."
           fi
+          # Upload every produced binary (Linux bins, Windows .exe + all DLLs) + manifest.
           gh release upload backends \
-            openconnect-linux-x86_64 ocproxy-linux-x86_64 openconnect-windows-x86_64.exe backends.json \
+            openconnect-linux-x86_64 ocproxy-linux-x86_64 openconnect-windows-x86_64.exe *.dll backends.json \
             --repo "$REPO" --clobber

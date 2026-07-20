@@ -32,9 +32,11 @@ pub fn platform_key() -> String {
     format!("{os}-{}", std::env::consts::ARCH)
 }
 
-/// Local on-disk filename for a logical backend binary — Windows needs `.exe`.
+/// Local on-disk filename for a backend file. On Windows the main executable is
+/// given as the bare logical name (e.g. "openconnect") and needs a `.exe` — but
+/// accompanying files that already carry an extension (DLLs) are kept verbatim.
 fn local_filename(name: &str) -> String {
-    if cfg!(windows) && !name.ends_with(".exe") {
+    if cfg!(windows) && !name.contains('.') {
         format!("{name}.exe")
     } else {
         name.to_string()
@@ -283,8 +285,11 @@ mod tests {
         let f = local_filename("openconnect");
         if cfg!(windows) {
             assert_eq!(f, "openconnect.exe");
+            // DLLs (already have an extension) are kept verbatim, not "<name>.dll.exe".
+            assert_eq!(local_filename("libgnutls-30.dll"), "libgnutls-30.dll");
         } else {
             assert_eq!(f, "openconnect");
+            assert_eq!(local_filename("libgnutls-30.dll"), "libgnutls-30.dll");
         }
     }
 }

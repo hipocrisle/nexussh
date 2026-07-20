@@ -713,7 +713,15 @@ pub async fn openconnect_probe_cert(profile: &CorpVpnProfile) -> Result<String, 
         .kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let mut child = cmd.spawn().map_err(|e| format!("openconnect spawn: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "openconnect not found — install it to use the corporate VPN \
+             (Debian/Ubuntu: apt install openconnect ocproxy; RHEL/Rocky: \
+             enable EPEL then dnf install openconnect)".to_string()
+        } else {
+            format!("openconnect spawn: {e}")
+        }
+    })?;
     // No real password; close stdin so openconnect doesn't block waiting for it.
     if let Some(stdin) = child.stdin.take() {
         drop(stdin);

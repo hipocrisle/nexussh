@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Install static build toolchain (musl)
         run: |
-          apk add --no-cache build-base autoconf automake libtool pkgconf git \
+          apk add --no-cache build-base autoconf automake libtool pkgconf git bash \
             linux-headers gettext-dev \
             openssl-dev openssl-libs-static \
             libxml2-dev libxml2-static \

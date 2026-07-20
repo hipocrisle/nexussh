@@ -76,6 +76,7 @@ export function VpnSection({ t }: Props) {
   const [cServer, setCServer] = useState("");
   const [cUser, setCUser] = useState("");
   const [cGroup, setCGroup] = useState("");
+  const [cMtu, setCMtu] = useState("");
   const [cBusy, setCBusy] = useState(false);
   const [cError, setCError] = useState<string | null>(null);
 
@@ -87,9 +88,10 @@ export function VpnSection({ t }: Props) {
       username: cUser.trim(),
       serverCert: "",
       authgroup: cGroup.trim(),
+      mtu: cMtu.trim(),
     });
     setCorp(loadCorpProfiles());
-    setCName(""); setCServer(""); setCUser(""); setCGroup("");
+    setCName(""); setCServer(""); setCUser(""); setCGroup(""); setCMtu("");
     setCError(null);
   }
 
@@ -200,6 +202,7 @@ export function VpnSection({ t }: Props) {
           <TextField value={cServer} onChange={setCServer} placeholder={tr("settings.vpn.corp.server_ph")} t={t} />
           <TextField value={cUser} onChange={setCUser} placeholder={tr("settings.vpn.corp.user_ph")} t={t} />
           <TextField value={cGroup} onChange={setCGroup} placeholder={tr("settings.vpn.corp.group_ph")} t={t} />
+          <TextField value={cMtu} onChange={setCMtu} placeholder={tr("settings.vpn.corp.mtu_ph")} t={t} />
           <button type="button" onClick={onAddCorp} disabled={!cServer.trim() || !cUser.trim()} className={btn} style={btnStyle}>
             <Plus size={12} /> {tr("settings.vpn.corp.add_btn")}
           </button>
@@ -226,6 +229,21 @@ export function VpnSection({ t }: Props) {
                   <div className="truncate" style={{ color: t.textPrimary }}>{p.name}</div>
                   <div className="text-[11px] mt-0.5 truncate" style={{ color: t.textMuted }}>
                     {p.username}@{p.server}
+                  </div>
+                  <div className="text-[11px] mt-1 flex items-center gap-1.5" style={{ color: t.textMuted }}>
+                    <span>{tr("settings.vpn.corp.mtu")}</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={p.mtu ?? ""}
+                      onChange={(e) => {
+                        updateCorpProfile(p.id, { mtu: e.target.value.replace(/[^0-9]/g, "") });
+                        setCorp(loadCorpProfiles());
+                      }}
+                      placeholder={tr("settings.vpn.corp.mtu_ph")}
+                      className="w-20 px-1.5 py-0.5 rounded font-mono text-[11px] outline-none"
+                      style={{ background: t.bgBase, border: `1px solid ${t.border}`, color: t.textSoft }}
+                    />
                   </div>
                   <div
                     className="text-[11px] mt-0.5 flex items-center gap-1"

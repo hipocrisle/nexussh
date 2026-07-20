@@ -523,6 +523,13 @@ pub struct CorpVpnProfile {
     /// AnyConnect auth group (`--authgroup`), if the server uses one. Empty = none.
     #[serde(default)]
     pub authgroup: String,
+    /// Optional tunnel MTU override (openconnect `--mtu`). Empty = auto-negotiate.
+    /// Lowering it (try 1300, then 1200) fixes SSH to MTU-picky endpoints — most
+    /// notably Cisco IOS — that black-hole full-size KEX packets through the
+    /// AnyConnect tunnel (symptom: Linux hosts on the same VPN connect fine, a
+    /// Cisco on the same subnet alternates timeout / connection-refused).
+    #[serde(default)]
+    pub mtu: String,
 }
 
 /// Normalize a server field into an `https://…` URL openconnect accepts.
@@ -577,6 +584,13 @@ fn openconnect_args(
     }
     if !profile.authgroup.trim().is_empty() {
         a.push(format!("--authgroup={}", profile.authgroup.trim()));
+    }
+    // Optional MTU clamp — propagates to ocproxy/lwIP (INTERNAL_IP4_MTU) so TCP
+    // MSS inside the tunnel shrinks to fit, unblocking MTU-picky SSH endpoints.
+    if let Ok(mtu) = profile.mtu.trim().parse::<u32>() {
+        if mtu > 0 {
+            a.push(format!("--mtu={mtu}"));
+        }
     }
     a.push(oc_server_url(&profile.server));
     a
@@ -1123,6 +1137,7 @@ mod tests {
             username: "ivan".into(),
             server_cert: "pin-sha256:x".into(),
             authgroup: "grp".into(),
+            mtu: String::new(),
         };
         // Same server+user+group → same key (shares one tunnel), even if the
         // display name / trusted cert differ.
@@ -1257,6 +1272,7 @@ mod corp_vpn_tests {
             username: "alice".into(),
             server_cert: "pin-sha256:U8sH35+o9alC7JK6QcQmiQ6Q2hfQPcTPMDPSWyNV6fI=".into(),
             authgroup: String::new(),
+            mtu: String::new(),
         }
     }
 
@@ -1315,6 +1331,28 @@ mod corp_vpn_tests {
         p.authgroup = "employees".into();
         let a = openconnect_args(&p, "alice", 11080, Path::new("ocproxy"));
         assert!(a.contains(&"--authgroup=employees".to_string()));
+    }
+
+    #[test]
+    fn mtu_passed_only_when_a_valid_number() {
+        let mut p = prof();
+        // Empty → no --mtu (auto-negotiate).
+        assert!(!openconnect_args(&p, "alice", 11080, Path::new("ocproxy"))
+            .iter()
+            .any(|s| s.starts_with("--mtu")));
+        // Set → passed through.
+        p.mtu = "1300".into();
+        assert!(openconnect_args(&p, "alice", 11080, Path::new("ocproxy"))
+            .contains(&"--mtu=1300".to_string()));
+        // Junk / zero → ignored (no crash, no bogus arg).
+        p.mtu = "abc".into();
+        assert!(!openconnect_args(&p, "alice", 11080, Path::new("ocproxy"))
+            .iter()
+            .any(|s| s.starts_with("--mtu")));
+        p.mtu = "0".into();
+        assert!(!openconnect_args(&p, "alice", 11080, Path::new("ocproxy"))
+            .iter()
+            .any(|s| s.starts_with("--mtu")));
     }
 
     #[test]

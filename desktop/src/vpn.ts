@@ -164,6 +164,9 @@ export interface CorpVpnProfile {
   serverCert: string;
   /** AnyConnect auth group (optional). */
   authgroup: string;
+  /** Optional tunnel MTU override (empty = auto). Lower it (1300, then 1200) to
+   *  fix SSH to MTU-picky endpoints like Cisco IOS through the tunnel. */
+  mtu?: string;
 }
 
 /** Backend (serde snake_case) shape of a corp profile — password is separate. */
@@ -173,6 +176,7 @@ export interface CorpVpnBackend {
   username: string;
   server_cert: string;
   authgroup: string;
+  mtu: string;
 }
 
 /** Map a stored profile to the backend shape the Rust commands expect. */
@@ -183,6 +187,7 @@ export function toCorpBackend(p: CorpVpnProfile): CorpVpnBackend {
     username: p.username,
     server_cert: p.serverCert,
     authgroup: p.authgroup,
+    mtu: p.mtu ?? "",
   };
 }
 

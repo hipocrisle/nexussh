@@ -662,6 +662,10 @@ const ru = {
     auto_update: "Автоматически проверять обновления",
     auto_update_hint: "Раз в сутки на старте приложения. Сам ничего не скачивает — только показывает уведомление если новая версия.",
     check_for_updates: "Проверить обновления сейчас",
+    backend: {
+      title: "Загрузка VPN-бэкенда",
+      hint: "Компоненты для этого типа VPN скачиваются один раз, без прав администратора.",
+    },
     app: {
       brand_tagline: "матричный терминал с акцентом на историю",
       sessions: "сессий: {{n}}",
@@ -1833,6 +1837,10 @@ const en = {
     auto_update: "Auto-check for updates",
     auto_update_hint: "Once per day at app startup. Never downloads on its own — just notifies if a new version is out.",
     check_for_updates: "Check for updates now",
+    backend: {
+      title: "Downloading VPN backend",
+      hint: "Components for this VPN type are downloaded once, no admin rights.",
+    },
     app: {
       brand_tagline: "matrix terminal, history-first",
       sessions: "{{n}} sessions",

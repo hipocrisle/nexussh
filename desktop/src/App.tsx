@@ -95,7 +95,8 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit, getCorpProfile, toCorpBackend, type CorpVpnProfile } from "./vpn";
+import { getProfile, resolveExit, getCorpProfile, toCorpBackend, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID } from "./vpn";
+import { BackendProgress } from "./BackendProgress";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
 import { tunnelOpen, tunnelList, TunnelInfo, PortForward } from "./tunnel";
 import {
@@ -927,6 +928,9 @@ function App() {
       pw = entered;
       corpPwCache.current.set(p.id, pw);
     }
+    // Ensure the openconnect backend binary is downloaded (on-demand, verified) —
+    // the <BackendProgress/> overlay shows automatically during the download.
+    await ensureVpnBackend(VPN_BACKEND_ID);
     return { profile: toCorpBackend(p), password: pw };
   }
   // Same predicate openHost/openSftp/kickoffConnect use to decide a host needs
@@ -4370,6 +4374,8 @@ function App() {
           </Suspense>
         </div>
       )}
+
+      <BackendProgress />
 
       {pwQueue[0] && (
         <PasswordPrompt

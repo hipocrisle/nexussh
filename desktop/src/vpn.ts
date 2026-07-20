@@ -232,3 +232,29 @@ export function removeCorpProfile(id: string) {
 export async function corpVpnProbeCert(p: CorpVpnProfile): Promise<string> {
   return await invoke<string>("corp_vpn_probe_cert", { profile: toCorpBackend(p) });
 }
+
+// ─── On-demand VPN backends (openconnect, ...) ────────────────────────────────
+// Backend binaries aren't bundled — they're downloaded on first use into a
+// per-user dir (verified via a sha256 manifest). `ensureVpnBackend` must be
+// called before any command that runs the backend (probe / connect). A global
+// <BackendProgress/> overlay listens to the "backend-progress" events it emits.
+
+export interface BackendStatus {
+  id: string;
+  supported: boolean; // this platform has a build
+  installed: boolean; // all files present with matching sha256
+  files_total: number;
+  files_present: number;
+}
+
+export async function backendStatus(id: string): Promise<BackendStatus> {
+  return await invoke<BackendStatus>("backend_status", { id });
+}
+
+/** Download+verify a backend if not already present (idempotent). */
+export async function ensureVpnBackend(id: string): Promise<void> {
+  await invoke("backend_ensure", { id });
+}
+
+/** The backend id a given VPN profile type needs. Extend as VPN types grow. */
+export const VPN_BACKEND_ID = "openconnect";

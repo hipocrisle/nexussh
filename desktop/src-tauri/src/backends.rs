@@ -153,6 +153,16 @@ fn emit(app: &AppHandle, id: &str, done: usize, total: usize, file: &str, phase:
 /// per-user backends dir. Idempotent: files already present with a matching
 /// sha256 are skipped. Returns logical-name → path. Emits `backend-progress`.
 pub fn ensure_backend(app: &AppHandle, id: &str) -> Result<HashMap<String, PathBuf>, String> {
+    // Always emit a terminal event so the progress overlay never gets stuck when
+    // a download fails partway (the inner `?` returns early without a "done").
+    let r = ensure_backend_inner(app, id);
+    if r.is_err() {
+        emit(app, id, 0, 0, "", "error");
+    }
+    r
+}
+
+fn ensure_backend_inner(app: &AppHandle, id: &str) -> Result<HashMap<String, PathBuf>, String> {
     let manifest = fetch_manifest()?;
     let files = parse_files(&manifest, id)
         .ok_or_else(|| format!("backend '{id}' has no build for {}", platform_key()))?;

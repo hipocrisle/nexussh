@@ -12,6 +12,13 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter};
+
+/// Shared, capped ring buffer of openconnect's own log lines for one tunnel — so
+/// a bring-up failure can be reported with openconnect's REAL reason (auth / cert
+/// / DNS) instead of a downstream "host unreachable".
+pub type VpnLog = Arc<Mutex<Vec<String>>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpnNode {
@@ -648,15 +655,98 @@ async fn feed_password(child: &mut tokio::process::Child, password: &str) {
     }
 }
 
+/// Stream a child pipe line-by-line into the tunnel log buffer AND emit each line
+/// on `corp-vpn-log`, so the UI can show the tunnel actually coming up (or the
+/// exact line it failed on) live.
+fn drain_pipe<R>(app: AppHandle, reader: R, log: VpnLog)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncBufReadExt;
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let _ = app.emit("corp-vpn-log", json!({ "line": line }));
+            if let Ok(mut b) = log.lock() {
+                if b.len() >= 300 {
+                    b.remove(0);
+                }
+                b.push(line);
+            }
+        }
+    });
+}
+
+/// Classify openconnect's captured output into a human, actionable failure
+/// reason. Returns None when nothing recognizable matched (caller falls back to
+/// the raw tail). Kept pure for unit testing.
+pub fn classify_openconnect_failure(lines: &[String]) -> Option<String> {
+    let hay = lines.join("\n").to_lowercase();
+    let has = |p: &str| hay.contains(p);
+    if has("login failed")
+        || has("authentication failed")
+        || has("invalid credentials")
+        || has("password required")
+        || has("access denied")
+    {
+        Some("VPN authentication failed — check the VPN username/password".into())
+    } else if has("certificate")
+        && (has("failed") || has("reject") || has("mismatch") || has("differ") || has("doesn't match"))
+    {
+        Some("VPN server certificate rejected — re-trust the server in Settings → VPN".into())
+    } else if has("cannot resolve")
+        || has("could not resolve")
+        || has("name or service not known")
+    {
+        Some("cannot resolve the VPN server address — check the server field".into())
+    } else if has("connection refused")
+        || has("connection timed out")
+        || has("network is unreachable")
+        || has("failed to open https connection")
+        || has("failed to connect")
+        || has("no route to host")
+    {
+        Some("cannot reach the VPN server — check the server address/port and your network".into())
+    } else if (has("ocproxy") && (has("not found") || has("no such file"))) || has("script failed") {
+        Some("VPN helper (ocproxy) failed to start — re-download the VPN backend".into())
+    } else {
+        None
+    }
+}
+
+/// Best-effort failure message from a tunnel's log buffer: a recognized reason,
+/// else the last few non-empty lines, else a generic note.
+fn tunnel_failure_reason(log: &VpnLog) -> String {
+    let lines = log.lock().map(|b| b.clone()).unwrap_or_default();
+    if let Some(m) = classify_openconnect_failure(&lines) {
+        return m;
+    }
+    let mut tail: Vec<String> = lines
+        .iter()
+        .rev()
+        .filter(|l| !l.trim().is_empty())
+        .take(3)
+        .cloned()
+        .collect();
+    if tail.is_empty() {
+        "the VPN tunnel did not come up (no output from openconnect)".into()
+    } else {
+        tail.reverse();
+        tail.join(" · ")
+    }
+}
+
 /// Spawn openconnect+ocproxy for `profile`, exposing a SOCKS5 proxy on
 /// 127.0.0.1:`socks_port`. `kill_on_drop` tears the tunnel down with the owning
 /// SSH session. Requires a trusted `profile.server_cert` (call the probe first if
-/// empty). Userspace only — no TUN, no elevation.
+/// empty). Userspace only — no TUN, no elevation. Returns the child plus a live
+/// log buffer of openconnect's output.
 pub async fn spawn_openconnect(
+    app: &AppHandle,
     profile: &CorpVpnProfile,
     password: &str,
     socks_port: u16,
-) -> std::io::Result<tokio::process::Child> {
+) -> std::io::Result<(tokio::process::Child, VpnLog)> {
     let username = if profile.username.trim().is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -670,8 +760,8 @@ pub async fn spawn_openconnect(
     let mut cmd = tokio::process::Command::new(openconnect_bin_path());
     cmd.args(&args)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
@@ -692,7 +782,61 @@ pub async fn spawn_openconnect(
     feed_password(&mut child, password).await;
     #[cfg(windows)]
     attach_to_job(&child);
-    Ok(child)
+    let log: VpnLog = Arc::new(Mutex::new(Vec::new()));
+    if let Some(out) = child.stdout.take() {
+        drain_pipe(app.clone(), out, log.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        drain_pipe(app.clone(), err, log.clone());
+    }
+    Ok((child, log))
+}
+
+/// Bring up the openconnect tunnel and wait until its SOCKS proxy is listening —
+/// but if openconnect dies during bring-up (bad password, rejected cert, DNS,
+/// unreachable server), fail immediately with openconnect's OWN reason instead of
+/// waiting out the SOCKS timeout and reporting a misleading "host unreachable".
+/// Emits `corp-vpn-status` lifecycle events (connecting / up / error) for the UI.
+pub async fn establish_corp_tunnel(
+    app: &AppHandle,
+    profile: &CorpVpnProfile,
+    password: &str,
+    socks_port: u16,
+) -> Result<tokio::process::Child, String> {
+    let _ = app.emit(
+        "corp-vpn-status",
+        json!({ "phase": "connecting", "server": profile.server }),
+    );
+    let (mut child, log) = spawn_openconnect(app, profile, password, socks_port)
+        .await
+        .map_err(|e| {
+            let m = e.to_string();
+            let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": m }));
+            m
+        })?;
+
+    // Race: SOCKS becomes reachable (tunnel up) vs openconnect exiting early.
+    let ready = crate::ssh::wait_socks_port(socks_port);
+    tokio::pin!(ready);
+    tokio::select! {
+        r = &mut ready => {
+            if r {
+                let _ = app.emit("corp-vpn-status", json!({ "phase": "up" }));
+                Ok(child)
+            } else {
+                // SOCKS never opened within the window — report openconnect's reason.
+                let reason = tunnel_failure_reason(&log);
+                let _ = child.kill().await;
+                let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": reason }));
+                Err(reason)
+            }
+        }
+        _ = child.wait() => {
+            let reason = tunnel_failure_reason(&log);
+            let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": reason }));
+            Err(reason)
+        }
+    }
 }
 
 /// TOFU probe: connect just far enough for openconnect to present the server cert,
@@ -791,6 +935,37 @@ pub async fn vpn_fetch_subscription(url: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lines(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn classifies_common_openconnect_failures() {
+        // Real openconnect wording.
+        assert!(classify_openconnect_failure(&lines(&["POST https://x/", "Login failed."]))
+            .unwrap()
+            .contains("authentication failed"));
+        assert!(classify_openconnect_failure(&lines(&[
+            "Server certificate verify failed: signer not found"
+        ]))
+        .unwrap()
+        .contains("certificate"));
+        assert!(
+            classify_openconnect_failure(&lines(&["Failed to open HTTPS connection to bad.host"]))
+                .unwrap()
+                .contains("reach the VPN server")
+        );
+        assert!(classify_openconnect_failure(&lines(&["getaddrinfo: Name or service not known"]))
+            .unwrap()
+            .contains("resolve"));
+        // A clean progress log isn't a failure.
+        assert!(classify_openconnect_failure(&lines(&[
+            "Connected to HTTPS on nsk1.wlvpn.online",
+            "Established DTLS connection"
+        ]))
+        .is_none());
+    }
 
     #[test]
     fn parses_vless_reality_vision() {

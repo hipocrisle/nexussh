@@ -13,11 +13,14 @@ import { useBackdropClose } from "./useBackdropClose";
 interface Props {
   user: string;
   host: string;
+  /** Optional badge (e.g. "VPN") to distinguish a VPN-login prompt from the SSH
+   *  password prompt that may follow it. */
+  label?: string;
   onSubmit: (creds: { user: string; password: string }) => void;
   onCancel: () => void;
 }
 
-export function PasswordPrompt({ user, host, onSubmit, onCancel }: Props) {
+export function PasswordPrompt({ user, host, label, onSubmit, onCancel }: Props) {
   const { t } = useTranslation();
   const needLogin = !user;
   const [login, setLogin] = useState(user);
@@ -82,6 +85,11 @@ export function PasswordPrompt({ user, host, onSubmit, onCancel }: Props) {
         <div className="flex items-center gap-2 mb-1 text-nx-accent font-mono">
           <KeyRound size={15} />
           <span className="text-lead">{t("app.password_title")}</span>
+          {label && (
+            <span className="text-micro font-mono px-1.5 py-0.5 rounded bg-nx-accent/15 text-nx-accent">
+              {label}
+            </span>
+          )}
         </div>
         <div className="text-meta text-nx-muted font-mono mb-4">
           {needLogin ? (

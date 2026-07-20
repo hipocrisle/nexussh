@@ -97,6 +97,7 @@ import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
 import { getProfile, resolveExit, getCorpProfile, toCorpBackend, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID } from "./vpn";
 import { BackendProgress } from "./BackendProgress";
+import { CorpVpnStatus } from "./CorpVpnStatus";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
 import { tunnelOpen, tunnelList, TunnelInfo, PortForward } from "./tunnel";
 import {
@@ -863,6 +864,9 @@ function App() {
       id: string;
       user: string;
       host: string;
+      /** Optional badge (e.g. "VPN") so a VPN-login prompt isn't confused with
+       *  the SSH password prompt that follows it. */
+      label?: string;
       resolve: (v: { user: string; password: string } | null) => void;
     }[]
   >([]);
@@ -905,6 +909,7 @@ function App() {
           id: crypto.randomUUID(),
           user: p.username,
           host: p.server,
+          label: t("app.corp_vpn_label"),
           resolve: (v) => resolve(v ? v.password : null),
         },
       ]),
@@ -4376,12 +4381,14 @@ function App() {
       )}
 
       <BackendProgress />
+      <CorpVpnStatus />
 
       {pwQueue[0] && (
         <PasswordPrompt
           key={pwQueue[0].id}
           user={pwQueue[0].user}
           host={pwQueue[0].host}
+          label={pwQueue[0].label}
           onSubmit={(creds) => {
             pwQueue[0].resolve(creds);
             setPwQueue((q) => q.slice(1));

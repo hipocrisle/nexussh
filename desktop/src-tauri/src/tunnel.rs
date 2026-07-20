@@ -121,12 +121,14 @@ async fn connect_and_auth(
     let establish = async {
         if let Some(corp) = &args.corp_vpn {
             let socks_port = crate::ssh::free_local_port()?;
-            let child = crate::vpn::spawn_openconnect(&corp.profile, &corp.password, socks_port)
-                .await
-                .map_err(|e| TunnelError::Other(format!("openconnect spawn: {e}")))?;
-            crate::ssh::wait_socks_ready(socks_port)
-                .await
-                .map_err(|e| TunnelError::Other(e.to_string()))?;
+            let child = crate::vpn::establish_corp_tunnel(
+                app,
+                &corp.profile,
+                &corp.password,
+                socks_port,
+            )
+            .await
+            .map_err(TunnelError::Other)?;
             let proxy = format!("127.0.0.1:{socks_port}");
             let stream =
                 crate::ssh::socks_connect_with_retry(proxy.as_str(), &args.host, args.port)

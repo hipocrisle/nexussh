@@ -593,14 +593,24 @@ pub(crate) fn free_local_port() -> std::io::Result<u16> {
 }
 
 /// Poll the local SOCKS port until xray accepts connections (or time out).
-pub(crate) async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
+/// Poll until a local SOCKS port accepts connections (up to ~10s). Returns
+/// whether it came up. Shared by the xray and corp-VPN (openconnect) paths.
+pub(crate) async fn wait_socks_port(port: u16) -> bool {
     for _ in 0..100 {
         if tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-            return Ok(());
+            return true;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    Err(SshError::Other("xray SOCKS proxy did not come up in time".into()))
+    false
+}
+
+pub(crate) async fn wait_socks_ready(port: u16) -> Result<(), SshError> {
+    if wait_socks_port(port).await {
+        Ok(())
+    } else {
+        Err(SshError::Other("VPN SOCKS proxy did not come up in time".into()))
+    }
 }
 
 /// SOCKS connect via xray with one retry. On a cold start xray accepts the
@@ -880,10 +890,16 @@ pub async fn ssh_connect(
     let establish = async {
         if let Some(corp) = &args.corp_vpn {
             let socks_port = free_local_port()?;
-            let child = crate::vpn::spawn_openconnect(&corp.profile, &corp.password, socks_port)
-                .await
-                .map_err(|e| SshError::Other(format!("openconnect spawn: {e}")))?;
-            wait_socks_ready(socks_port).await?;
+            // Brings up the tunnel and, on failure, returns openconnect's OWN
+            // reason (auth/cert/DNS) — not a downstream "host unreachable".
+            let child = crate::vpn::establish_corp_tunnel(
+                &app,
+                &corp.profile,
+                &corp.password,
+                socks_port,
+            )
+            .await
+            .map_err(SshError::Other)?;
             let proxy = format!("127.0.0.1:{socks_port}");
             let stream = socks_connect_with_retry(proxy.as_str(), &args.host, args.port)
                 .await

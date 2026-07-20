@@ -25,6 +25,12 @@ const ru = {
     password_required: "Пароль не введён",
     corp_password_required: "Пароль VPN не введён",
     corp_untrusted: "Сертификат VPN-сервера не проверен — довериться в Настройках → VPN",
+    corp_vpn_label: "VPN",
+  },
+  corpvpn: {
+    connecting: "Подключение к VPN…",
+    up: "VPN подключён",
+    failed: "Не удалось поднять VPN",
   },
   sidebar: {
     toggle: "Меню",
@@ -1200,6 +1206,12 @@ const en = {
     password_required: "Password not entered",
     corp_password_required: "VPN password not entered",
     corp_untrusted: "VPN server certificate not trusted — trust it in Settings → VPN",
+    corp_vpn_label: "VPN",
+  },
+  corpvpn: {
+    connecting: "Connecting VPN…",
+    up: "VPN connected",
+    failed: "VPN tunnel failed",
   },
   sidebar: {
     toggle: "Menu",

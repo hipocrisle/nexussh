@@ -160,6 +160,32 @@ jobs:
           done
           ls -la "$(dirname "$OUT")"
 
+      # Linux corp-VPN SOCKS helper: ocproxy (userspace SOCKS for openconnect
+      # --script-tun). NOT packaged for RHEL/Rocky (EPEL ships openconnect but
+      # not ocproxy), so we build+bundle it → the app is self-contained bar
+      # openconnect itself (a dynamically-linked, distro-provided system package).
+      - name: Build ocproxy (Linux corp-VPN SOCKS helper)
+        if: matrix.os == 'ubuntu-24.04'
+        shell: bash
+        env:
+          OCPROXY_REF: 88b1087f6ab2c860c8729478643e081b6e97f6d3  # tag v1.60 (pinned)
+        run: |
+          set -e
+          sudo apt-get install -y libevent-dev autoconf automake libtool pkg-config
+          git clone https://github.com/cernekee/ocproxy ocproxy-src
+          cd ocproxy-src
+          git checkout "$OCPROXY_REF"
+          ./autogen.sh
+          # Prefer a static binary (self-contained); fall back to dynamic
+          # (libevent is near-universal) if static libevent isn't available.
+          if ./configure LDFLAGS="-static" && make -j"$(nproc)"; then :; else
+            make clean || true; ./configure && make -j"$(nproc)"
+          fi
+          OUT="$GITHUB_WORKSPACE/desktop/src-tauri/binaries/ocproxy-x86_64-unknown-linux-gnu"
+          cp ocproxy "$OUT"
+          chmod +x "$OUT"
+          file "$OUT"; ldd "$OUT" || true
+
       - name: Clean prior bundle artifacts (avoid stale cached versions)
         working-directory: desktop/src-tauri
         shell: bash

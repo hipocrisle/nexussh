@@ -12,5 +12,8 @@
         "transparent": true
       }
     ]
+  },
+  "bundle": {
+    "externalBin": ["binaries/xray", "binaries/ocproxy"]
   }
 }

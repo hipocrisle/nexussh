@@ -1,13 +1,15 @@
 name: Build VPN backends
 
-# Builds the on-demand VPN backend binaries (statically linked, single-file) that
-# the app downloads at runtime — NOT bundled in the installer, so the base client
-# stays lean and each VPN type ships its own backend. Publishes to a rolling
-# `backends` release with a sha256 manifest the app verifies against.
+# On-demand VPN backend binaries (statically linked, single-file) the app
+# downloads at runtime — NOT bundled in the installer, so the base client stays
+# lean and each VPN type ships its own backend. Published to a rolling `backends`
+# release with a sha256 manifest (backends.json) the app verifies against.
 #
-# First backend: openconnect (Cisco AnyConnect / ocserv) with the fork's native
-# SOCKS5 (--socks5-port, no ocproxy). More backends (L2TP/IPsec, ...) get their
-# own job later.
+# openconnect backend (Cisco AnyConnect / ocserv):
+#   - Linux: STOCK openconnect (static musl, OpenSSL) + ocproxy (static musl).
+#     The fork's native --socks5-port relies on a win32-only lwIP port, so on
+#     Linux we use the proven stock openconnect --script-tun + ocproxy path.
+#   - Windows: handled by the fork (native SOCKS5) — added later.
 
 on:
   workflow_dispatch: {}
@@ -16,36 +18,36 @@ on:
       - ".github/workflows/build-backends.yml"
 
 env:
-  # Pinned fork commit (tag socks5-tun-v1) — reviewed, native SOCKS5 via lwIP.
-  OC_FORK_REPO: https://github.com/eric15342335/openconnect
-  OC_FORK_REF: 449970044a9ad0374d121579832aa8b1b4a029f5
+  OC_REPO: https://gitlab.com/openconnect/openconnect.git
+  OC_REF: v9.12
+  OCPROXY_REPO: https://github.com/cernekee/ocproxy
+  OCPROXY_REF: 88b1087f6ab2c860c8729478643e081b6e97f6d3  # tag v1.60 (pinned)
 
 jobs:
-  openconnect-linux:
+  linux:
     runs-on: ubuntu-24.04
     container: alpine:3.20
     steps:
       - name: Install static build toolchain (musl)
         run: |
           apk add --no-cache build-base autoconf automake libtool pkgconf git \
-            linux-headers \
+            linux-headers gettext-dev \
             openssl-dev openssl-libs-static \
             libxml2-dev libxml2-static \
             zlib-dev zlib-static \
-            lz4-dev lz4-static xz-dev xz-static
+            lz4-dev lz4-static \
+            xz-dev xz-static \
+            libevent-dev libevent-static
 
-      - name: Build static openconnect (SOCKS5 fork)
+      - name: Build static openconnect (stock, OpenSSL)
         run: |
           set -e
           git config --global --add safe.directory '*'
-          git clone "$OC_FORK_REPO" oc-src
+          git clone --depth 1 --branch "$OC_REF" "$OC_REPO" oc-src
           cd oc-src
-          git checkout "$OC_FORK_REF"
-          git submodule update --init --recursive   # lwIP
           ./autogen.sh
-          # OpenSSL (not gnutls) — links statically far more cleanly on musl.
           PKG_CONFIG="pkg-config --static" \
-          ./configure --enable-socks5-tun --without-gnutls --with-openssl \
+          ./configure --without-gnutls --with-openssl \
             --with-vpnc-script=vpnc-script \
             --disable-nls --without-libpcsclite --without-libproxy \
             --without-gssapi --without-stoken --without-libpskc \
@@ -53,20 +55,32 @@ jobs:
           make -j"$(nproc)"
           mkdir -p /out
           cp openconnect /out/openconnect-linux-x86_64
-          echo "=== linkage (want: static) ==="
-          file /out/openconnect-linux-x86_64
-          ldd /out/openconnect-linux-x86_64 || echo "(not a dynamic executable — good)"
+          echo "=== openconnect linkage ==="; file /out/openconnect-linux-x86_64
+          ldd /out/openconnect-linux-x86_64 || echo "(not dynamic — good)"
           /out/openconnect-linux-x86_64 --version | head -1 || true
 
-      - name: Upload artifact
+      - name: Build static ocproxy
+        run: |
+          set -e
+          git clone "$OCPROXY_REPO" ocproxy-src
+          cd ocproxy-src
+          git checkout "$OCPROXY_REF"
+          ./autogen.sh
+          ./configure LDFLAGS="-static -s"
+          make -j"$(nproc)"
+          cp ocproxy /out/ocproxy-linux-x86_64
+          echo "=== ocproxy linkage ==="; file /out/ocproxy-linux-x86_64
+          ldd /out/ocproxy-linux-x86_64 || echo "(not dynamic — good)"
+
+      - name: Upload Linux backend artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: openconnect-linux-x86_64
-          path: /out/openconnect-linux-x86_64
+          name: backends-linux
+          path: /out/*
           if-no-files-found: error
 
   publish:
-    needs: [openconnect-linux]
+    needs: [linux]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -74,23 +88,28 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
-      - name: Assemble manifest + publish to rolling `backends` release
+      - name: Assemble manifest + publish rolling `backends` release
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -e
-          mkdir -p out
-          cp dl/openconnect-linux-x86_64/openconnect-linux-x86_64 out/
-          cd out
-          SHA_LINUX=$(sha256sum openconnect-linux-x86_64 | awk '{print $1}')
+          mkdir -p out && cp dl/backends-linux/* out/ && cd out
+          sha() { sha256sum "$1" | awk '{print $1}'; }
+          OC_L=$(sha openconnect-linux-x86_64)
+          OP_L=$(sha ocproxy-linux-x86_64)
           cat > backends.json <<EOF
           {
             "openconnect": {
-              "fork_ref": "${OC_FORK_REF}",
-              "invoke": "socks5-port",
+              "description": "Cisco AnyConnect / ocserv (openconnect)",
               "platforms": {
-                "linux-x86_64": { "file": "openconnect-linux-x86_64", "sha256": "${SHA_LINUX}" }
+                "linux-x86_64": {
+                  "invoke": "script-tun+ocproxy",
+                  "files": [
+                    { "name": "openconnect", "asset": "openconnect-linux-x86_64", "sha256": "${OC_L}" },
+                    { "name": "ocproxy", "asset": "ocproxy-linux-x86_64", "sha256": "${OP_L}" }
+                  ]
+                }
               }
             }
           }
@@ -98,6 +117,6 @@ jobs:
           cat backends.json
           if ! gh release view backends --repo "$REPO" >/dev/null 2>&1; then
             gh release create backends --repo "$REPO" --prerelease --target main \
-              --title backends --notes "Rolling VPN backend binaries (openconnect, ...). Downloaded on-demand by the app; verified via backends.json sha256."
+              --title backends --notes "Rolling VPN backend binaries (downloaded on-demand, verified via backends.json sha256)."
           fi
-          gh release upload backends openconnect-linux-x86_64 backends.json --repo "$REPO" --clobber
+          gh release upload backends openconnect-linux-x86_64 ocproxy-linux-x86_64 backends.json --repo "$REPO" --clobber

@@ -354,7 +354,7 @@ pub fn xray_config(node: &VpnNode, socks_port: u16) -> Value {
 /// (a per-user location, never shared `/tmp`) created 0700; on Windows the
 /// temp dir is already per-user. This keeps the VPN-credential config out of a
 /// world-readable directory.
-fn xray_runtime_dir() -> std::io::Result<std::path::PathBuf> {
+pub(crate) fn runtime_dir() -> std::io::Result<std::path::PathBuf> {
     #[cfg(unix)]
     let dir = {
         use std::os::unix::fs::PermissionsExt;
@@ -418,7 +418,7 @@ pub fn spawn_xray(node: &VpnNode, socks_port: u16) -> std::io::Result<tokio::pro
     // The config holds VPN credentials (node UUID, Reality keys). Write it into a
     // per-user 0700 dir with 0600 perms — NOT shared /tmp world-readable (0644),
     // where any local account could read the subscription secret.
-    let dir = xray_runtime_dir()?;
+    let dir = runtime_dir()?;
     let path = dir.join(format!("nexussh-xray-{socks_port}.json"));
     write_private(&path, &bytes)?;
     let mut cmd = tokio::process::Command::new(xray_bin_path());
@@ -597,14 +597,19 @@ pub fn parse_cert_pin(output: &str) -> Option<String> {
 /// NOT a static single binary like xray, so we can't just ship the executable).
 fn corp_bin_path(name: &str) -> std::path::PathBuf {
     let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
-    // 1) bundled next to the app executable.
+    // 0) on-demand backend downloaded into the per-user backends dir (primary —
+    //    this is how the VPN backends ship now; the connect flow ensures it first).
+    if let Some(p) = crate::backends::installed_path(name) {
+        return p;
+    }
+    // 1) bundled next to the app executable (legacy / dev).
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())) {
         let cand = dir.join(&file);
         if cand.exists() {
             return cand;
         }
     }
-    // 2) system PATH (Linux package dependency).
+    // 2) system PATH (e.g. a distro-provided openconnect).
     if let Some(found) = which_on_path(&file) {
         return found;
     }

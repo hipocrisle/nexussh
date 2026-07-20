@@ -16,9 +16,18 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
-const MANIFEST_URL: &str =
+// PRIMARY source is the RU self-host mirror: GitHub's release CDN
+// (objects.githubusercontent.com) is throttled/blocked by ТСПУ in Russia, so a
+// direct GitHub fetch fails intermittently there (`tls connection init failed:
+// Resource temporarily unavailable`). This is the exact same problem the updater
+// solves the same way — see updater.rs. GitHub is kept as a FALLBACK. The mirror
+// (nexussh-update-mirror.sh on DE-1) serves byte-identical assets, and since the
+// sha256 in backends.json is verified regardless of source, either path is safe.
+const SELFHOST_MANIFEST_URL: &str = "https://upd.hipogas.org/nexussh/backends/backends.json";
+const SELFHOST_ASSET_BASE: &str = "https://upd.hipogas.org/nexussh/backends/";
+const GITHUB_MANIFEST_URL: &str =
     "https://github.com/hipocrisle/nexussh/releases/download/backends/backends.json";
-const ASSET_BASE: &str = "https://github.com/hipocrisle/nexussh/releases/download/backends/";
+const GITHUB_ASSET_BASE: &str = "https://github.com/hipocrisle/nexussh/releases/download/backends/";
 
 /// Platform key as used in `backends.json` (e.g. "linux-x86_64", "windows-x86_64").
 pub fn platform_key() -> String {
@@ -126,13 +135,60 @@ fn http_agent() -> ureq::Agent {
         .build()
 }
 
+/// GET a URL with a few retries. Transient TLS/connect failures (EAGAIN under
+/// ТСПУ throttling — "Resource temporarily unavailable") are common on the first
+/// attempt and usually clear on a retry a moment later.
+fn get_with_retry(url: &str) -> Result<ureq::Response, String> {
+    let mut last = String::new();
+    for attempt in 0..3 {
+        match http_agent().get(url).call() {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// Where the last successfully-fetched manifest is cached, so an already-installed
+/// backend keeps working even when both live sources are unreachable.
+fn cached_manifest_path() -> Option<PathBuf> {
+    Some(backends_dir().ok()?.join("backends.json"))
+}
+
+/// Fetch the manifest: self-host (RU-reachable) first, GitHub as fallback, and if
+/// BOTH are down fall back to the last cached copy on disk. On any live success we
+/// refresh the cache. This makes "backend already installed" resilient to the
+/// GitHub-in-RU flakiness that otherwise made the trust/connect flow fail at random.
 fn fetch_manifest() -> Result<serde_json::Value, String> {
-    http_agent()
-        .get(MANIFEST_URL)
-        .call()
-        .map_err(|e| format!("fetch backends manifest: {e}"))?
-        .into_json()
-        .map_err(|e| format!("parse backends manifest: {e}"))
+    let mut errs = Vec::new();
+    for url in [SELFHOST_MANIFEST_URL, GITHUB_MANIFEST_URL] {
+        match get_with_retry(url).and_then(|r| r.into_string().map_err(|e| e.to_string())) {
+            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(v) => {
+                    if let Some(p) = cached_manifest_path() {
+                        let _ = std::fs::write(&p, &body); // best-effort cache
+                    }
+                    return Ok(v);
+                }
+                Err(e) => errs.push(format!("{url}: invalid json: {e}")),
+            },
+            Err(e) => errs.push(format!("{url}: {e}")),
+        }
+    }
+    // Both live sources failed — use the cached manifest if we have one.
+    if let Some(p) = cached_manifest_path() {
+        if let Ok(body) = std::fs::read_to_string(&p) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                return Ok(v);
+            }
+        }
+    }
+    Err(format!("fetch backends manifest: {}", errs.join("; ")))
 }
 
 /// Write `bytes` to `path` as an executable (0755 on Unix), replacing any prior.
@@ -201,11 +257,20 @@ fn ensure_backend_inner(app: &AppHandle, id: &str) -> Result<HashMap<String, Pat
             continue;
         }
         emit(app, id, i, total, &f.name, 0, 0, "download");
-        let url = format!("{ASSET_BASE}{}", f.asset);
-        let resp = http_agent()
-            .get(&url)
-            .call()
-            .map_err(|e| format!("download {}: {e}", f.asset))?;
+        // Self-host first (RU-reachable), GitHub as fallback — same as the manifest.
+        let mut resp = None;
+        let mut derr = String::new();
+        for base in [SELFHOST_ASSET_BASE, GITHUB_ASSET_BASE] {
+            let url = format!("{base}{}", f.asset);
+            match get_with_retry(&url) {
+                Ok(r) => {
+                    resp = Some(r);
+                    break;
+                }
+                Err(e) => derr = format!("{url}: {e}"),
+            }
+        }
+        let resp = resp.ok_or_else(|| format!("download {}: {derr}", f.asset))?;
         let bytes_total: u64 = resp
             .header("Content-Length")
             .and_then(|s| s.parse().ok())

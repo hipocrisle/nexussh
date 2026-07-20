@@ -670,7 +670,20 @@ pub async fn spawn_openconnect(
         .kill_on_drop(true);
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            // No bundled/system openconnect — on Linux it's a package the distro
+            // provides (RHEL/Rocky need EPEL first); Windows ships it in-bundle.
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "openconnect not found — install it to use the corporate VPN \
+                 (Debian/Ubuntu: apt install openconnect ocproxy; RHEL/Rocky: \
+                 enable EPEL then dnf install openconnect)",
+            )
+        } else {
+            e
+        }
+    })?;
     feed_password(&mut child, password).await;
     #[cfg(windows)]
     attach_to_job(&child);

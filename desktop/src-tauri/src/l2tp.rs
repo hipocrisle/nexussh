@@ -464,7 +464,8 @@ mod imp {
             else echo 'no supported package manager (install NetworkManager-l2tp manually)' >&2; exit 1; fi; \
             if command -v getenforce >/dev/null 2>&1 && [ \"$(getenforce)\" = Enforcing ] \
                && command -v semanage >/dev/null 2>&1; then \
-              semanage permissive -a NetworkManager_t 2>/dev/null || true; fi; \
+              for d in NetworkManager_t ipsec_t l2tpd_t; do \
+                semanage permissive -a \"$d\" 2>/dev/null || true; done; fi; \
             systemctl reload-or-restart NetworkManager 2>/dev/null || systemctl restart NetworkManager || true";
         let out = Command::new("pkexec")
             .args(["sh", "-c", SCRIPT])

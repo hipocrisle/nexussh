@@ -431,10 +431,19 @@ mod imp {
         l.contains("failed to start") || l.contains("service failed")
     }
 
-    /// Either problem is repaired by the same one-shot elevated setup (install the
-    /// stack + apply the SELinux fix), so trigger it for both.
+    /// A libreswan config problem — most notably `ikev1-policy=drop` (modern
+    /// libreswan disables IKEv1 by default, but L2TP/IPsec IS IKEv1), which surfaces
+    /// as "Could not add ipsec connection". Repaired by the same elevated setup
+    /// (which enables ikev1-policy=accept).
+    fn is_ipsec_config_failure(e: &str) -> bool {
+        let l = e.to_lowercase();
+        l.contains("could not add ipsec") || l.contains("ikev1") || l.contains("ipsec connection")
+    }
+
+    /// All of these are repaired by the same one-shot elevated setup (install the
+    /// stack + SELinux permissive + enable IKEv1 in libreswan), so trigger it for any.
     fn needs_setup(e: &str) -> bool {
-        is_plugin_missing(e) || is_service_start_failure(e)
+        is_plugin_missing(e) || is_service_start_failure(e) || is_ipsec_config_failure(e)
     }
 
     /// Install the NetworkManager-l2tp plugin via pkexec (a polkit password
@@ -466,6 +475,13 @@ mod imp {
                && command -v semanage >/dev/null 2>&1; then \
               for d in NetworkManager_t ipsec_t l2tpd_t; do \
                 semanage permissive -a \"$d\" 2>/dev/null || true; done; fi; \
+            if [ -f /etc/ipsec.conf ] && ! grep -q ikev1-policy /etc/ipsec.conf 2>/dev/null; then \
+              if grep -q '^config setup' /etc/ipsec.conf; then \
+                awk '/^config setup/{print;print \"\\tikev1-policy=accept\";next}1' /etc/ipsec.conf > /etc/ipsec.conf.nmnew \
+                  && mv -f /etc/ipsec.conf.nmnew /etc/ipsec.conf; \
+              else printf 'config setup\\n\\tikev1-policy=accept\\n' >> /etc/ipsec.conf; fi; \
+              systemctl restart ipsec 2>/dev/null || /sbin/ipsec restart 2>/dev/null || true; \
+            fi; \
             systemctl reload-or-restart NetworkManager 2>/dev/null || systemctl restart NetworkManager || true";
         let out = Command::new("pkexec")
             .args(["sh", "-c", SCRIPT])

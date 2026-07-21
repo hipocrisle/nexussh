@@ -112,20 +112,19 @@ pub async fn acquire_system_vpn(
         if is_connected(&e.name).await {
             e.refcount += 1;
             e.generation += 1; // cancel any pending teardown
-            // The VPN is split-tunnel (not the default gateway), so make sure
-            // THIS host is routed through it even though it's a reused tunnel.
-            add_host_route(&e.name, host).await;
             emit_status(app, "up", None);
             return Ok(SystemVpnGuard { key });
         }
         map.remove(&key); // dropped/failed connection — reconnect below
     }
     emit_status(app, "connecting", Some(&profile.server));
-    connect(profile, password, &name).await.map_err(|e| {
+    // The host's /32 and any profile routes are baked into the connection during
+    // the (elevated) setup, so the OS installs them on connect — no per-connect
+    // admin, and the split-tunnel VPN actually reaches the host.
+    connect(profile, password, &name, host).await.map_err(|e| {
         emit_status(app, "error", Some(&e));
         e
     })?;
-    add_host_route(&name, host).await;
     map.insert(
         key.clone(),
         ConnEntry {
@@ -189,6 +188,7 @@ fn emit_status(app: &tauri::AppHandle, phase: &str, detail: Option<&str>) {
 #[cfg(windows)]
 mod imp {
     use super::L2tpProfile;
+    use base64::Engine as _;
     use tokio::process::Command;
 
     fn hide() -> u32 {
@@ -218,51 +218,105 @@ mod imp {
         s.replace('\'', "''")
     }
 
+    /// base64(UTF-16LE) for `powershell -EncodedCommand` — avoids all the quoting
+    /// pain of passing a script (with a PSK) through Start-Process argv.
+    fn encode_command(script: &str) -> String {
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    /// Run `inner` in an ELEVATED PowerShell (one UAC prompt). Needed because the
+    /// L2TP pre-shared key is a machine-wide secret, so Add-VpnConnection -L2tpPsk
+    /// requires admin (it writes the all-user phonebook). The elevated child
+    /// writes any failure to `errfile` so we can surface a real reason; UAC-declined
+    /// is distinguished by the absence of that file.
+    async fn run_elevated(inner: &str) -> Result<(), String> {
+        let errfile = std::env::temp_dir().join(format!("nexussh-l2tp-{}.err", std::process::id()));
+        let _ = tokio::fs::remove_file(&errfile).await;
+        let errpath = q(&errfile.to_string_lossy());
+        let full = format!(
+            "$ErrorActionPreference='Stop'; try {{ {inner} }} \
+             catch {{ $_.Exception.Message | Out-File -FilePath '{errpath}' -Encoding utf8; exit 1 }}; exit 0"
+        );
+        let b64 = encode_command(&full);
+        // Outer (non-elevated) launches the elevated child and propagates its exit
+        // code; a thrown Start-Process = UAC declined → 1223 (ERROR_CANCELLED).
+        let outer = format!(
+            "try {{ $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+               -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{b64}'; exit $p.ExitCode }} \
+             catch {{ exit 1223 }}"
+        );
+        let (ok, _) = ps(&outer).await;
+        if ok {
+            let _ = tokio::fs::remove_file(&errfile).await;
+            return Ok(());
+        }
+        let msg = tokio::fs::read_to_string(&errfile)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let _ = tokio::fs::remove_file(&errfile).await;
+        Err(match msg {
+            Some(m) => format!("L2TP setup failed: {m}"),
+            None => "administrator permission is required to set up L2TP/IPsec (the pre-shared \
+                     key is stored machine-wide) and it wasn't granted"
+                .into(),
+        })
+    }
+
     pub async fn is_connected(name: &str) -> bool {
         let (_, out) = ps(&format!(
-            "(Get-VpnConnection -Name '{}' -ErrorAction SilentlyContinue).ConnectionStatus",
+            "(Get-VpnConnection -AllUserConnection -Name '{}' -ErrorAction SilentlyContinue).ConnectionStatus",
             q(name)
         ))
         .await;
         out.trim().eq_ignore_ascii_case("Connected")
     }
 
-    pub async fn connect(p: &L2tpProfile, password: &str, name: &str) -> Result<(), String> {
+    pub async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
         let enc = if p.require_encryption { "Required" } else { "Optional" };
-        // (Re)create the per-user phonebook entry idempotently. Per-user → no admin
-        // for the entry itself; the IPsec negotiation runs via the SYSTEM IKEEXT
-        // service. -Force overwrites an existing entry so edits take effect.
+        // Build the ELEVATED setup: it (idempotently, -Force) creates the all-user
+        // L2TP connection with the PSK, proactively applies the NAT-T registry fix
+        // (we're already elevated), and bakes in the split-tunnel routes so the OS
+        // installs them on connect — no per-connect admin afterwards.
         //
-        // -SplitTunneling $true is ALWAYS set: this is the "use remote gateway =
-        // OFF" behaviour the user wants — the VPN must NOT become the default
-        // gateway (don't send all traffic through it). Only the SSH host routes
-        // (added below / per host) and any explicit profile routes go over it.
-        let mut setup = format!(
-            "$ErrorActionPreference='Stop'; \
-             Add-VpnConnection -Name '{name}' -ServerAddress '{server}' \
-               -TunnelType L2tp -L2tpPsk '{psk}' -EncryptionLevel {enc} \
-               -AuthenticationMethod MSChapv2 -SplitTunneling $true \
-               -RememberCredential:$false -Force -PassThru | Out-Null;",
+        // -SplitTunneling $true = "use remote gateway" OFF: the VPN is NEVER the
+        // default gateway; only the host + profile routes go through it.
+        let mut inner = format!(
+            "reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\PolicyAgent' \
+               /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f | Out-Null; \
+             Add-VpnConnection -Name '{name}' -ServerAddress '{server}' -TunnelType L2tp \
+               -L2tpPsk '{psk}' -EncryptionLevel {enc} -AuthenticationMethod MSChapv2 \
+               -SplitTunneling $true -AllUserConnection -RememberCredential:$false -Force | Out-Null;",
             name = q(name),
             server = q(&p.server),
             psk = q(&p.psk),
         );
-        for r in p.routes.iter().filter(|r| !r.trim().is_empty()) {
-            setup.push_str(&format!(
-                "Add-VpnConnectionRoute -ConnectionName '{name}' \
-                   -DestinationPrefix '{r}' -ErrorAction SilentlyContinue | Out-Null;",
+        // Route set: profile routes + the connecting host's /32 (so a fresh tunnel
+        // reaches it even without a profile subnet route).
+        let mut routes: Vec<String> = p
+            .routes
+            .iter()
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            routes.push(if ip.is_ipv6() { format!("{host}/128") } else { format!("{host}/32") });
+        }
+        for r in &routes {
+            inner.push_str(&format!(
+                "Add-VpnConnectionRoute -ConnectionName '{name}' -DestinationPrefix '{r}' \
+                   -AllUserConnection -ErrorAction SilentlyContinue | Out-Null;",
                 name = q(name),
-                r = q(r.trim())
+                r = q(r)
             ));
         }
-        let (ok, out) = ps(&setup).await;
-        if !ok {
-            return Err(format!("failed to configure the L2TP connection: {}", out.trim()));
-        }
+        run_elevated(&inner).await?;
 
-        // Connect. rasdial blocks until connected or failed and prints an error
-        // code we can translate. Password on the command line is unavoidable for
-        // rasdial, but it's a short-lived child with a hidden window.
+        // Connect. rasdial (no admin — IKEEXT does the IPsec) blocks until connected
+        // or failed and prints an error code we translate. Password on argv is
+        // unavoidable for rasdial; it's a short-lived hidden child.
         let out = Command::new("rasdial")
             .args([name, p.username.as_str(), password])
             .creation_flags(hide())
@@ -280,40 +334,10 @@ mod imp {
         Err(translate_rasdial_error(&text))
     }
 
-    /// Route a single SSH host through the (split-tunnel) VPN. Applied live via
-    /// New-NetRoute on the VPN adapter (same name as the connection) AND persisted
-    /// on the connection, so it works both for a fresh connect and for a host that
-    /// joins an already-up shared tunnel. Only literal IPs are auto-routed; a
-    /// hostname target needs a profile route (we can't resolve it here reliably).
-    pub async fn add_host_route(name: &str, host: &str) {
-        let ip: std::net::IpAddr = match host.parse() {
-            Ok(ip) => ip,
-            Err(_) => return,
-        };
-        let prefix = if ip.is_ipv6() {
-            format!("{host}/128")
-        } else {
-            format!("{host}/32")
-        };
-        let _ = ps(&format!(
-            "New-NetRoute -DestinationPrefix '{p}' -InterfaceAlias '{name}' \
-               -NextHop 0.0.0.0 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-Null; \
-             Add-VpnConnectionRoute -ConnectionName '{name}' -DestinationPrefix '{p}' \
-               -ErrorAction SilentlyContinue | Out-Null",
-            p = prefix,
-            name = q(name)
-        ))
-        .await;
-    }
-
     pub async fn disconnect(name: &str) {
+        // Just drop the link (no admin). We keep the phonebook entry — a fresh
+        // connect re-runs the elevated setup with -Force, refreshing PSK/routes.
         let _ = ps(&format!("rasdial '{}' /disconnect", q(name))).await;
-        // Tidy up the phonebook entry so we don't accumulate stale ones.
-        let _ = ps(&format!(
-            "Remove-VpnConnection -Name '{}' -Force -ErrorAction SilentlyContinue",
-            q(name)
-        ))
-        .await;
     }
 
     /// Map the common rasdial/RAS error codes to an actionable message.
@@ -325,10 +349,10 @@ mod imp {
             "IPsec negotiation failed (error 789) — check the pre-shared key and that \
              the server offers L2TP/IPsec".into()
         } else if has("809") {
-            "the server didn't respond (error 809) — this usually means L2TP/IPsec is \
-             behind NAT and Windows needs the one-time registry fix \
-             (AssumeUDPEncapsulationContextOnSendRule = 2, then reboot). UDP 500/4500 \
-             must also be open".into()
+            "the server didn't respond (error 809) — L2TP/IPsec behind NAT. We applied the \
+             Windows NAT-T registry fix (AssumeUDPEncapsulationContextOnSendRule = 2) during \
+             setup, but it needs a REBOOT to take effect — reboot and retry. Also ensure UDP \
+             500/4500 are open to the server".into()
         } else if has("628") || has("718") {
             "the connection was terminated by the server (check credentials / server config)".into()
         } else {
@@ -343,8 +367,8 @@ mod imp {
 }
 
 #[cfg(windows)]
-async fn connect(p: &L2tpProfile, password: &str, name: &str) -> Result<(), String> {
-    imp::connect(p, password, name).await
+async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
+    imp::connect(p, password, name, host).await
 }
 #[cfg(windows)]
 async fn disconnect(name: &str) {
@@ -354,16 +378,12 @@ async fn disconnect(name: &str) {
 async fn is_connected(name: &str) -> bool {
     imp::is_connected(name).await
 }
-#[cfg(windows)]
-async fn add_host_route(name: &str, host: &str) {
-    imp::add_host_route(name, host).await
-}
 
 // ── Non-Windows: not implemented yet (Linux via NetworkManager-l2tp is a later
 //    phase). Fail with a clear message rather than pretend. ────────────────────
 
 #[cfg(not(windows))]
-async fn connect(_p: &L2tpProfile, _password: &str, _name: &str) -> Result<(), String> {
+async fn connect(_p: &L2tpProfile, _password: &str, _name: &str, _host: &str) -> Result<(), String> {
     Err("System L2TP/IPsec is currently Windows-only".into())
 }
 #[cfg(not(windows))]
@@ -372,8 +392,6 @@ async fn disconnect(_name: &str) {}
 async fn is_connected(_name: &str) -> bool {
     false
 }
-#[cfg(not(windows))]
-async fn add_host_route(_name: &str, _host: &str) {}
 
 /// Whether a system VPN for this profile is currently up (so the connect flow can
 /// skip the password prompt and reuse it).

@@ -752,7 +752,7 @@ const ru = {
       },
       l2tp: {
         add: "L2TP/IPsec — добавить профиль",
-        add_hint: "Протокол: системный L2TP/IPsec с общим ключом (PSK). Сервер + логин + PSK; пароль спросим при подключении. Windows: используется встроенный VPN-стек ОС (может потребоваться разовое разрешение админа для NAT-T). Туннель НЕ шлюз по умолчанию — через него идут только SSH-хосты (и маршруты ниже), остальной трафик напрямую.",
+        add_hint: "Протокол: системный L2TP/IPsec с общим ключом (PSK). Сервер + логин + PSK; пароль спросим при подключении. Windows использует встроенный VPN-стек ОС: при подъёме туннеля будет запрос прав администратора (UAC) — PSK хранится системно, плюс заодно ставим фикс NAT-T. Туннель НЕ шлюз по умолчанию — через него идут только SSH-хосты (и маршруты ниже), остальной трафик напрямую.",
         name_ph: "имя (напр. Работа L2TP)",
         server_ph: "сервер: vpn.corp.ru или IP",
         user_ph: "логин",
@@ -1960,7 +1960,7 @@ const en = {
       },
       l2tp: {
         add: "L2TP/IPsec — add profile",
-        add_hint: "Protocol: system L2TP/IPsec with a pre-shared key (PSK). Server + username + PSK; password is asked at connect time. Windows uses the OS's built-in VPN stack (a one-time admin prompt may be needed for NAT-T). The tunnel is NOT the default gateway — only SSH hosts (and the routes below) go through it, everything else stays direct.",
+        add_hint: "Protocol: system L2TP/IPsec with a pre-shared key (PSK). Server + username + PSK; password is asked at connect time. Windows uses the OS's built-in VPN stack: bringing the tunnel up prompts for administrator rights (UAC) — the PSK is stored system-wide, and we apply the NAT-T fix at the same time. The tunnel is NOT the default gateway — only SSH hosts (and the routes below) go through it, everything else stays direct.",
         name_ph: "name (e.g. Work L2TP)",
         server_ph: "server: vpn.corp.com or IP",
         user_ph: "username",

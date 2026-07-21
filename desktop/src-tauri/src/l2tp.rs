@@ -412,24 +412,87 @@ mod imp {
         }
     }
 
+    /// True if an nmcli error means the NetworkManager-l2tp plugin isn't installed.
+    fn is_plugin_missing(e: &str) -> bool {
+        let l = e.to_lowercase();
+        l.contains("vpn-type")
+            || l.contains("not supported")
+            || l.contains("unknown")
+            || e.contains(VPN_TYPE)
+    }
+
+    /// Install the NetworkManager-l2tp plugin via pkexec (a polkit password
+    /// dialog, the Linux equivalent of Windows' UAC) — the user asked the client
+    /// to do this instead of running dnf by hand. Detects the distro package
+    /// manager, enables EPEL on RHEL/Rocky, installs the plugin, and reloads
+    /// NetworkManager so the new VPN type registers. No user input goes into the
+    /// script, so there's nothing to escape.
+    async fn install_plugin() -> Result<(), String> {
+        const SCRIPT: &str = "set -e; \
+            if command -v dnf >/dev/null 2>&1; then \
+              dnf install -y epel-release || true; dnf install -y NetworkManager-l2tp; \
+            elif command -v apt-get >/dev/null 2>&1; then \
+              apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-l2tp; \
+            elif command -v zypper >/dev/null 2>&1; then \
+              zypper --non-interactive install NetworkManager-l2tp; \
+            elif command -v pacman >/dev/null 2>&1; then \
+              pacman -Sy --noconfirm networkmanager-l2tp; \
+            else echo 'no supported package manager (install NetworkManager-l2tp manually)' >&2; exit 1; fi; \
+            systemctl reload-or-restart NetworkManager 2>/dev/null || systemctl restart NetworkManager || true";
+        let out = Command::new("pkexec")
+            .args(["sh", "-c", SCRIPT])
+            .output()
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "pkexec not found — install NetworkManager-l2tp manually (RHEL/Rocky: \
+                     dnf install epel-release NetworkManager-l2tp)"
+                        .to_string()
+                } else {
+                    format!("pkexec: {e}")
+                }
+            })?;
+        if out.status.success() {
+            // Give NetworkManager a moment to register the freshly-installed plugin.
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            return Ok(());
+        }
+        // pkexec exit 126 = user dismissed/failed the polkit auth; 127 = not authorised.
+        let code = out.status.code().unwrap_or(-1);
+        let se = String::from_utf8_lossy(&out.stderr);
+        if code == 126 || code == 127 {
+            Err("administrator authorisation was declined — can't install the \
+                 NetworkManager-l2tp plugin"
+                .into())
+        } else {
+            Err(format!("failed to install NetworkManager-l2tp: {}", se.trim()))
+        }
+    }
+
     pub async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
         // Recreate idempotently: drop any stale connection of the same name first.
         let _ = nmcli(&["con", "delete", name]).await;
 
-        // Create the L2TP VPN connection. A missing plugin surfaces as an unknown
-        // vpn-type error → translate to an install hint.
-        nmcli(&["con", "add", "type", "vpn", "con-name", name, "ifname", "*", "vpn-type", VPN_TYPE])
-            .await
-            .map_err(|e| {
-                if e.contains("vpn-type") || e.to_lowercase().contains("not supported") || e.contains(VPN_TYPE) {
-                    "NetworkManager-l2tp plugin not installed — install it (RHEL/Rocky: enable \
-                     EPEL then dnf install NetworkManager-l2tp; Debian/Ubuntu: apt install \
-                     network-manager-l2tp)"
-                        .to_string()
-                } else {
-                    e
-                }
-            })?;
+        // Create the L2TP VPN connection. If the plugin is missing, install it via
+        // pkexec (polkit prompt) and retry once — the client does the install so
+        // the user doesn't have to run dnf by hand.
+        let add = &["con", "add", "type", "vpn", "con-name", name, "ifname", "*", "vpn-type", VPN_TYPE];
+        if let Err(e) = nmcli(add).await {
+            if is_plugin_missing(&e) {
+                install_plugin().await?;
+                nmcli(add).await.map_err(|e2| {
+                    if is_plugin_missing(&e2) {
+                        "NetworkManager-l2tp is installed but NetworkManager hasn't picked it up \
+                         yet — restart NetworkManager (or reboot) and retry"
+                            .to_string()
+                    } else {
+                        e2
+                    }
+                })?;
+            } else {
+                return Err(e);
+            }
+        }
 
         // vpn.data: gateway + user + IPsec on + store both secrets (flags=0).
         let vpn_data = format!(

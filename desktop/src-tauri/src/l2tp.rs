@@ -475,7 +475,7 @@ mod imp {
                && command -v semanage >/dev/null 2>&1; then \
               for d in NetworkManager_t ipsec_t l2tpd_t; do \
                 semanage permissive -a \"$d\" 2>/dev/null || true; done; fi; \
-            if [ -f /etc/ipsec.conf ] && ! grep -q ikev1-policy /etc/ipsec.conf 2>/dev/null; then \
+            if [ -f /etc/ipsec.conf ] && ! grep -qE '^[[:space:]]*ikev1-policy[[:space:]]*=' /etc/ipsec.conf 2>/dev/null; then \
               if grep -q '^config setup' /etc/ipsec.conf; then \
                 awk '/^config setup/{print;print \"\\tikev1-policy=accept\";next}1' /etc/ipsec.conf > /etc/ipsec.conf.nmnew \
                   && mv -f /etc/ipsec.conf.nmnew /etc/ipsec.conf; \

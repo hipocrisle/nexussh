@@ -188,9 +188,11 @@ pub fn connect_timeout(secs: u64) -> std::time::Duration {
 pub fn establish_timeout(args: &ConnectArgs) -> std::time::Duration {
     let base = connect_timeout(args.timeout);
     if args.l2tp.is_some() {
-        // Generous: first-connect may also install the NM-l2tp plugin (dnf) via a
-        // polkit prompt before the IKE/L2TP/PPP negotiation even starts.
-        base.max(std::time::Duration::from_secs(240))
+        // Enough for a first-connect plugin install (dnf, behind polkit) plus one
+        // time-boxed bring-up. The bring-up itself is capped at ~45s in l2tp.rs, so
+        // normal failures surface fast — this floor mainly covers the one-time
+        // install, not every connect.
+        base.max(std::time::Duration::from_secs(180))
     } else {
         base
     }

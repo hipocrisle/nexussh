@@ -423,6 +423,20 @@ mod imp {
             || e.contains(VPN_TYPE)
     }
 
+    /// The plugin is installed but its service can't start — on RHEL/Rocky this is
+    /// almost always SELinux blocking nm-l2tp-service from binding UDP 1701. The
+    /// same elevated setup fixes it (semanage permissive -a NetworkManager_t).
+    fn is_service_start_failure(e: &str) -> bool {
+        let l = e.to_lowercase();
+        l.contains("failed to start") || l.contains("service failed")
+    }
+
+    /// Either problem is repaired by the same one-shot elevated setup (install the
+    /// stack + apply the SELinux fix), so trigger it for both.
+    fn needs_setup(e: &str) -> bool {
+        is_plugin_missing(e) || is_service_start_failure(e)
+    }
+
     /// Install the NetworkManager-l2tp plugin via pkexec (a polkit password
     /// dialog, the Linux equivalent of Windows' UAC) — the user asked the client
     /// to do this instead of running dnf by hand. Detects the distro package
@@ -440,7 +454,7 @@ mod imp {
               dnf install -y epel-release dnf-plugins-core || true; \
               dnf config-manager --set-enabled crb 2>/dev/null \
                 || dnf config-manager --set-enabled powertools 2>/dev/null || true; \
-              dnf install -y NetworkManager-l2tp xl2tpd libreswan; \
+              dnf install -y NetworkManager-l2tp xl2tpd libreswan policycoreutils-python-utils; \
             elif command -v apt-get >/dev/null 2>&1; then \
               apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-l2tp; \
             elif command -v zypper >/dev/null 2>&1; then \
@@ -448,6 +462,9 @@ mod imp {
             elif command -v pacman >/dev/null 2>&1; then \
               pacman -Sy --noconfirm networkmanager-l2tp xl2tpd strongswan; \
             else echo 'no supported package manager (install NetworkManager-l2tp manually)' >&2; exit 1; fi; \
+            if command -v getenforce >/dev/null 2>&1 && [ \"$(getenforce)\" = Enforcing ] \
+               && command -v semanage >/dev/null 2>&1; then \
+              semanage permissive -a NetworkManager_t 2>/dev/null || true; fi; \
             systemctl reload-or-restart NetworkManager 2>/dev/null || systemctl restart NetworkManager || true";
         let out = Command::new("pkexec")
             .args(["sh", "-c", SCRIPT])
@@ -522,24 +539,37 @@ mod imp {
         // Bring it up. The plugin-missing error ("The VPN service '…l2tp' was not
         // installed") surfaces HERE (activation), not at con add — so this is where
         // we auto-install via pkexec and retry. May also need polkit auth to start.
-        if let Err(e) = nmcli(&["con", "up", name]).await {
-            if is_plugin_missing(&e) {
+        if let Err(e) = con_up(name).await {
+            if needs_setup(&e) {
+                // Install the stack (idempotent) AND apply the SELinux fix, then retry.
                 install_plugin().await?;
-                nmcli(&["con", "up", name])
-                    .await
-                    .map_err(|e2| {
-                        if is_plugin_missing(&e2) {
-                            "NetworkManager-l2tp was installed but NetworkManager hasn't picked it \
-                             up — restart NetworkManager (or reboot) and retry".to_string()
-                        } else {
-                            translate_up_error(&e2)
-                        }
-                    })?;
+                con_up(name).await.map_err(|e2| {
+                    if needs_setup(&e2) {
+                        "L2TP still can't start after setup — try rebooting (SELinux/policy or the \
+                         IPsec daemon may need a restart), then reconnect".to_string()
+                    } else {
+                        translate_up_error(&e2)
+                    }
+                })?;
             } else {
                 return Err(translate_up_error(&e));
             }
         }
         Ok(())
+    }
+
+    /// `nmcli con up`, but time-boxed so a stuck IKE/L2TP negotiation fails fast
+    /// (nmcli's own cap is ~90s; a wedged plugin can sit longer) instead of making
+    /// the user wait out the whole connect budget. On timeout we tear the
+    /// half-activation down so it doesn't linger.
+    async fn con_up(name: &str) -> Result<(), String> {
+        match tokio::time::timeout(std::time::Duration::from_secs(45), nmcli(&["con", "up", name])).await {
+            Ok(r) => r.map(|_| ()),
+            Err(_) => {
+                let _ = nmcli(&["con", "down", name]).await;
+                Err("L2TP bring-up timed out (the VPN service didn't establish in time)".into())
+            }
+        }
     }
 
     fn translate_up_error(e: &str) -> String {

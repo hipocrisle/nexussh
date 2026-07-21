@@ -415,9 +415,11 @@ mod imp {
     /// True if an nmcli error means the NetworkManager-l2tp plugin isn't installed.
     fn is_plugin_missing(e: &str) -> bool {
         let l = e.to_lowercase();
-        l.contains("vpn-type")
+        l.contains("was not installed")
+            || l.contains("not installed")
+            || l.contains("vpn-type")
             || l.contains("not supported")
-            || l.contains("unknown")
+            || (l.contains("unknown") && l.contains("vpn"))
             || e.contains(VPN_TYPE)
     }
 
@@ -473,26 +475,11 @@ mod imp {
         // Recreate idempotently: drop any stale connection of the same name first.
         let _ = nmcli(&["con", "delete", name]).await;
 
-        // Create the L2TP VPN connection. If the plugin is missing, install it via
-        // pkexec (polkit prompt) and retry once — the client does the install so
-        // the user doesn't have to run dnf by hand.
+        // Create the L2TP VPN connection. NB: `con add` SUCCEEDS even without the
+        // plugin — NetworkManager only needs it at ACTIVATION, so the plugin-missing
+        // check + auto-install happen at `con up` below, not here.
         let add = &["con", "add", "type", "vpn", "con-name", name, "ifname", "*", "vpn-type", VPN_TYPE];
-        if let Err(e) = nmcli(add).await {
-            if is_plugin_missing(&e) {
-                install_plugin().await?;
-                nmcli(add).await.map_err(|e2| {
-                    if is_plugin_missing(&e2) {
-                        "NetworkManager-l2tp is installed but NetworkManager hasn't picked it up \
-                         yet — restart NetworkManager (or reboot) and retry"
-                            .to_string()
-                    } else {
-                        e2
-                    }
-                })?;
-            } else {
-                return Err(e);
-            }
-        }
+        nmcli(add).await?;
 
         // vpn.data: gateway + user + IPsec on + store both secrets (flags=0).
         let vpn_data = format!(
@@ -520,18 +507,39 @@ mod imp {
             nmcli(&["con", "modify", name, "ipv4.routes", &routes.join(", ")]).await?;
         }
 
-        // Bring it up. May need polkit authorisation for the current user.
-        nmcli(&["con", "up", name]).await.map_err(|e| {
-            if e.to_lowercase().contains("not authorized") || e.to_lowercase().contains("authoriz") {
-                format!("not authorised to start the VPN — your user needs polkit permission to \
-                         control NetworkManager. ({e})")
-            } else if e.contains("password") || e.contains("secret") {
-                format!("L2TP authentication failed — check the username/password/PSK. ({e})")
+        // Bring it up. The plugin-missing error ("The VPN service '…l2tp' was not
+        // installed") surfaces HERE (activation), not at con add — so this is where
+        // we auto-install via pkexec and retry. May also need polkit auth to start.
+        if let Err(e) = nmcli(&["con", "up", name]).await {
+            if is_plugin_missing(&e) {
+                install_plugin().await?;
+                nmcli(&["con", "up", name])
+                    .await
+                    .map_err(|e2| {
+                        if is_plugin_missing(&e2) {
+                            "NetworkManager-l2tp was installed but NetworkManager hasn't picked it \
+                             up — restart NetworkManager (or reboot) and retry".to_string()
+                        } else {
+                            translate_up_error(&e2)
+                        }
+                    })?;
             } else {
-                format!("L2TP connect failed: {e}")
+                return Err(translate_up_error(&e));
             }
-        })?;
+        }
         Ok(())
+    }
+
+    fn translate_up_error(e: &str) -> String {
+        let l = e.to_lowercase();
+        if l.contains("not authorized") || l.contains("authoriz") {
+            format!("not authorised to start the VPN — your user needs polkit permission to \
+                     control NetworkManager. ({e})")
+        } else if l.contains("password") || l.contains("secret") || l.contains("login") {
+            format!("L2TP authentication failed — check the username/password/PSK. ({e})")
+        } else {
+            format!("L2TP connect failed: {e}")
+        }
     }
 
     pub async fn disconnect(name: &str) {

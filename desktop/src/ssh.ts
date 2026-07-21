@@ -53,6 +53,12 @@ export interface ConnectArgs {
     profile: { name: string; server: string; username: string; server_cert: string; authgroup: string };
     password: string;
   } | null;
+  /** When set, bring up a system L2TP/IPsec VPN (native OS stack, split-tunnel)
+   *  and connect DIRECTLY — the OS routes the host. PPP password per-connect. */
+  l2tp?: {
+    profile: { name: string; server: string; username: string; psk: string; require_encryption: boolean; routes: string[] };
+    password: string;
+  } | null;
   /** Opt-in to weak legacy algorithms for old gear. OFF by default. */
   allow_legacy?: boolean;
   /** When host-list encryption is on, pin host keys in the vault not the file. */
@@ -109,8 +115,9 @@ export async function sshConnect(
   // VPN (args.corp_vpn): their target is only reachable through the tunnel's
   // SOCKS path, so a DIRECT TCP probe here would always fail (private 10.x/behind-
   // VPN addresses) and wrongly abort the connect BEFORE the tunnel is even
-  // brought up. Fail-open if the probe itself errors.
-  if (!args.vpn && !args.corp_vpn) {
+  // brought up. Also skip L2TP hosts — reachable only after the system VPN comes
+  // up inside the backend connect. Fail-open if the probe itself errors.
+  if (!args.vpn && !args.corp_vpn && !args.l2tp) {
     const reachable = await hostReachable(args.host, args.port, 5).catch(
       () => true,
     );

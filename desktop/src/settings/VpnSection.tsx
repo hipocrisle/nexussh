@@ -22,6 +22,12 @@ import {
   ensureVpnBackend,
   VPN_BACKEND_ID,
   type CorpVpnProfile,
+  loadL2tpProfiles,
+  addL2tpProfile,
+  updateL2tpProfile,
+  removeL2tpProfile,
+  l2tpDisconnectAll,
+  type L2tpProfile,
 } from "../vpn";
 
 interface Props {
@@ -87,6 +93,46 @@ export function VpnSection({ t }: Props) {
       const n = await corpVpnDisconnectAll();
       setCDiscMsg(tr("settings.vpn.corp.disconnected", { n }));
       setTimeout(() => setCDiscMsg(null), 4000);
+    } catch (e) {
+      setCError(String(e));
+    }
+  }
+
+  // --- L2TP/IPsec (system VPN) profiles -------------------------------------
+  const [l2tp, setL2tp] = useState<L2tpProfile[]>(() => loadL2tpProfiles());
+  const [lName, setLName] = useState("");
+  const [lServer, setLServer] = useState("");
+  const [lUser, setLUser] = useState("");
+  const [lPsk, setLPsk] = useState("");
+  const [lRoutes, setLRoutes] = useState("");
+  const [lEnc, setLEnc] = useState(true);
+  const [lDiscMsg, setLDiscMsg] = useState<string | null>(null);
+
+  function onAddL2tp() {
+    if (!lServer.trim() || !lUser.trim() || !lPsk.trim()) return;
+    addL2tpProfile({
+      name: lName.trim() || lServer.trim(),
+      server: lServer.trim(),
+      username: lUser.trim(),
+      psk: lPsk.trim(),
+      requireEncryption: lEnc,
+      routes: lRoutes.split(/[\s,]+/).filter((r) => r.trim() !== ""),
+    });
+    setL2tp(loadL2tpProfiles());
+    setLName(""); setLServer(""); setLUser(""); setLPsk(""); setLRoutes(""); setLEnc(true);
+  }
+
+  function onDeleteL2tp(id: string) {
+    if (!confirm(tr("settings.vpn.delete_confirm"))) return;
+    removeL2tpProfile(id);
+    setL2tp(loadL2tpProfiles());
+  }
+
+  async function onDisconnectL2tp() {
+    try {
+      const n = await l2tpDisconnectAll();
+      setLDiscMsg(tr("settings.vpn.corp.disconnected", { n }));
+      setTimeout(() => setLDiscMsg(null), 4000);
     } catch (e) {
       setCError(String(e));
     }
@@ -300,6 +346,84 @@ export function VpnSection({ t }: Props) {
           </button>
           {cDiscMsg && (
             <div className="font-mono text-[11px]" style={{ color: t.textSoft }}>{cDiscMsg}</div>
+          )}
+        </div>
+      </Row>
+
+      <Row label={tr("settings.vpn.l2tp.add")} hint={tr("settings.vpn.l2tp.add_hint")} t={t}>
+        <div className="space-y-2 max-w-md">
+          <TextField value={lName} onChange={setLName} placeholder={tr("settings.vpn.l2tp.name_ph")} t={t} />
+          <TextField value={lServer} onChange={setLServer} placeholder={tr("settings.vpn.l2tp.server_ph")} t={t} />
+          <TextField value={lUser} onChange={setLUser} placeholder={tr("settings.vpn.l2tp.user_ph")} t={t} />
+          <TextField value={lPsk} onChange={setLPsk} placeholder={tr("settings.vpn.l2tp.psk_ph")} t={t} />
+          <TextField value={lRoutes} onChange={setLRoutes} placeholder={tr("settings.vpn.l2tp.routes_ph")} t={t} />
+          <label className="flex items-center gap-2 font-mono text-xs" style={{ color: t.textSoft }}>
+            <input type="checkbox" checked={lEnc} onChange={(e) => setLEnc(e.target.checked)} />
+            {tr("settings.vpn.l2tp.encryption")}
+          </label>
+          <button type="button" onClick={onAddL2tp} disabled={!lServer.trim() || !lUser.trim() || !lPsk.trim()} className={btn} style={btnStyle}>
+            <Plus size={12} /> {tr("settings.vpn.l2tp.add_btn")}
+          </button>
+        </div>
+      </Row>
+
+      <Row label={tr("settings.vpn.l2tp.profiles")} hint={tr("settings.vpn.l2tp.profiles_hint")} t={t}>
+        {l2tp.length === 0 ? (
+          <div className="font-mono text-xs" style={{ color: t.textMuted }}>
+            {tr("settings.vpn.l2tp.empty")}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {l2tp.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center gap-3 rounded p-3"
+                style={{ background: t.bgPanel, border: `1px solid ${t.border}` }}
+              >
+                <div className="min-w-0 flex-1 font-mono text-xs">
+                  <div className="truncate" style={{ color: t.textPrimary }}>{p.name}</div>
+                  <div className="text-[11px] mt-0.5 truncate" style={{ color: t.textMuted }}>
+                    {p.username}@{p.server}{p.requireEncryption ? " · 🔒" : ""}
+                  </div>
+                  <div className="text-[11px] mt-1 flex items-center gap-1.5" style={{ color: t.textMuted }}>
+                    <span>{tr("settings.vpn.l2tp.routes")}</span>
+                    <input
+                      type="text"
+                      value={(p.routes ?? []).join(", ")}
+                      onChange={(e) => {
+                        updateL2tpProfile(p.id, {
+                          routes: e.target.value.split(/[\s,]+/).filter((r) => r.trim() !== ""),
+                        });
+                        setL2tp(loadL2tpProfiles());
+                      }}
+                      placeholder={tr("settings.vpn.l2tp.routes_ph")}
+                      className="flex-1 min-w-0 px-1.5 py-0.5 rounded font-mono text-[11px] outline-none"
+                      style={{ background: t.bgBase, border: `1px solid ${t.border}`, color: t.textSoft }}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onDeleteL2tp(p.id)}
+                  title={tr("settings.vpn.delete")}
+                  className="p-1.5"
+                  style={{ color: t.error }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Row>
+
+      <Row label={tr("settings.vpn.l2tp.control")} hint={tr("settings.vpn.l2tp.control_hint")} t={t}>
+        <div className="space-y-2">
+          <button type="button" onClick={onDisconnectL2tp} className={btn} style={btnStyle}>
+            <PowerOff size={12} /> {tr("settings.vpn.l2tp.disconnect_all")}
+          </button>
+          {lDiscMsg && (
+            <div className="font-mono text-[11px]" style={{ color: t.textSoft }}>{lDiscMsg}</div>
           )}
         </div>
       </Row>

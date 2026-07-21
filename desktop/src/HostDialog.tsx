@@ -57,7 +57,7 @@ import {
   SegCtl,
   RowLabel,
 } from "./components/primitives";
-import { loadProfiles, type VpnProfile, loadCorpProfiles, type CorpVpnProfile } from "./vpn";
+import { loadProfiles, type VpnProfile, loadCorpProfiles, type CorpVpnProfile, loadL2tpProfiles, type L2tpProfile } from "./vpn";
 import { Select } from "./Select";
 
 type AuthKind = "password" | "key" | "vault";
@@ -146,6 +146,8 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
   const [vpnProfiles] = useState<VpnProfile[]>(() => loadProfiles());
   const [corpVpnProfileId, setCorpVpnProfileId] = useState("");
   const [corpProfiles] = useState<CorpVpnProfile[]>(() => loadCorpProfiles());
+  const [l2tpProfileId, setL2tpProfileId] = useState("");
+  const [l2tpProfiles] = useState<L2tpProfile[]>(() => loadL2tpProfiles());
   const [error, setError] = useState<string | null>(null);
   const { backdropProps, contentProps } = useBackdropClose(onClose);
 
@@ -167,6 +169,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
     setVpnProfileId(initial.vpnProfileId ?? "");
     setVpnExit(initial.vpnExit ?? "auto");
     setCorpVpnProfileId(initial.corpVpnProfileId ?? "");
+    setL2tpProfileId(initial.l2tpProfileId ?? "");
     setSync(!!initial.sync);
     setForwards(initial.forwards ? initial.forwards.map((f) => ({ ...f })) : []);
     {
@@ -343,12 +346,14 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
         note: note.trim() || undefined,
         lastUsedAt: initial?.lastUsedAt,
         alwaysAskPassword: auth.kind === "password" ? alwaysAskPassword : undefined,
-        // Corp VPN takes precedence over the xray built-in VPN (mutually
-        // exclusive — a host routes through exactly one transport).
+        // A host routes through exactly ONE VPN (the unified picker resets the
+        // others on change, so at most one of these is set here).
+        l2tpProfileId: l2tpProfileId || undefined,
         corpVpnProfileId: corpVpnProfileId || undefined,
-        useVpn: corpVpnProfileId ? undefined : useVpn || undefined,
-        vpnProfileId: corpVpnProfileId ? undefined : useVpn ? vpnProfileId || undefined : undefined,
-        vpnExit: corpVpnProfileId ? undefined : useVpn ? vpnExit : undefined,
+        useVpn: corpVpnProfileId || l2tpProfileId ? undefined : useVpn || undefined,
+        vpnProfileId:
+          corpVpnProfileId || l2tpProfileId ? undefined : useVpn ? vpnProfileId || undefined : undefined,
+        vpnExit: corpVpnProfileId || l2tpProfileId ? undefined : useVpn ? vpnExit : undefined,
         // Folder = category: a host in a folder keeps its category (set by where
         // it lives / moved to); the per-host toggle only applies to folder-less
         // hosts. Prevents one host dragging its whole folder into the cloud.
@@ -610,7 +615,7 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
              *  fields on change — always resetting the others, so there's no
              *  mutual-exclusion toggle dance (that dance used to wipe the corp
              *  selection when the xray toggle was flipped on then off). */}
-            {vpnProfiles.length === 0 && corpProfiles.length === 0 ? (
+            {vpnProfiles.length === 0 && corpProfiles.length === 0 && l2tpProfiles.length === 0 ? (
               <p className="text-nx-muted text-meta font-mono">
                 {t("dialog.vpn_no_profiles_any")}
               </p>
@@ -620,28 +625,28 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                 <Select
                   className="mt-1.5"
                   value={
-                    corpVpnProfileId
-                      ? `corp:${corpVpnProfileId}`
-                      : useVpn && vpnProfileId
-                        ? `xray:${vpnProfileId}`
-                        : ""
+                    l2tpProfileId
+                      ? `l2tp:${l2tpProfileId}`
+                      : corpVpnProfileId
+                        ? `corp:${corpVpnProfileId}`
+                        : useVpn && vpnProfileId
+                          ? `xray:${vpnProfileId}`
+                          : ""
                   }
                   onChange={(v) => {
-                    if (v.startsWith("corp:")) {
+                    // Always reset the other types — exactly one VPN per host.
+                    setUseVpn(false);
+                    setVpnProfileId("");
+                    setVpnExit("auto");
+                    setCorpVpnProfileId("");
+                    setL2tpProfileId("");
+                    if (v.startsWith("l2tp:")) {
+                      setL2tpProfileId(v.slice(5));
+                    } else if (v.startsWith("corp:")) {
                       setCorpVpnProfileId(v.slice(5));
-                      setUseVpn(false);
-                      setVpnProfileId("");
-                      setVpnExit("auto");
                     } else if (v.startsWith("xray:")) {
                       setUseVpn(true);
                       setVpnProfileId(v.slice(5));
-                      setVpnExit("auto");
-                      setCorpVpnProfileId("");
-                    } else {
-                      setUseVpn(false);
-                      setVpnProfileId("");
-                      setVpnExit("auto");
-                      setCorpVpnProfileId("");
                     }
                   }}
                   options={[
@@ -653,6 +658,10 @@ export function HostDialog({ initial, knownGroups, onClose, onSaved }: Props) {
                     ...corpProfiles.map((p) => ({
                       value: `corp:${p.id}`,
                       label: `${p.name} · OpenConnect`,
+                    })),
+                    ...l2tpProfiles.map((p) => ({
+                      value: `l2tp:${p.id}`,
+                      label: `${p.name} · L2TP`,
                     })),
                   ]}
                 />

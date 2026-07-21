@@ -95,7 +95,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID } from "./vpn";
+import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID, getL2tpProfile, toL2tpBackend, l2tpActive, type L2tpProfile } from "./vpn";
 import { BackendProgress } from "./BackendProgress";
 import { CorpVpnStatus } from "./CorpVpnStatus";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
@@ -489,6 +489,10 @@ function resolveHostVpn(h: HostRecord): VpnNode | null {
 function describeHostVpn(
   h: HostRecord,
 ): { label: string; exit: string | null } | null {
+  if (h.l2tpProfileId) {
+    const p = getL2tpProfile(h.l2tpProfileId);
+    return { label: `${p?.name ?? "L2TP"} · L2TP`, exit: null };
+  }
   if (h.corpVpnProfileId) {
     const p = getCorpProfile(h.corpVpnProfileId);
     return { label: `${p?.name ?? "OpenConnect"} · OpenConnect`, exit: null };
@@ -899,7 +903,7 @@ function App() {
     // path that asks for a password (quick-connect, always-ask, reconnect). An
     // offline host says "unreachable" instead of being mistaken for a wrong
     // password. Skip VPN hosts (SOCKS path); fail-open if the probe errors.
-    if (!resolveHostVpn(h) && !h.corpVpnProfileId) {
+    if (!resolveHostVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -958,6 +962,38 @@ function App() {
     // VPN password once.
     await ensureVpnBackend(VPN_BACKEND_ID);
     const entered = await askCorpVpnPassword(p);
+    if (!entered) throw new Error(t("app.corp_password_required"));
+    return { profile: backend, password: entered };
+  }
+
+  /** Prompt for an L2TP PPP password (reuses the VPN-badged password prompt). */
+  function askL2tpPassword(p: L2tpProfile): Promise<string | null> {
+    return new Promise((resolve) =>
+      setPwQueue((q) => [
+        ...q,
+        {
+          id: crypto.randomUUID(),
+          user: p.username,
+          host: p.server,
+          label: t("app.corp_vpn_label"),
+          resolve: (v) => resolve(v ? v.password : null),
+        },
+      ]),
+    );
+  }
+
+  /** Resolve a host's L2TP choice into the backend `l2tp` payload, or null. Like
+   *  the corp resolver: the system VPN is shared per profile — if it's already up
+   *  we reuse it and prompt for nothing; otherwise ask the PPP password once. */
+  async function resolveHostL2tp(h: HostRecord): Promise<ConnectArgs["l2tp"] | null> {
+    if (!h.l2tpProfileId) return null;
+    const p = getL2tpProfile(h.l2tpProfileId);
+    if (!p) return null;
+    const backend = toL2tpBackend(p);
+    if (await l2tpActive(p).catch(() => false)) {
+      return { profile: backend, password: "" };
+    }
+    const entered = await askL2tpPassword(p);
     if (!entered) throw new Error(t("app.corp_password_required"));
     return { profile: backend, password: entered };
   }
@@ -1496,6 +1532,7 @@ function App() {
         user: h.user,
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
+        l2tp: await resolveHostL2tp(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
@@ -1981,7 +2018,7 @@ function App() {
     // host should say "unreachable", not be mistaken for a wrong password after
     // a long hang. Skip for VPN hosts (they go through SOCKS — a direct TCP
     // probe would falsely fail). Fail-open if the probe itself errors.
-    if (!resolveHostVpn(h) && !h.corpVpnProfileId) {
+    if (!resolveHostVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -2023,6 +2060,7 @@ function App() {
         user: h.user,
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
+        l2tp: await resolveHostL2tp(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
@@ -2082,6 +2120,7 @@ function App() {
       user: h.user,
       auth,
       corp_vpn: await resolveHostCorpVpn(h),
+      l2tp: await resolveHostL2tp(h),
       vpn: resolveHostVpn(h),
       allow_legacy: h.allowLegacy,
       encrypt_known_hosts: hostsEncrypted(),
@@ -2470,6 +2509,7 @@ function App() {
         user: h.user,
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
+        l2tp: await resolveHostL2tp(h),
         vpn: resolveHostVpn(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),

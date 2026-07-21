@@ -1063,6 +1063,8 @@ pub enum TransportHold {
     None,
     Xray(tokio::process::Child),
     Corp(TunnelGuard),
+    /// System L2TP/IPsec VPN reference — the OS routes; SSH goes direct.
+    System(crate::l2tp::SystemVpnGuard),
 }
 
 /// TOFU probe: connect just far enough for openconnect to present the server cert,

@@ -99,6 +99,13 @@ pub struct CorpVpnConnect {
     pub password: String,
 }
 
+/// L2TP/IPsec connect payload: a saved profile plus the per-connect PPP password.
+#[derive(Debug, Clone, Deserialize)]
+pub struct L2tpConnect {
+    pub profile: crate::l2tp::L2tpProfile,
+    pub password: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ConnectArgs {
     pub host: String,
@@ -119,6 +126,12 @@ pub struct ConnectArgs {
     /// supplied per-connect and lives only for the duration of the spawn.
     #[serde(default)]
     pub corp_vpn: Option<CorpVpnConnect>,
+    /// When set, bring up a SYSTEM L2TP/IPsec VPN (native OS stack) and connect
+    /// DIRECTLY — the OS routes the SSH host over the VPN (no SOCKS). Split-tunnel:
+    /// only the host (and profile routes) go through it. Reference-counted across
+    /// hosts on the same profile.
+    #[serde(default)]
+    pub l2tp: Option<L2tpConnect>,
     /// Opt-in to weak legacy algorithms (3DES/CBC/SHA-1 KEX+MAC, ssh-rsa) for
     /// reaching old gear (Cisco IOS / ESXi). OFF by default so a MITM can't
     /// downgrade a modern host — the legacy set is offered only for hosts the
@@ -889,7 +902,21 @@ pub async fn ssh_connect(
     // post-connect keepalive timeout configured above.
     let timeout = connect_timeout(args.timeout);
     let establish = async {
-        if let Some(corp) = &args.corp_vpn {
+        if let Some(l2) = &args.l2tp {
+            // Bring up the SHARED system L2TP/IPsec VPN, then connect DIRECT — the
+            // OS routes the host over the (split-tunnel) VPN. No SOCKS.
+            let guard = crate::l2tp::acquire_system_vpn(
+                &app,
+                &l2.profile,
+                &l2.password,
+                &args.host,
+            )
+            .await
+            .map_err(SshError::Other)?;
+            let addr = format!("{}:{}", args.host, args.port);
+            let session = client::connect(config, addr.as_str(), handler).await?;
+            Ok::<_, SshError>((session, crate::vpn::TransportHold::System(guard)))
+        } else if let Some(corp) = &args.corp_vpn {
             // Acquire the SHARED corp tunnel (established once per profile, reused
             // by every host on it). On first/failed bring-up this returns
             // openconnect's OWN reason (auth/cert/DNS) — not "host unreachable".

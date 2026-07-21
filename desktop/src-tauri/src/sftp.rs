@@ -212,7 +212,14 @@ pub async fn sftp_connect(
     // fails fast — mirrors ssh.rs. Separate from post-connect keepalive.
     let timeout = crate::ssh::connect_timeout(args.timeout);
     let establish = async {
-        if let Some(corp) = &args.corp_vpn {
+        if let Some(l2) = &args.l2tp {
+            let guard = crate::l2tp::acquire_system_vpn(&app, &l2.profile, &l2.password, &args.host)
+                .await
+                .map_err(SftpError::Other)?;
+            let addr = format!("{}:{}", args.host, args.port);
+            let session = client::connect(config, addr.as_str(), handler()).await?;
+            Ok::<_, SftpError>((session, crate::vpn::TransportHold::System(guard)))
+        } else if let Some(corp) = &args.corp_vpn {
             let guard = crate::vpn::acquire_tunnel(&app, &corp.profile, &corp.password)
                 .await
                 .map_err(SftpError::Other)?;

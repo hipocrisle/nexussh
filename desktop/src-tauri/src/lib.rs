@@ -8,6 +8,7 @@ mod backends;
 mod cleanup;
 mod history;
 mod import_sources;
+mod l2tp;
 mod localfs;
 mod sftp;
 mod ssh;
@@ -337,6 +338,8 @@ pub fn run() {
             vpn::corp_vpn_probe_cert,
             vpn::corp_tunnel_active,
             vpn::corp_vpn_disconnect_all,
+            l2tp::l2tp_active,
+            l2tp::l2tp_disconnect_all,
             backends::backend_status,
             backends::backend_ensure,
             window_composited,
@@ -358,6 +361,11 @@ pub fn run() {
             // orphan on Unix (Windows has the Job Object as a backstop).
             if let tauri::RunEvent::Exit = event {
                 crate::vpn::shutdown_all_tunnels();
+                // System L2TP VPNs are OS connections, not child processes —
+                // disconnect them explicitly so we don't leave a tunnel up.
+                if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                    rt.block_on(async { crate::l2tp::disconnect_all().await });
+                }
             }
         });
 }

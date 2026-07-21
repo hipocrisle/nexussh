@@ -59,6 +59,10 @@ export interface HostRecord {
    *  set, the connection routes through openconnect+ocproxy SOCKS instead of the
    *  xray built-in VPN. Stays local (never synced). Password prompted per-connect. */
   corpVpnProfileId?: string;
+  /** Local L2TP/IPsec profile id (system VPN, see vpn.ts). When set, a system
+   *  L2TP VPN is brought up (split-tunnel) and the SSH connection goes direct.
+   *  Stays local (never synced). PPP password prompted per-connect. */
+  l2tpProfileId?: string;
   /** Per-host session-history override. `undefined` = inherit the global on/off
    *  + mode; `"off"` = never record; `"light"`/`"full"` = force-record this host
    *  in that mode regardless of the global mode. (`boolean` kept for back-compat

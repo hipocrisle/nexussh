@@ -181,6 +181,19 @@ pub fn connect_timeout(secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+/// Timeout for the whole establish phase (VPN bring-up + TCP/SOCKS + handshake).
+/// System L2TP/IPsec bring-up (IKE + L2TP + PPP, possibly a plugin install) is far
+/// slower than a userspace SOCKS tunnel, so the short SSH connect timeout mustn't
+/// cut it off before it's up — give it a generous floor.
+pub fn establish_timeout(args: &ConnectArgs) -> std::time::Duration {
+    let base = connect_timeout(args.timeout);
+    if args.l2tp.is_some() {
+        base.max(std::time::Duration::from_secs(120))
+    } else {
+        base
+    }
+}
+
 /// Historical hard-coded keepalive interval (was `from_secs(20)` inline). Used
 /// when the frontend sends 0 / omits the field so the default behavior is
 /// unchanged for existing users.
@@ -900,7 +913,7 @@ pub async fn ssh_connect(
     // Bound the whole connect phase (TCP/SOCKS connect + russh handshake) so a
     // dead host fails fast instead of hanging for minutes. Separate from the
     // post-connect keepalive timeout configured above.
-    let timeout = connect_timeout(args.timeout);
+    let timeout = establish_timeout(&args);
     let establish = async {
         if let Some(l2) = &args.l2tp {
             // Bring up the SHARED system L2TP/IPsec VPN, then connect DIRECT — the

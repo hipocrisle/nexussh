@@ -118,7 +118,7 @@ async fn connect_and_auth(
 
     // Bound the connect phase (TCP/SOCKS connect + handshake) so a dead host
     // fails fast — mirrors ssh.rs/sftp.rs. Separate from post-connect keepalive.
-    let timeout = crate::ssh::connect_timeout(args.timeout);
+    let timeout = crate::ssh::establish_timeout(&args);
     let establish = async {
         if let Some(l2) = &args.l2tp {
             let guard = crate::l2tp::acquire_system_vpn(app, &l2.profile, &l2.password, &args.host)

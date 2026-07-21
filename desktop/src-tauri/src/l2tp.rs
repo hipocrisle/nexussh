@@ -430,15 +430,23 @@ mod imp {
     /// NetworkManager so the new VPN type registers. No user input goes into the
     /// script, so there's nothing to escape.
     async fn install_plugin() -> Result<(), String> {
+        // NetworkManager-l2tp is only a plugin — it needs an IPsec daemon
+        // (libreswan/strongSwan) + an L2TP daemon (xl2tpd). On RHEL/Rocky those
+        // live in EPEL, and their build-deps often need the CRB/PowerTools repo
+        // enabled, so we enable both before installing — the earlier failure was
+        // exactly this (plugin not found / deps unresolved → nothing installed).
         const SCRIPT: &str = "set -e; \
             if command -v dnf >/dev/null 2>&1; then \
-              dnf install -y epel-release || true; dnf install -y NetworkManager-l2tp; \
+              dnf install -y epel-release dnf-plugins-core || true; \
+              dnf config-manager --set-enabled crb 2>/dev/null \
+                || dnf config-manager --set-enabled powertools 2>/dev/null || true; \
+              dnf install -y NetworkManager-l2tp xl2tpd libreswan; \
             elif command -v apt-get >/dev/null 2>&1; then \
               apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-l2tp; \
             elif command -v zypper >/dev/null 2>&1; then \
-              zypper --non-interactive install NetworkManager-l2tp; \
+              zypper --non-interactive install NetworkManager-l2tp xl2tpd strongswan; \
             elif command -v pacman >/dev/null 2>&1; then \
-              pacman -Sy --noconfirm networkmanager-l2tp; \
+              pacman -Sy --noconfirm networkmanager-l2tp xl2tpd strongswan; \
             else echo 'no supported package manager (install NetworkManager-l2tp manually)' >&2; exit 1; fi; \
             systemctl reload-or-restart NetworkManager 2>/dev/null || systemctl restart NetworkManager || true";
         let out = Command::new("pkexec")
@@ -481,16 +489,20 @@ mod imp {
         let add = &["con", "add", "type", "vpn", "con-name", name, "ifname", "*", "vpn-type", VPN_TYPE];
         nmcli(add).await?;
 
-        // vpn.data: gateway + user + IPsec on + store both secrets (flags=0).
+        // vpn.data: gateway + user + IPsec on + the PSK. NB: the IPsec PSK goes in
+        // vpn.DATA (not vpn.secrets) for NetworkManager-l2tp — that's the canonical
+        // layout; putting it in secrets left the connection unable to negotiate.
+        // password-flags=0 = the PPP password is stored (in vpn.secrets below), so
+        // activation doesn't hang waiting for an agent.
         let vpn_data = format!(
             "gateway = {server}, user = {user}, ipsec-enabled = yes, \
-             password-flags = 0, ipsec-psk-flags = 0",
+             ipsec-psk = {psk}, password-flags = 0",
             server = p.server.trim(),
             user = p.username.trim(),
+            psk = p.psk,
         );
         nmcli(&["con", "modify", name, "vpn.data", &vpn_data]).await?;
-        let secrets = format!("password = {password}, ipsec-psk = {psk}", psk = p.psk);
-        nmcli(&["con", "modify", name, "vpn.secrets", &secrets]).await?;
+        nmcli(&["con", "modify", name, "vpn.secrets", &format!("password = {password}")]).await?;
 
         // Split-tunnel: never the default route; only the host /32 + profile routes.
         nmcli(&["con", "modify", name, "ipv4.never-default", "yes"]).await?;

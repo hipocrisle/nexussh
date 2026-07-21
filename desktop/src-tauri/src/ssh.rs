@@ -188,7 +188,9 @@ pub fn connect_timeout(secs: u64) -> std::time::Duration {
 pub fn establish_timeout(args: &ConnectArgs) -> std::time::Duration {
     let base = connect_timeout(args.timeout);
     if args.l2tp.is_some() {
-        base.max(std::time::Duration::from_secs(120))
+        // Generous: first-connect may also install the NM-l2tp plugin (dnf) via a
+        // polkit prompt before the IKE/L2TP/PPP negotiation even starts.
+        base.max(std::time::Duration::from_secs(240))
     } else {
         base
     }

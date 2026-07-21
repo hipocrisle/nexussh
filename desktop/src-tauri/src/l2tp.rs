@@ -366,29 +366,140 @@ mod imp {
     }
 }
 
-#[cfg(windows)]
+// ── Linux implementation (NetworkManager + NetworkManager-l2tp via nmcli) ─────
+//
+// No userspace L2TP/IPsec exists, so — like Windows — we drive the OS stack. On
+// Linux that's NetworkManager with the NetworkManager-l2tp plugin (which wraps
+// strongSwan/libreswan + xl2tpd + pppd). We create a VPN connection with nmcli
+// (split-tunnel: ipv4.never-default + explicit routes), store the secrets, and
+// bring it up. Requires the plugin installed (EPEL on RHEL/Rocky) and polkit
+// authorisation for the current user to control networking.
+
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::L2tpProfile;
+    use tokio::process::Command;
+
+    const VPN_TYPE: &str = "org.freedesktop.NetworkManager.l2tp";
+
+    async fn nmcli(args: &[&str]) -> Result<String, String> {
+        let out = Command::new("nmcli")
+            .args(args)
+            .output()
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "nmcli not found — install NetworkManager and the NetworkManager-l2tp \
+                     plugin (RHEL/Rocky: enable EPEL then dnf install NetworkManager-l2tp)"
+                        .to_string()
+                } else {
+                    format!("nmcli: {e}")
+                }
+            })?;
+        let so = String::from_utf8_lossy(&out.stdout).to_string();
+        if out.status.success() {
+            Ok(so)
+        } else {
+            let se = String::from_utf8_lossy(&out.stderr).to_string();
+            Err(format!("{}{}", so, se).trim().to_string())
+        }
+    }
+
+    pub async fn is_connected(name: &str) -> bool {
+        match nmcli(&["-t", "-f", "NAME", "con", "show", "--active"]).await {
+            Ok(out) => out.lines().any(|l| l == name),
+            Err(_) => false,
+        }
+    }
+
+    pub async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
+        // Recreate idempotently: drop any stale connection of the same name first.
+        let _ = nmcli(&["con", "delete", name]).await;
+
+        // Create the L2TP VPN connection. A missing plugin surfaces as an unknown
+        // vpn-type error → translate to an install hint.
+        nmcli(&["con", "add", "type", "vpn", "con-name", name, "ifname", "*", "vpn-type", VPN_TYPE])
+            .await
+            .map_err(|e| {
+                if e.contains("vpn-type") || e.to_lowercase().contains("not supported") || e.contains(VPN_TYPE) {
+                    "NetworkManager-l2tp plugin not installed — install it (RHEL/Rocky: enable \
+                     EPEL then dnf install NetworkManager-l2tp; Debian/Ubuntu: apt install \
+                     network-manager-l2tp)"
+                        .to_string()
+                } else {
+                    e
+                }
+            })?;
+
+        // vpn.data: gateway + user + IPsec on + store both secrets (flags=0).
+        let vpn_data = format!(
+            "gateway = {server}, user = {user}, ipsec-enabled = yes, \
+             password-flags = 0, ipsec-psk-flags = 0",
+            server = p.server.trim(),
+            user = p.username.trim(),
+        );
+        nmcli(&["con", "modify", name, "vpn.data", &vpn_data]).await?;
+        let secrets = format!("password = {password}, ipsec-psk = {psk}", psk = p.psk);
+        nmcli(&["con", "modify", name, "vpn.secrets", &secrets]).await?;
+
+        // Split-tunnel: never the default route; only the host /32 + profile routes.
+        nmcli(&["con", "modify", name, "ipv4.never-default", "yes"]).await?;
+        let mut routes: Vec<String> = p
+            .routes
+            .iter()
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .collect();
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            routes.push(if ip.is_ipv6() { format!("{host}/128") } else { format!("{host}/32") });
+        }
+        if !routes.is_empty() {
+            nmcli(&["con", "modify", name, "ipv4.routes", &routes.join(", ")]).await?;
+        }
+
+        // Bring it up. May need polkit authorisation for the current user.
+        nmcli(&["con", "up", name]).await.map_err(|e| {
+            if e.to_lowercase().contains("not authorized") || e.to_lowercase().contains("authoriz") {
+                format!("not authorised to start the VPN — your user needs polkit permission to \
+                         control NetworkManager. ({e})")
+            } else if e.contains("password") || e.contains("secret") {
+                format!("L2TP authentication failed — check the username/password/PSK. ({e})")
+            } else {
+                format!("L2TP connect failed: {e}")
+            }
+        })?;
+        Ok(())
+    }
+
+    pub async fn disconnect(name: &str) {
+        let _ = nmcli(&["con", "down", name]).await;
+        // Remove the connection so a fresh connect re-applies edited PSK/routes.
+        let _ = nmcli(&["con", "delete", name]).await;
+    }
+}
+
+#[cfg(any(windows, target_os = "linux"))]
 async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
     imp::connect(p, password, name, host).await
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 async fn disconnect(name: &str) {
     imp::disconnect(name).await
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 async fn is_connected(name: &str) -> bool {
     imp::is_connected(name).await
 }
 
-// ── Non-Windows: not implemented yet (Linux via NetworkManager-l2tp is a later
-//    phase). Fail with a clear message rather than pretend. ────────────────────
+// ── Other platforms (macOS): not implemented yet. ────────────────────────────
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 async fn connect(_p: &L2tpProfile, _password: &str, _name: &str, _host: &str) -> Result<(), String> {
-    Err("System L2TP/IPsec is currently Windows-only".into())
+    Err("System L2TP/IPsec is not supported on this platform yet".into())
 }
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 async fn disconnect(_name: &str) {}
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 async fn is_connected(_name: &str) -> bool {
     false
 }

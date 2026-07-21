@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, Trash2, Plus, ShieldCheck, ShieldAlert, PowerOff } from "lucide-react";
 import { ThemePalette } from "./themes";
-import { Section, Row, TextField } from "./primitives";
+import { Section, Row, TextField, SubHeader } from "./primitives";
 import {
   loadProfiles,
   addProfileFromUrl,
@@ -191,6 +191,7 @@ export function VpnSection({ t }: Props) {
         {tr("settings.vpn.intro")}
       </p>
 
+      <SubHeader label={tr("settings.vpn.xray_header")} t={t} />
       <Row label={tr("settings.vpn.add")} hint={tr("settings.vpn.add_hint")} t={t}>
         <div className="space-y-2 max-w-md">
           <TextField value={name} onChange={setName} placeholder={tr("settings.vpn.name_ph")} t={t} />
@@ -254,6 +255,7 @@ export function VpnSection({ t }: Props) {
         )}
       </Row>
 
+      <SubHeader label={tr("settings.vpn.corp.header")} t={t} />
       <Row label={tr("settings.vpn.corp.add")} hint={tr("settings.vpn.corp.add_hint")} t={t}>
         <div className="space-y-2 max-w-md">
           <TextField value={cName} onChange={setCName} placeholder={tr("settings.vpn.corp.name_ph")} t={t} />
@@ -350,12 +352,13 @@ export function VpnSection({ t }: Props) {
         </div>
       </Row>
 
+      <SubHeader label={tr("settings.vpn.l2tp.header")} t={t} />
       <Row label={tr("settings.vpn.l2tp.add")} hint={tr("settings.vpn.l2tp.add_hint")} t={t}>
         <div className="space-y-2 max-w-md">
           <TextField value={lName} onChange={setLName} placeholder={tr("settings.vpn.l2tp.name_ph")} t={t} />
           <TextField value={lServer} onChange={setLServer} placeholder={tr("settings.vpn.l2tp.server_ph")} t={t} />
           <TextField value={lUser} onChange={setLUser} placeholder={tr("settings.vpn.l2tp.user_ph")} t={t} />
-          <TextField value={lPsk} onChange={setLPsk} placeholder={tr("settings.vpn.l2tp.psk_ph")} t={t} />
+          <TextField value={lPsk} onChange={setLPsk} placeholder={tr("settings.vpn.l2tp.psk_ph")} type="password" t={t} />
           <TextField value={lRoutes} onChange={setLRoutes} placeholder={tr("settings.vpn.l2tp.routes_ph")} t={t} />
           <label className="flex items-center gap-2 font-mono text-xs" style={{ color: t.textSoft }}>
             <input type="checkbox" checked={lEnc} onChange={(e) => setLEnc(e.target.checked)} />

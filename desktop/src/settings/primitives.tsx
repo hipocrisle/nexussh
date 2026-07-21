@@ -33,6 +33,22 @@ export function Section({ id, label, kicker, children, t }: SectionProps) {
   );
 }
 
+/** A labelled divider that visually groups the Rows under it — used to separate
+ *  the VPN types (Xray / OpenConnect / L2TP) so they don't read as one heap. */
+export function SubHeader({ label, t }: { label: string; t: ThemePalette }) {
+  return (
+    <div className="flex items-center gap-3 pt-6 first:pt-0">
+      <span
+        className="font-mono text-sm uppercase tracking-[0.15em] whitespace-nowrap"
+        style={{ color: t.accent }}
+      >
+        {label}
+      </span>
+      <div className="flex-1 h-px" style={{ background: t.border }} />
+    </div>
+  );
+}
+
 interface RowProps {
   label: string;
   hint?: string;
@@ -188,6 +204,8 @@ interface TextFieldProps {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  /** Input type — "password" masks the value (e.g. a pre-shared key). */
+  type?: "text" | "password";
   t: ThemePalette;
 }
 
@@ -195,10 +213,12 @@ export function TextField({
   value,
   onChange,
   placeholder,
+  type = "text",
   t,
 }: TextFieldProps) {
   return (
     <input
+      type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}

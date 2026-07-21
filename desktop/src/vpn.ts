@@ -244,6 +244,12 @@ export async function corpTunnelActive(p: CorpVpnProfile): Promise<boolean> {
   return await invoke<boolean>("corp_tunnel_active", { profile: toCorpBackend(p) });
 }
 
+/** Force-tear-down all active OpenConnect tunnels (manual recovery). Returns how
+ *  many were killed. The next connect re-establishes and re-prompts the password. */
+export async function corpVpnDisconnectAll(): Promise<number> {
+  return await invoke<number>("corp_vpn_disconnect_all");
+}
+
 // ─── On-demand VPN backends (openconnect, ...) ────────────────────────────────
 // Backend binaries aren't bundled — they're downloaded on first use into a
 // per-user dir (verified via a sha256 manifest). `ensureVpnBackend` must be

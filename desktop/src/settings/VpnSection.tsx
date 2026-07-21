@@ -4,7 +4,7 @@
 
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Trash2, Plus, ShieldCheck, ShieldAlert } from "lucide-react";
+import { RefreshCw, Trash2, Plus, ShieldCheck, ShieldAlert, PowerOff } from "lucide-react";
 import { ThemePalette } from "./themes";
 import { Section, Row, TextField } from "./primitives";
 import {
@@ -18,6 +18,7 @@ import {
   updateCorpProfile,
   removeCorpProfile,
   corpVpnProbeCert,
+  corpVpnDisconnectAll,
   ensureVpnBackend,
   VPN_BACKEND_ID,
   type CorpVpnProfile,
@@ -79,6 +80,17 @@ export function VpnSection({ t }: Props) {
   const [cMtu, setCMtu] = useState("");
   const [cBusy, setCBusy] = useState(false);
   const [cError, setCError] = useState<string | null>(null);
+  const [cDiscMsg, setCDiscMsg] = useState<string | null>(null);
+
+  async function onDisconnectAll() {
+    try {
+      const n = await corpVpnDisconnectAll();
+      setCDiscMsg(tr("settings.vpn.corp.disconnected", { n }));
+      setTimeout(() => setCDiscMsg(null), 4000);
+    } catch (e) {
+      setCError(String(e));
+    }
+  }
 
   function onAddCorp() {
     if (!cServer.trim() || !cUser.trim()) return;
@@ -279,6 +291,17 @@ export function VpnSection({ t }: Props) {
             ))}
           </div>
         )}
+      </Row>
+
+      <Row label={tr("settings.vpn.corp.control")} hint={tr("settings.vpn.corp.control_hint")} t={t}>
+        <div className="space-y-2">
+          <button type="button" onClick={onDisconnectAll} className={btn} style={btnStyle}>
+            <PowerOff size={12} /> {tr("settings.vpn.corp.disconnect_all")}
+          </button>
+          {cDiscMsg && (
+            <div className="font-mono text-[11px]" style={{ color: t.textSoft }}>{cDiscMsg}</div>
+          )}
+        </div>
       </Row>
     </Section>
   );

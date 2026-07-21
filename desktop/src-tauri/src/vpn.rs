@@ -830,28 +830,56 @@ pub async fn establish_corp_tunnel(
             m
         })?;
 
-    // Race: SOCKS becomes reachable (tunnel up) vs openconnect exiting early.
-    let ready = crate::ssh::wait_socks_port(socks_port);
-    tokio::pin!(ready);
-    tokio::select! {
-        r = &mut ready => {
-            if r {
-                let _ = app.emit("corp-vpn-status", json!({ "phase": "up" }));
-                Ok(child)
-            } else {
-                // SOCKS never opened within the window — report openconnect's reason.
-                let reason = tunnel_failure_reason(&log);
-                let _ = child.kill().await;
-                let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": reason }));
-                Err(reason)
-            }
-        }
-        _ = child.wait() => {
+    // Readiness = openconnect reports the VPN data plane ACTUALLY up (its own
+    // "Connected as <ip>" / DTLS / ESP log line) AND the SOCKS proxy accepts.
+    // Just the SOCKS port opening is NOT enough: the Windows fork opens its
+    // listener before the session authenticates, so trusting the port alone
+    // cached a dead "zombie" tunnel (socks up, no ocserv session, no traffic —
+    // and then reused forever, ignoring password/MTU changes). We also watch the
+    // child exiting for a fast, specific failure. Time-boxed so a hung bring-up
+    // fails loudly instead of hanging or caching a zombie.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(35);
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
             let reason = tunnel_failure_reason(&log);
             let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": reason }));
-            Err(reason)
+            return Err(reason);
         }
+        if log_shows_connected(&log)
+            && tokio::net::TcpStream::connect(("127.0.0.1", socks_port))
+                .await
+                .is_ok()
+        {
+            let _ = app.emit("corp-vpn-status", json!({ "phase": "up" }));
+            return Ok(child);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let mut reason = tunnel_failure_reason(&log);
+            if reason.trim().is_empty() {
+                reason = "the VPN tunnel did not finish connecting in time".to_string();
+            }
+            let _ = child.kill().await;
+            let _ = app.emit("corp-vpn-status", json!({ "phase": "error", "reason": reason }));
+            return Err(reason);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+}
+
+/// Whether openconnect's log shows the VPN data plane is actually established (a
+/// tunnel IP was assigned / a data channel came up) — as opposed to merely a TLS
+/// connection or an open SOCKS listener.
+fn log_shows_connected(log: &VpnLog) -> bool {
+    let lines = log.lock().map(|b| b.clone()).unwrap_or_default();
+    let hay = lines.join("\n").to_lowercase();
+    // "Connected as 10.x.x.x, using SSL/DTLS" is printed by mainline openconnect
+    // (and the fork) once it has a tunnel IP. The others cover DTLS/ESP data
+    // channels. NOT "connected to HTTPS on ..." — that's just the TLS control.
+    hay.contains("connected as")
+        || hay.contains("cstp connected")
+        || hay.contains("esp session established")
+        || hay.contains("established dtls")
+        || hay.contains("session established")
 }
 
 // ── Shared corp-VPN tunnel manager ───────────────────────────────────────────
@@ -997,6 +1025,20 @@ pub fn shutdown_all_tunnels() {
             map.clear();
         }
     }
+}
+
+/// Force-tear-down every shared tunnel right now — manual recovery from a wedged
+/// state (e.g. a tunnel whose VPN session silently died while the process stayed
+/// alive). Returns how many were killed. The next connect re-establishes and
+/// re-prompts for the password.
+#[tauri::command]
+pub async fn corp_vpn_disconnect_all() -> usize {
+    let mut map = tunnels().inner.lock().await;
+    let n = map.len();
+    for (_, mut e) in map.drain() {
+        let _ = e.child.kill().await;
+    }
+    n
 }
 
 /// Whether a shared tunnel for this profile is currently up (so the connect flow

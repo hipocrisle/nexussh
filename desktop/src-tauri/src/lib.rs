@@ -336,6 +336,7 @@ pub fn run() {
             vpn::vpn_fetch_subscription,
             vpn::corp_vpn_probe_cert,
             vpn::corp_tunnel_active,
+            vpn::corp_vpn_disconnect_all,
             backends::backend_status,
             backends::backend_ensure,
             window_composited,

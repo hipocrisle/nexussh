@@ -594,6 +594,11 @@ mod imp {
         if l.contains("not authorized") || l.contains("authoriz") {
             format!("not authorised to start the VPN — your user needs polkit permission to \
                      control NetworkManager. ({e})")
+        } else if l.contains("timeout") || l.contains("timed out") {
+            format!("the VPN server didn't respond (IKE/IPsec timeout) — the IKE request reached \
+                     no reply. Check the server is reachable on UDP 500/4500; in a VM, VMware/\
+                     VirtualBox NAT often blocks IPsec (try Bridged networking), and check the \
+                     firewall. ({e})")
         } else if l.contains("password") || l.contains("secret") || l.contains("login") {
             format!("L2TP authentication failed — check the username/password/PSK. ({e})")
         } else {

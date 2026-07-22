@@ -528,9 +528,20 @@ mod imp {
         // layout; putting it in secrets left the connection unable to negotiate.
         // password-flags=0 = the PPP password is stored (in vpn.secrets below), so
         // activation doesn't hang waiting for an agent.
+        //
+        // ipsec-ike / ipsec-esp: a BROAD, Windows-compatible proposal set. Modern
+        // libreswan (el10) otherwise offers only strong crypto per the system
+        // crypto-policy, which legacy L2TP servers (and the Windows client that
+        // works against the same server) don't accept — the server then silently
+        // drops IKE and pluto reports "no response to our first IKEv1 message".
+        // Offering AES256/AES128/3DES + SHA1/SHA2 + DH2(modp1024)/DH14(modp2048)
+        // matches what Windows sends; libreswan prunes any the policy disallows.
+        let ike = "aes256-sha2_256-modp2048,aes256-sha1-modp2048,aes256-sha1-modp1024,\
+                   aes128-sha1-modp1024,3des-sha1-modp1024,aes128-sha1-modp2048";
+        let esp = "aes256-sha2_256,aes256-sha1,aes128-sha1,3des-sha1";
         let vpn_data = format!(
             "gateway = {server}, user = {user}, ipsec-enabled = yes, \
-             ipsec-psk = {psk}, password-flags = 0",
+             ipsec-psk = {psk}, ipsec-ike = {ike}, ipsec-esp = {esp}, password-flags = 0",
             server = p.server.trim(),
             user = p.username.trim(),
             psk = p.psk,

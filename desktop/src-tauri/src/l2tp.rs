@@ -536,9 +536,12 @@ mod imp {
         // drops IKE and pluto reports "no response to our first IKEv1 message".
         // Offering AES256/AES128/3DES + SHA1/SHA2 + DH2(modp1024)/DH14(modp2048)
         // matches what Windows sends; libreswan prunes any the policy disallows.
-        let ike = "aes256-sha2_256-modp2048,aes256-sha1-modp2048,aes256-sha1-modp1024,\
-                   aes128-sha1-modp1024,3des-sha1-modp1024,aes128-sha1-modp2048";
-        let esp = "aes256-sha2_256,aes256-sha1,aes128-sha1,3des-sha1";
+        // NB: commas SEPARATE proposals, but nmcli's vpn.data is itself a
+        // comma-separated key=value list — so the commas INSIDE the value must be
+        // backslash-escaped (\,) or nmcli reads each proposal as a bogus new key.
+        let ike = "aes256-sha2_256-modp2048\\,aes256-sha1-modp2048\\,aes256-sha1-modp1024\\,\
+                   aes128-sha1-modp1024\\,3des-sha1-modp1024\\,aes128-sha1-modp2048";
+        let esp = "aes256-sha2_256\\,aes256-sha1\\,aes128-sha1\\,3des-sha1";
         let vpn_data = format!(
             "gateway = {server}, user = {user}, ipsec-enabled = yes, \
              ipsec-psk = {psk}, ipsec-ike = {ike}, ipsec-esp = {esp}, password-flags = 0",

@@ -437,7 +437,11 @@ mod imp {
     /// (which enables ikev1-policy=accept).
     fn is_ipsec_config_failure(e: &str) -> bool {
         let l = e.to_lowercase();
-        l.contains("could not add ipsec") || l.contains("ikev1") || l.contains("ipsec connection")
+        // ADD-time config errors (fixed by the elevated setup: enable IKEv1, etc.).
+        // NOT "could not ESTABLISH ipsec" / "timeout" — those are negotiation
+        // failures the setup can't fix, so re-running it (another pkexec + ipsec
+        // restart + SELinux churn) is just noise.
+        l.contains("could not add ipsec") || l.contains("does not allow ikev1")
     }
 
     /// All of these are repaired by the same one-shot elevated setup (install the
@@ -616,10 +620,11 @@ mod imp {
             format!("not authorised to start the VPN — your user needs polkit permission to \
                      control NetworkManager. ({e})")
         } else if l.contains("timeout") || l.contains("timed out") {
-            format!("the VPN server didn't respond (IKE/IPsec timeout) — the IKE request reached \
-                     no reply. Check the server is reachable on UDP 500/4500; in a VM, VMware/\
-                     VirtualBox NAT often blocks IPsec (try Bridged networking), and check the \
-                     firewall. ({e})")
+            format!("the VPN server didn't respond to IKE. If it's reachable on UDP 500/4500 \
+                     (and works from Windows), it most likely requires old crypto — e.g. DH \
+                     group 2 (modp1024) — that modern Linux libreswan has removed, so the server \
+                     silently drops our proposal. Such a server is reachable from Windows but not \
+                     from a current Linux/libreswan. ({e})")
         } else if l.contains("password") || l.contains("secret") || l.contains("login") {
             format!("L2TP authentication failed — check the username/password/PSK. ({e})")
         } else {

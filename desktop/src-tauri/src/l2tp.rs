@@ -539,9 +539,16 @@ mod imp {
         // NB: commas SEPARATE proposals, but nmcli's vpn.data is itself a
         // comma-separated key=value list — so the commas INSIDE the value must be
         // backslash-escaped (\,) or nmcli reads each proposal as a bogus new key.
-        let ike = "aes256-sha2_256-modp2048\\,aes256-sha1-modp2048\\,aes256-sha1-modp1024\\,\
-                   aes128-sha1-modp1024\\,3des-sha1-modp1024\\,aes128-sha1-modp2048";
-        let esp = "aes256-sha2_256\\,aes256-sha1\\,aes128-sha1\\,3des-sha1";
+        //
+        // Only algorithms modern libreswan (el10) actually supports: it REJECTS
+        // the whole proposal if any one is unavailable, and it has dropped the weak
+        // legacy ones (modp1024/DH2, 3des) entirely. So we offer AES + SHA1/SHA2 +
+        // DH14(modp2048) — which the Windows client also proposes and most servers
+        // accept. (A server that ONLY accepts DH2 can't be reached from el10's
+        // libreswan at all — that's a server/modern-libreswan incompatibility.)
+        let ike = "aes256-sha2_256-modp2048\\,aes256-sha1-modp2048\\,\
+                   aes128-sha2_256-modp2048\\,aes128-sha1-modp2048";
+        let esp = "aes256-sha2_256\\,aes256-sha1\\,aes128-sha2_256\\,aes128-sha1";
         let vpn_data = format!(
             "gateway = {server}, user = {user}, ipsec-enabled = yes, \
              ipsec-psk = {psk}, ipsec-ike = {ike}, ipsec-esp = {esp}, password-flags = 0",

@@ -412,6 +412,18 @@ mod imp {
         }
     }
 
+    /// Whether the IPsec backend is libreswan (RHEL/Fedora) vs strongSwan
+    /// (Debian/Ubuntu). Their proposal syntax and config directives differ, so the
+    /// libreswan-specific tuning (ikev1-policy, sha2_256 proposals) only applies here.
+    async fn is_libreswan() -> bool {
+        match Command::new("ipsec").arg("--version").output().await {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("libreswan"),
+            Err(_) => false,
+        }
+    }
+
     /// True if an nmcli error means the NetworkManager-l2tp plugin isn't installed.
     fn is_plugin_missing(e: &str) -> bool {
         let l = e.to_lowercase();
@@ -469,7 +481,7 @@ mod imp {
                 || dnf config-manager --set-enabled powertools 2>/dev/null || true; \
               dnf install -y NetworkManager-l2tp xl2tpd libreswan policycoreutils-python-utils; \
             elif command -v apt-get >/dev/null 2>&1; then \
-              apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-l2tp; \
+              apt-get update || true; DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-l2tp; \
             elif command -v zypper >/dev/null 2>&1; then \
               zypper --non-interactive install NetworkManager-l2tp xl2tpd strongswan; \
             elif command -v pacman >/dev/null 2>&1; then \
@@ -479,7 +491,9 @@ mod imp {
                && command -v semanage >/dev/null 2>&1; then \
               for d in NetworkManager_t ipsec_t l2tpd_t; do \
                 semanage permissive -a \"$d\" 2>/dev/null || true; done; fi; \
-            if [ -f /etc/ipsec.conf ] && ! grep -qE '^[[:space:]]*ikev1-policy[[:space:]]*=' /etc/ipsec.conf 2>/dev/null; then \
+            if [ -f /etc/ipsec.conf ] && command -v ipsec >/dev/null 2>&1 \
+               && ipsec --version 2>/dev/null | grep -qi libreswan \
+               && ! grep -qE '^[[:space:]]*ikev1-policy[[:space:]]*=' /etc/ipsec.conf 2>/dev/null; then \
               if grep -q '^config setup' /etc/ipsec.conf; then \
                 awk '/^config setup/{print;print \"\\tikev1-policy=accept\";next}1' /etc/ipsec.conf > /etc/ipsec.conf.nmnew \
                   && mv -f /etc/ipsec.conf.nmnew /etc/ipsec.conf; \
@@ -548,18 +562,23 @@ mod imp {
         // the whole proposal if any one is unavailable, and it has dropped the weak
         // legacy ones (modp1024/DH2, 3des) entirely. So we offer AES + SHA1/SHA2 +
         // DH14(modp2048) — which the Windows client also proposes and most servers
-        // accept. (A server that ONLY accepts DH2 can't be reached from el10's
-        // libreswan at all — that's a server/modern-libreswan incompatibility.)
-        let ike = "aes256-sha2_256-modp2048\\,aes256-sha1-modp2048\\,\
-                   aes128-sha2_256-modp2048\\,aes128-sha1-modp2048";
-        let esp = "aes256-sha2_256\\,aes256-sha1\\,aes128-sha2_256\\,aes128-sha1";
-        let vpn_data = format!(
+        // accept. This is LIBRESWAN syntax (sha2_256) and libreswan-specific
+        // tuning: on strongSwan (Debian/Ubuntu) the syntax differs (sha256) and
+        // its defaults already include the legacy set, so we leave proposals empty
+        // there and let strongSwan negotiate — it can still do DH2 for old servers.
+        let mut vpn_data = format!(
             "gateway = {server}, user = {user}, ipsec-enabled = yes, \
-             ipsec-psk = {psk}, ipsec-ike = {ike}, ipsec-esp = {esp}, password-flags = 0",
+             ipsec-psk = {psk}, password-flags = 0",
             server = p.server.trim(),
             user = p.username.trim(),
             psk = p.psk,
         );
+        if is_libreswan().await {
+            let ike = "aes256-sha2_256-modp2048\\,aes256-sha1-modp2048\\,\
+                       aes128-sha2_256-modp2048\\,aes128-sha1-modp2048";
+            let esp = "aes256-sha2_256\\,aes256-sha1\\,aes128-sha2_256\\,aes128-sha1";
+            vpn_data.push_str(&format!(", ipsec-ike = {ike}, ipsec-esp = {esp}"));
+        }
         nmcli(&["con", "modify", name, "vpn.data", &vpn_data]).await?;
         nmcli(&["con", "modify", name, "vpn.secrets", &format!("password = {password}")]).await?;
 

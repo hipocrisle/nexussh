@@ -99,12 +99,38 @@ impl Drop for SystemVpnGuard {
 
 /// Acquire (connecting if needed) the system VPN for `profile`. A live connection
 /// is reused without the password; only a first/dead one needs it.
+/// Reject profile fields that could break out of the structures we build from
+/// them — on Linux the fields are interpolated into nmcli's comma-separated
+/// `vpn.data` (`key = value, key = value`), so a comma or newline in a field
+/// would inject extra keys (CWE-88); control chars are never legitimate here.
+fn validate_profile(p: &L2tpProfile) -> Result<(), String> {
+    let bad = |s: &str| s.contains(',') || s.chars().any(|c| c.is_control());
+    let mut fields = vec![("server", p.server.as_str()), ("username", p.username.as_str())];
+    for r in &p.routes {
+        fields.push(("route", r.as_str()));
+    }
+    for (name, v) in fields {
+        if bad(v) {
+            return Err(format!(
+                "L2TP profile field '{name}' contains an illegal character (comma or control char)"
+            ));
+        }
+    }
+    // The PSK/password may contain many symbols, but a comma or newline still
+    // breaks nmcli's vpn.data / vpn.secrets line — reject those.
+    if p.psk.contains(',') || p.psk.contains('\n') || p.psk.contains('\r') || p.psk.contains('\0') {
+        return Err("L2TP PSK contains a comma or newline, which isn't supported".into());
+    }
+    Ok(())
+}
+
 pub async fn acquire_system_vpn(
     app: &tauri::AppHandle,
     profile: &L2tpProfile,
     password: &str,
     host: &str,
 ) -> Result<SystemVpnGuard, String> {
+    validate_profile(profile)?;
     let key = conn_key(profile);
     let name = connection_name(profile);
     let mut map = vpns().inner.lock().await;

@@ -470,17 +470,15 @@ pub(crate) fn verify_known_host(
     let id = format!("{host}:{port}");
     let fp = fingerprint_sha256(key);
     let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut map = read_known_hosts(store_path)?;
+    let map = read_known_hosts(store_path)?;
     match map.get(&id) {
         Some(known) if known == &fp => Ok(KeyVerdict::Accept),
-        Some(_) => Ok(KeyVerdict::Reject { changed: true }), // key changed → ask
-        None => {
-            map.insert(id, fp);
-            match write_known_hosts(store_path, &map) {
-                Ok(()) => Ok(KeyVerdict::Accept),
-                Err(_) => Ok(KeyVerdict::Reject { changed: false }), // couldn't pin → ask
-            }
-        }
+        Some(_) => Ok(KeyVerdict::Reject { changed: true }), // key changed → ask (MITM warning)
+        // First use of a host: do NOT silently trust+pin. Prompt the user with the
+        // fingerprint (OpenSSH-style "authenticity can't be established") so a MITM
+        // on the very first connect is caught, not blessed. On accept the caller
+        // pins via pin_known_host_file. (changed=false → UI shows "Новый ключ сервера".)
+        None => Ok(KeyVerdict::Reject { changed: false }),
     }
 }
 
@@ -513,20 +511,14 @@ pub(crate) fn verify_known_host_vault(
     let id = format!("{host}:{port}");
     let fp = fingerprint_sha256(key);
     let _guard = KNOWN_HOSTS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut map: HashMap<String, String> = crate::vault::get_opt(&vault, KNOWN_HOSTS_VAULT_KEY)
+    let map: HashMap<String, String> = crate::vault::get_opt(&vault, KNOWN_HOSTS_VAULT_KEY)
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     match map.get(&id) {
         Some(known) if known == &fp => Ok(KeyVerdict::Accept),
         Some(_) => Ok(KeyVerdict::Reject { changed: true }),
-        None => {
-            map.insert(id, fp);
-            let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".into());
-            match crate::vault::put(&vault, KNOWN_HOSTS_VAULT_KEY, json) {
-                Ok(()) => Ok(KeyVerdict::Accept),
-                Err(_) => Ok(KeyVerdict::Reject { changed: false }), // vault locked → ask
-            }
-        }
+        // First use: prompt instead of silently trusting+pinning (see file variant).
+        None => Ok(KeyVerdict::Reject { changed: false }),
     }
 }
 

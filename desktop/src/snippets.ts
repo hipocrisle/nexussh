@@ -292,7 +292,10 @@ export function importSnippets(json: string): { added: number; skipped: number }
     toAdd.push({
       id: crypto.randomUUID(),
       name: raw.name,
-      command: raw.command,
+      // Strip carriage returns from imported/synced commands: a CR is the PTY
+      // "submit" byte, so an embedded \r would auto-run lines regardless of the
+      // autoRun/confirm flags (audit F27/F28). \n is kept for multi-line snippets.
+      command: raw.command.replace(/\r/g, ""),
       autoRun: !!raw.autoRun,
       confirm: !!raw.confirm,
       hotkey: undefined, // don't import hotkeys — avoid clashes

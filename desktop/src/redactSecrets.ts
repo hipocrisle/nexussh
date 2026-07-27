@@ -18,6 +18,14 @@ const PEM_BLOCK =
 const KV_SECRET =
   /\b(pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|access[_-]?key|priv(?:ate)?[_-]?key|auth|bearer|credential|session)\b\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi;
 
+// Same secret keywords but WHITESPACE-separated from the value (e.g.
+// `password hunter2`, `Bearer eyJ...`) — the [:=] form above misses these, so an
+// on-screen credential written without a colon leaked to the AI proxy (F18/F26).
+// Masks the value (erring toward over-redaction, which is the safe direction for
+// an AI-context scrub). `key`/`auth` alone are too generic here, so exclude them.
+const KV_SECRET_WS =
+  /\b(pass(?:word|wd|phrase)?|secret|token|api[_-]?key|apikey|access[_-]?key|priv(?:ate)?[_-]?key|bearer|credential)\b\s+("[^"]*"|'[^']*'|\S{4,})/gi;
+
 // A line that IS a password prompt echo (rare, but harmless to blank).
 const PASSWORD_PROMPT_LINE =
   /^(.*\b(?:password|passphrase|пароль)\b\s*:).*$/gim;
@@ -37,6 +45,7 @@ export function redactSecrets(input: string): string {
   out = out.replace(PEM_BLOCK, `-----BEGIN PRIVATE KEY----- ${MASK} -----END PRIVATE KEY-----`);
   out = out.replace(JWT, MASK);
   out = out.replace(KV_SECRET, (_m, k) => `${k}=${MASK}`);
+  out = out.replace(KV_SECRET_WS, (_m, k) => `${k} ${MASK}`);
   out = out.replace(PASSWORD_PROMPT_LINE, (_m, prefix) => `${prefix} ${MASK}`);
   out = out.replace(OPAQUE_TOKEN, MASK);
   return out;

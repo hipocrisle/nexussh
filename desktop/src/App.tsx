@@ -477,11 +477,25 @@ function WindowControls() {
 }
 
 // Resolve a host's built-in-VPN choice into a concrete node (or null = direct).
+// FAIL-CLOSED: if the host is pinned to a VPN profile but that profile (or its
+// exit) is missing on this device — e.g. it wasn't synced, or was deleted — we
+// THROW instead of returning null. Returning null silently sent the SSH session
+// DIRECT, leaking it outside the VPN the user explicitly required (audit F25).
 function resolveHostVpn(h: HostRecord): VpnNode | null {
-  if (!h.useVpn || !h.vpnProfileId) return null;
+  if (!h.useVpn || !h.vpnProfileId) return null; // genuinely direct
   const profile = getProfile(h.vpnProfileId);
-  if (!profile) return null;
-  return resolveExit(profile, h.vpnExit) ?? null;
+  if (!profile) {
+    throw new Error(
+      `VPN-профиль этого хоста не найден на устройстве — соединение отменено (не идём напрямую в обход VPN). Добавьте/синхронизируйте профиль в Настройках.`,
+    );
+  }
+  const node = resolveExit(profile, h.vpnExit);
+  if (!node) {
+    throw new Error(
+      `Не удалось выбрать выходной узел VPN-профиля — соединение отменено (не идём напрямую).`,
+    );
+  }
+  return node;
 }
 
 // Describe which VPN a host routes through, for the status bar (any type — xray

@@ -10,6 +10,14 @@ on:
 
 jobs:
   build:
+    # Never run our build (which executes the PR's own scripts/deps and, on
+    # pushes, uses the signing key) for pull requests opened from a FORK — that
+    # would run attacker-controlled code in our workflow. Pushes and same-repo
+    # PRs (collaborators) still build. (GitHub already withholds secrets from
+    # fork PRs, but this stops the untrusted code from running at all.)
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:

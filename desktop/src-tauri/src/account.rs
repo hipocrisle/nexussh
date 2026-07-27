@@ -738,6 +738,9 @@ pub async fn account_login(
     //    from /login, so we compute auth_hash separately first).
     let salt_bytes = B64.decode(&account_salt)?;
     let params = ac::KdfParams::from_str(&kdf_params)?;
+    // These params come from the server (prelogin) — reject absurd ones before
+    // running Argon2, so a hostile server can't OOM us with a huge m_cost (DoS).
+    params.validate()?;
     let master_key = ac::derive_master_key(&password, &salt_bytes, &params)?;
     let auth_hash_b64 = B64.encode(ac::auth_hash(&master_key, &salt_bytes)?);
 
@@ -897,6 +900,7 @@ pub async fn account_change_password(
     let (salt, kdf) = prelogin(&server_url, &username).await?;
     let salt_bytes = B64.decode(&salt)?;
     let params = ac::KdfParams::from_str(&kdf)?;
+    params.validate()?; // server-supplied — reject absurd cost params (DoS guard)
     let master = ac::derive_master_key(&current_password, &salt_bytes, &params)?;
     let auth_hash_b64 = B64.encode(ac::auth_hash(&master, &salt_bytes)?);
 

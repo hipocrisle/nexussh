@@ -144,6 +144,29 @@ impl KdfParams {
     pub fn from_str(s: &str) -> Result<Self> {
         serde_json::from_str(s).map_err(|e| CryptoError::KdfParams(e.to_string()))
     }
+
+    /// Reject KDF parameters outside safe bounds. These arrive from the SERVER
+    /// (prelogin), so an attacker/compromised server could otherwise send an
+    /// enormous `m_cost` to exhaust the client's memory (a hang/OOM DoS at login)
+    /// — or an absurdly small one to weaken the KDF (offline-cracking downgrade).
+    /// The client only ever registers with the defaults (19456/2/1), so these
+    /// bounds never reject a legitimate account.
+    pub fn validate(&self) -> Result<()> {
+        // 8 MiB .. 1 GiB of memory; 1..10 passes; 1..16 lanes.
+        const MIN_M_COST: u32 = 8 * 1024; // 8 MiB
+        const MAX_M_COST: u32 = 1024 * 1024; // 1 GiB
+        let ok = (MIN_M_COST..=MAX_M_COST).contains(&self.m_cost)
+            && (1..=10).contains(&self.t_cost)
+            && (1..=16).contains(&self.p_cost);
+        if ok {
+            Ok(())
+        } else {
+            Err(CryptoError::KdfParams(format!(
+                "KDF params out of safe range (m_cost={}, t_cost={}, p_cost={})",
+                self.m_cost, self.t_cost, self.p_cost
+            )))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +588,21 @@ mod tests {
         assert_eq!(d.m_cost, 19_456);
         assert_eq!(d.t_cost, 2);
         assert_eq!(d.p_cost, 1);
+    }
+
+    #[test]
+    fn kdf_params_validate_bounds() {
+        // Defaults (what the client always registers with) are accepted.
+        assert!(KdfParams::default().validate().is_ok());
+        // A malicious server sending an enormous m_cost is rejected before we
+        // ever allocate (DoS guard), not clamped-and-run.
+        assert!(KdfParams { m_cost: u32::MAX, t_cost: 2, p_cost: 1 }.validate().is_err());
+        assert!(KdfParams { m_cost: 4_000_000, t_cost: 2, p_cost: 1 }.validate().is_err());
+        // Downgrade-weak params are rejected too.
+        assert!(KdfParams { m_cost: 64, t_cost: 1, p_cost: 1 }.validate().is_err());
+        assert!(KdfParams { m_cost: 19_456, t_cost: 0, p_cost: 1 }.validate().is_err());
+        assert!(KdfParams { m_cost: 19_456, t_cost: 99, p_cost: 1 }.validate().is_err());
+        assert!(KdfParams { m_cost: 19_456, t_cost: 2, p_cost: 999 }.validate().is_err());
     }
 
     #[test]

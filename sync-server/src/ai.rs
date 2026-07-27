@@ -675,8 +675,15 @@ async fn notify_admin_request(user_id: &str, username: &str) -> Result<(), Strin
         [ btn("🧠 Full/Opus",      format!("aig:g:fo0:{user_id}")) ],
         [ btn("⛔ Deny",           format!("aig:d:x:{user_id}")) ],
     ]);
+    // The Telegram message uses HTML parse mode, so a username containing
+    // <, >, or & would inject markup (or break parsing). Escape it — the
+    // username is attacker-chosen at registration.
+    let username_esc = username
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
     let text = format!(
-        "🤖 <b>Запрос AI-доступа NexuSSH</b>\n\nПользователь: <code>{username}</code>\nВыдать доступ?"
+        "🤖 <b>Запрос AI-доступа NexuSSH</b>\n\nПользователь: <code>{username_esc}</code>\nВыдать доступ?"
     );
     let body = json!({ "text": text, "keyboard": keyboard });
     let resp = client

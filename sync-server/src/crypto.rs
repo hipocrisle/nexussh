@@ -46,6 +46,17 @@ pub fn verify_auth(auth_hash: &str, stored_phc: &str) -> bool {
     }
 }
 
+/// Burn the same Argon2 verify work as a real login, for a username that does
+/// NOT exist. Without this, a missing account returns immediately while a real
+/// one pays the Argon2 cost — a timing side-channel that reveals which usernames
+/// exist (enumeration). Call this (and discard the result) before returning the
+/// generic "invalid credentials" for an unknown user.
+pub fn dummy_verify(auth_hash: &str) {
+    static DUMMY_PHC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let phc = DUMMY_PHC.get_or_init(|| hash_auth("nexussh-nonexistent-user").unwrap_or_default());
+    let _ = verify_auth(auth_hash, phc);
+}
+
 /// Generate a random URL-safe-ish token of `n` bytes, base64 (standard) encoded.
 pub fn random_token(n: usize) -> String {
     let mut buf = vec![0u8; n];

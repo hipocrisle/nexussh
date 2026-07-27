@@ -2,7 +2,7 @@
 
 use axum::{
     extract::{ConnectInfo, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
@@ -26,6 +26,29 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+/// The real client IP for rate-limiting. The service runs behind nginx, so the
+/// TCP peer (`addr`) is always the loopback proxy — keying the limiter on it
+/// collapses every client to one bucket (no real per-IP throttle on credential
+/// guessing). Prefer the forwarded real IP: `X-Real-IP`, else the LAST hop of
+/// `X-Forwarded-For` (nginx appends the true client there; earlier hops are
+/// client-spoofable), else fall back to the peer.
+/// NOTE: requires nginx to set `proxy_set_header X-Real-IP $remote_addr;`
+/// (or X-Forwarded-For) — otherwise this safely falls back to the peer IP.
+fn client_ip(headers: &HeaderMap, addr: &SocketAddr) -> String {
+    if let Some(v) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
+        }
+    }
+    if let Some(v) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+        if let Some(last) = v.split(',').map(str::trim).filter(|s| !s.is_empty()).last() {
+            return last.to_string();
+        }
+    }
+    addr.ip().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -247,10 +270,11 @@ pub struct PreloginResp {
 pub async fn prelogin(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<PreloginReq>,
 ) -> ApiResult<impl IntoResponse> {
     let username = req.username.trim().to_string();
-    let rl_key = format!("prelogin|{}|{}", username, addr.ip());
+    let rl_key = format!("prelogin|{}|{}", username, client_ip(&headers, &addr));
     if !state.ratelimit.check(&rl_key) {
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limited"));
     }
@@ -399,17 +423,20 @@ fn consume_recovery_code(state: &AppState, user_id: &str, code: &str) -> ApiResu
 pub async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> ApiResult<impl IntoResponse> {
     let username = req.username.trim().to_string();
-    let rl_key = format!("login|{}|{}", username, addr.ip());
+    let rl_key = format!("login|{}|{}", username, client_ip(&headers, &addr));
     if !state.ratelimit.check(&rl_key) {
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limited"));
     }
 
     let user = load_user_by_name(&state, &username)?;
     let Some(user) = user else {
-        // Same generic message as a bad password to avoid enumeration.
+        // Burn the same Argon2 verify time as a real login so a missing account
+        // isn't measurably faster (username enumeration). Same generic message.
+        crypto::dummy_verify(&req.auth_hash);
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "invalid credentials"));
     };
 
@@ -683,10 +710,11 @@ pub struct RecoveryLoginResp {
 pub async fn recovery_login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<RecoveryLoginReq>,
 ) -> ApiResult<impl IntoResponse> {
     let username = req.username.trim().to_string();
-    let rl_key = format!("recovery|{}|{}", username, addr.ip());
+    let rl_key = format!("recovery|{}|{}", username, client_ip(&headers, &addr));
     if !state.ratelimit.check(&rl_key) {
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate limited"));
     }

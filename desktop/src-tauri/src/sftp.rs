@@ -340,7 +340,15 @@ pub async fn sftp_list(
     let mut out = Vec::new();
     for entry in h.sftp.read_dir(path).await? {
         let name = entry.file_name();
-        if name == "." || name == ".." {
+        // A directory entry name is always a single path component. A malicious
+        // or compromised SFTP server can violate that and return names like
+        // "../../.ssh/authorized_keys" or "sub/evil"; if such a name reaches the
+        // client it gets joined onto a local path and escapes the chosen folder
+        // (arbitrary local file overwrite -> local code execution). Drop any name
+        // that is not a plain basename so it never reaches the frontend sinks.
+        if name == "." || name == ".." || name.contains('/') || name.contains('\\')
+            || name.contains('\0')
+        {
             continue;
         }
         let meta = entry.metadata();

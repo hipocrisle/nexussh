@@ -507,6 +507,7 @@ const ru = {
     copy_to_local: "← Копировать на компьютер",
     copy_skipped_dir: "Папки пропущены (только файлы): {{name}}",
     transfer_failed: "Ошибка передачи",
+    unsafe_name: "небезопасное имя от сервера — пропущено",
     resume_title: "Файл уже существует",
     resume_prompt:
       "«{{name}}» уже есть ({{have}} из {{total}}). Докачать недостающее или перезаписать заново?",
@@ -1718,6 +1719,7 @@ const en = {
     copy_to_local: "← Copy to computer",
     copy_skipped_dir: "Folders skipped (files only): {{name}}",
     transfer_failed: "Transfer failed",
+    unsafe_name: "unsafe name from server — skipped",
     resume_title: "File already exists",
     resume_prompt:
       '"{{name}}" already exists ({{have}} of {{total}}). Resume the rest or overwrite from scratch?',

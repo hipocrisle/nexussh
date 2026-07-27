@@ -230,6 +230,24 @@ function localJoin(dir: string, name: string): string {
   return dir.endsWith(sep) ? dir + name : dir + sep + name;
 }
 
+// A remote SFTP directory entry name must be a single path component. A hostile
+// or compromised server can return "../../.ssh/authorized_keys" or "sub/evil";
+// joined onto the local download dir that escapes the chosen folder and lets the
+// server overwrite arbitrary local files (-> local code execution). The backend
+// (sftp_list) already drops such names, but guard the write sinks here too so a
+// crafted name can never build a local destination. Reject anything that isn't a
+// plain basename.
+function isSafeEntryName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    !name.includes("\0")
+  );
+}
+
 function localParent(p: string): string {
   const sep = localSep(p);
   // Windows drive root ("C:\") — already at top.
@@ -1136,6 +1154,10 @@ export function SFTPPanel({
     if (typeof dir !== "string") return;
     setError(null);
     for (const f of files) {
+      if (!isSafeEntryName(f.name)) {
+        setError(`${f.name}: ${t("sftp.unsafe_name")}`);
+        continue;
+      }
       const dest = `${dir}/${f.name}`;
       const have = await localSize(dest);
       const mode = await resolveResume(f.name, have, f.size);
@@ -1219,6 +1241,10 @@ export function SFTPPanel({
     const failed: { name: string; msg: string }[] = [];
     setLocalError(null);
     for (const f of files) {
+      if (!isSafeEntryName(f.name)) {
+        failed.push({ name: f.name, msg: t("sftp.unsafe_name") });
+        continue;
+      }
       const localHave = localEntries.find((e) => !e.is_dir && e.name === f.name)?.size ?? 0;
       const mode = await resolveResume(f.name, localHave, f.size);
       if (mode === null) continue; // cancelled this file

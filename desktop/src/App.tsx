@@ -4197,7 +4197,17 @@ function App() {
           hasSession={!!activeId}
           ai={ai}
           onInsert={(cmd) => {
-            if (activeId) sshSend(activeId, new TextEncoder().encode(cmd));
+            // AI-подсказка "вставляется, но не выполняется" — пользователь
+            // сам жмёт Enter после ревью. Ответ AI-прокси недоверенный: если
+            // cmd содержит \n или \r, хвост ушёл бы в PTY и выполнился БЕЗ
+            // Enter (а UI показывает обрезанную безобидную строку). Поэтому
+            // берём только первую строку и вырезаем управляющие байты C0/DEL,
+            // чтобы в терминал попал ровно один редактируемый ввод.
+            const safe = cmd
+              .split(/\r?\n/)[0]
+              // eslint-disable-next-line no-control-regex
+              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ""); // C0 controls + DEL (CR already dropped by split), keep TAB
+            if (activeId && safe) sshSend(activeId, new TextEncoder().encode(safe));
             // Вернуть фокус в терминал, чтобы Enter сработал сразу (без клика).
             focusActiveTerminal();
           }}

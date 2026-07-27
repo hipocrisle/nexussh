@@ -336,6 +336,18 @@ fn host_id_from_item(item_id: &str) -> Option<&str> {
     Some(rest)
 }
 
+/// The owning host `<id>` for a SECRET item key (`host.<id>.password` or
+/// `nexussh.known_hosts.<id>`). Used to refuse a server tombstone that would
+/// delete the secret of a host that still exists locally (F19).
+fn secret_host_id(key: &str) -> Option<&str> {
+    if let Some(rest) = key.strip_prefix("nexussh.known_hosts.") {
+        return (!rest.is_empty()).then_some(rest);
+    }
+    key.strip_prefix("host.")
+        .and_then(|rest| rest.strip_suffix(".password"))
+        .filter(|s| !s.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // __hostlist__ helpers — the blob is a JSON ARRAY of host record objects.
 // We treat each record as an opaque serde_json::Value keyed by its `id`, so we
@@ -1633,6 +1645,21 @@ pub async fn account_sync_now(
         }
 
         if item.deleted {
+            // F19: never let a server tombstone wipe the secret of a host that
+            // still exists locally — a compromised/malicious server could
+            // otherwise fabricate a tombstone to nuke live passwords / host-key
+            // pins. Legit host deletion removes the host record AND its secrets
+            // together via the host-item path, so a standalone secret tombstone
+            // while the host is alive is not a real deletion. Keep the secret;
+            // just track the rev so we don't reprocess it.
+            let parent_alive = secret_host_id(key)
+                .map(|hid| hostlist.iter().any(|r| record_id(r).as_deref() == Some(hid)))
+                .unwrap_or(false);
+            if parent_alive {
+                cfg.item_revs.insert(key.clone(), item.rev);
+                report.latest_rev = report.latest_rev.max(item.rev);
+                continue;
+            }
             if local_updated <= remote_updated || remote_updated == 0 {
                 if vault::get_opt(&vault_state, key).is_some() {
                     vault::delete_key(&vault_state, key)?;

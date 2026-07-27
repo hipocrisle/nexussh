@@ -24,10 +24,40 @@ use tauri::{AppHandle, Emitter};
 // (nexussh-update-mirror.sh on DE-1) serves byte-identical assets, and since the
 // sha256 in backends.json is verified regardless of source, either path is safe.
 const SELFHOST_MANIFEST_URL: &str = "https://upd.hipogas.org/nexussh/backends/backends.json";
+const SELFHOST_SIG_URL: &str = "https://upd.hipogas.org/nexussh/backends/backends.json.minisig";
 const SELFHOST_ASSET_BASE: &str = "https://upd.hipogas.org/nexussh/backends/";
 const GITHUB_MANIFEST_URL: &str =
     "https://github.com/hipocrisle/nexussh/releases/download/backends/backends.json";
+const GITHUB_SIG_URL: &str =
+    "https://github.com/hipocrisle/nexussh/releases/download/backends/backends.json.minisig";
 const GITHUB_ASSET_BASE: &str = "https://github.com/hipocrisle/nexussh/releases/download/backends/";
+
+// Minisign public key that signs the backends manifest — the SAME key that signs
+// desktop updates (base64 of the key line from tauri.conf.json `updater.pubkey`,
+// key id 796AD36E726FF9E6). The manifest carries per-file sha256 hashes; without a
+// signature over the manifest a compromised mirror/CDN could serve its own binary
+// plus a matching hash (the sha256 alone proves nothing about origin). We verify
+// this signature before trusting ANY hash inside, chaining trust to a key the
+// attacker doesn't hold. See backends.json.minisig, produced at publish time.
+const MANIFEST_MINISIGN_PUBKEY: &str = "RWTm+W9ybtNqed45Ew6zoN/326+tJuN50zBaXsAark/wWeykGI6ofHP5";
+
+/// Verify a minisign signature (`sig_text` = raw `.minisig` file contents) over
+/// `body` against `pubkey_b64` (the base64 key line, not the commented file).
+fn verify_manifest_sig_with(pubkey_b64: &str, body: &str, sig_text: &str) -> Result<(), String> {
+    use minisign_verify::{PublicKey, Signature};
+    let pk = PublicKey::from_base64(pubkey_b64)
+        .map_err(|e| format!("bad embedded pubkey: {e:?}"))?;
+    let sig = Signature::decode(sig_text).map_err(|e| format!("malformed signature: {e:?}"))?;
+    pk.verify(body.as_bytes(), &sig, false)
+        .map_err(|e| format!("manifest signature invalid: {e:?}"))
+}
+
+/// Verify a manifest against the embedded production key (id 796AD36E726FF9E6).
+/// Shared by the backends manifest and the Android update manifest — both are
+/// signed by the same minisign key that signs desktop updates.
+pub(crate) fn verify_manifest_sig(body: &str, sig_text: &str) -> Result<(), String> {
+    verify_manifest_sig_with(MANIFEST_MINISIGN_PUBKEY, body, sig_text)
+}
 
 /// Platform key as used in `backends.json` (e.g. "linux-x86_64", "windows-x86_64").
 pub fn platform_key() -> String {
@@ -154,37 +184,66 @@ fn get_with_retry(url: &str) -> Result<ureq::Response, String> {
     Err(last)
 }
 
-/// Where the last successfully-fetched manifest is cached, so an already-installed
-/// backend keeps working even when both live sources are unreachable.
+/// Where the last successfully-fetched manifest (and its signature) are cached, so
+/// an already-installed backend keeps working even when both live sources are down.
 fn cached_manifest_path() -> Option<PathBuf> {
     Some(backends_dir().ok()?.join("backends.json"))
 }
+fn cached_sig_path() -> Option<PathBuf> {
+    Some(backends_dir().ok()?.join("backends.json.minisig"))
+}
 
-/// Fetch the manifest: self-host (RU-reachable) first, GitHub as fallback, and if
-/// BOTH are down fall back to the last cached copy on disk. On any live success we
-/// refresh the cache. This makes "backend already installed" resilient to the
-/// GitHub-in-RU flakiness that otherwise made the trust/connect flow fail at random.
+/// Fetch the manifest AND its minisign signature, verifying the signature against
+/// the embedded key before trusting the manifest. Self-host (RU-reachable) first,
+/// GitHub as fallback; if BOTH are down fall back to the last cached copy — which
+/// is ALSO re-verified, so a tampered cache file can't slip through. Fail-closed:
+/// no valid signature => no manifest => the backend refuses to install (the sha256
+/// hashes inside are meaningless without a trusted signature over them).
 fn fetch_manifest() -> Result<serde_json::Value, String> {
     let mut errs = Vec::new();
-    for url in [SELFHOST_MANIFEST_URL, GITHUB_MANIFEST_URL] {
-        match get_with_retry(url).and_then(|r| r.into_string().map_err(|e| e.to_string())) {
-            Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-                Ok(v) => {
-                    if let Some(p) = cached_manifest_path() {
-                        let _ = std::fs::write(&p, &body); // best-effort cache
-                    }
-                    return Ok(v);
+    for (murl, surl) in [
+        (SELFHOST_MANIFEST_URL, SELFHOST_SIG_URL),
+        (GITHUB_MANIFEST_URL, GITHUB_SIG_URL),
+    ] {
+        let body = match get_with_retry(murl).and_then(|r| r.into_string().map_err(|e| e.to_string())) {
+            Ok(b) => b,
+            Err(e) => {
+                errs.push(format!("{murl}: {e}"));
+                continue;
+            }
+        };
+        let sig = match get_with_retry(surl).and_then(|r| r.into_string().map_err(|e| e.to_string())) {
+            Ok(s) => s,
+            Err(e) => {
+                errs.push(format!("{surl}: {e}"));
+                continue;
+            }
+        };
+        if let Err(e) = verify_manifest_sig(&body, &sig) {
+            errs.push(format!("{murl}: {e}"));
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(v) => {
+                // Cache both only after a good signature, so the cache is trusted.
+                if let (Some(mp), Some(sp)) = (cached_manifest_path(), cached_sig_path()) {
+                    let _ = std::fs::write(&mp, &body);
+                    let _ = std::fs::write(&sp, &sig);
                 }
-                Err(e) => errs.push(format!("{url}: invalid json: {e}")),
-            },
-            Err(e) => errs.push(format!("{url}: {e}")),
+                return Ok(v);
+            }
+            Err(e) => errs.push(format!("{murl}: invalid json: {e}")),
         }
     }
-    // Both live sources failed — use the cached manifest if we have one.
-    if let Some(p) = cached_manifest_path() {
-        if let Ok(body) = std::fs::read_to_string(&p) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                return Ok(v);
+    // Both live sources failed — use the cached manifest, but re-verify its signature.
+    if let (Some(mp), Some(sp)) = (cached_manifest_path(), cached_sig_path()) {
+        if let (Ok(body), Ok(sig)) = (std::fs::read_to_string(&mp), std::fs::read_to_string(&sp)) {
+            if verify_manifest_sig(&body, &sig).is_ok() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    return Ok(v);
+                }
+            } else {
+                errs.push("cached manifest failed signature check".into());
             }
         }
     }
@@ -395,5 +454,38 @@ mod tests {
             assert_eq!(f, "openconnect");
             assert_eq!(local_filename("libgnutls-30.dll"), "libgnutls-30.dll");
         }
+    }
+
+    // Test vector produced by scripts/gen_minisig_vector.py with a throwaway
+    // Ed25519 key in prehashed 'ED' minisign format — the exact wire format the
+    // production key uses. Proves the verify path accepts a good signature and
+    // rejects tampering / wrong key, independent of the real (secret) key.
+    const TV_PUBKEY: &str = "RWQQIDBAUGBwgLnYy/q2UQRI2upz4NMz2cd0ZDOwP+Uyjg9sJ8X3IM/5";
+    const TV_MANIFEST: &str =
+        r#"{"openconnect":{"platforms":{"x":[{"name":"openconnect","asset":"oc-x","sha256":"aa"}]}}}"#;
+    const TV_SIG: &str = "untrusted comment: signature\nRUQQIDBAUGBwgCaKmv3ZtyBZhVmoFK6tvzLm5qoiuJAXUFKKGgZrReIvmjh4hCEDffrYcDbuw9uUSMtZ+rSZ1+TOkT+EZtIFlQg=\ntrusted comment: backends manifest\nj1+RbkBTXGpTVlxyzAr+rJBr/Hz7G8sNl/Jg+GxRbFRIR8YGFnJjZycFWqH2WTa93A45AU1S7GUspIjl7H3cBA==\n";
+
+    #[test]
+    fn manifest_sig_accepts_valid() {
+        verify_manifest_sig_with(TV_PUBKEY, TV_MANIFEST, TV_SIG)
+            .expect("valid signature must verify");
+    }
+
+    #[test]
+    fn manifest_sig_rejects_tampered_body() {
+        let tampered = TV_MANIFEST.replace("\"aa\"", "\"deadbeef\"");
+        assert!(
+            verify_manifest_sig_with(TV_PUBKEY, &tampered, TV_SIG).is_err(),
+            "a modified manifest (attacker-swapped hash) must fail signature check"
+        );
+    }
+
+    #[test]
+    fn manifest_sig_rejects_wrong_key() {
+        // The real production key must NOT validate a signature made by another key.
+        assert!(
+            verify_manifest_sig_with(MANIFEST_MINISIGN_PUBKEY, TV_MANIFEST, TV_SIG).is_err(),
+            "signature from a different key must not verify under the production key"
+        );
     }
 }

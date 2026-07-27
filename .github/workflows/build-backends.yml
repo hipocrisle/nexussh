@@ -147,10 +147,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Assemble manifest + publish rolling `backends` release
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          # Same minisign key that signs desktop updates. The client verifies the
+          # manifest signature against the embedded pubkey before trusting any
+          # sha256 inside it (see backends.rs), so a compromised mirror/CDN can't
+          # swap in its own binary + matching hash.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -e
           sudo apt-get update -qq && sudo apt-get install -y -qq jq
@@ -184,11 +193,19 @@ jobs:
           }' > backends.json
           cat backends.json; ls -la
 
+          # Sign the manifest with the minisign update key. `tauri signer sign`
+          # writes backends.json.sig = base64(raw minisig); the client verifies the
+          # RAW minisig (minisign-verify), so decode it to backends.json.minisig.
+          npm install -g @tauri-apps/cli@^2 >/dev/null 2>&1
+          tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" backends.json
+          base64 -d backends.json.sig > backends.json.minisig
+          echo "--- backends.json.minisig ---"; cat backends.json.minisig
+
           if ! gh release view backends --repo "$REPO" >/dev/null 2>&1; then
             gh release create backends --repo "$REPO" --prerelease --target main \
-              --title backends --notes "Rolling VPN backend binaries (downloaded on-demand, verified via backends.json sha256)."
+              --title backends --notes "Rolling VPN backend binaries (downloaded on-demand, verified via a minisign signature over backends.json)."
           fi
-          # Upload every produced binary (Linux bins, Windows .exe + all DLLs) + manifest.
+          # Upload every produced binary (Linux bins, Windows .exe + all DLLs) + manifest + signature.
           gh release upload backends \
-            openconnect-linux-x86_64 ocproxy-linux-x86_64 openconnect-windows-x86_64.exe *.dll backends.json \
+            openconnect-linux-x86_64 ocproxy-linux-x86_64 openconnect-windows-x86_64.exe *.dll backends.json backends.json.minisig \
             --repo "$REPO" --clobber

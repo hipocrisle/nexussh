@@ -177,6 +177,22 @@ jobs:
           echo "APK: $(stat -c%s dist-android/nexussh-arm64-v8a.apk) bytes, sha256=$SHA"
           cat dist-android/latest-android.json
 
+      # Sign the update manifest with the minisign update key. The in-app updater
+      # verifies this signature against the embedded pubkey before trusting the
+      # APK url/sha256 (fail-closed — see android_updater.rs), so a compromised
+      # mirror/CDN can't serve its own APK plus a matching hash.
+      - name: Sign the Android update manifest
+        working-directory: desktop/dist-android
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          npm install -g @tauri-apps/cli@^2 >/dev/null 2>&1
+          tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" latest-android.json
+          base64 -d latest-android.json.sig > latest-android.json.minisig
+          echo "--- latest-android.json.minisig ---"; cat latest-android.json.minisig
+
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -196,5 +212,6 @@ jobs:
           files: |
             desktop/dist-android/nexussh-arm64-v8a.apk
             desktop/dist-android/latest-android.json
+            desktop/dist-android/latest-android.json.minisig
           draft: true
           prerelease: false

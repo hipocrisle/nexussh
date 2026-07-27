@@ -42,15 +42,30 @@ pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdate
     // manifest also rewrites the APK url to upd.hipogas.org.
     const ENDPOINT: &str =
         "https://upd.hipogas.org/nexussh/android/latest-android.json";
-    let body = tokio::task::spawn_blocking(|| -> Result<String, String> {
-        ureq::get(ENDPOINT)
+    const SIG_ENDPOINT: &str =
+        "https://upd.hipogas.org/nexussh/android/latest-android.json.minisig";
+    let (body, sig) = tokio::task::spawn_blocking(|| -> Result<(String, String), String> {
+        let body = ureq::get(ENDPOINT)
             .call()
             .map_err(|e| format!("fetch latest-android.json: {e}"))?
             .into_string()
-            .map_err(|e| format!("read body: {e}"))
+            .map_err(|e| format!("read body: {e}"))?;
+        let sig = ureq::get(SIG_ENDPOINT)
+            .call()
+            .map_err(|e| format!("fetch update signature: {e}"))?
+            .into_string()
+            .map_err(|e| format!("read signature: {e}"))?;
+        Ok((body, sig))
     })
     .await
     .map_err(|e| format!("join: {e}"))??;
+
+    // Verify the manifest signature against the embedded key BEFORE trusting its
+    // version/url/sha256. The sha256 alone doesn't prove origin — a compromised
+    // mirror could serve its own APK + a matching hash. Fail closed: no valid
+    // signature => no update offered.
+    crate::backends::verify_manifest_sig(&body, &sig)
+        .map_err(|e| format!("android update manifest signature check failed: {e}"))?;
 
     let v: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("parse latest-android.json: {e}"))?;
@@ -67,11 +82,17 @@ pub async fn android_check_update(app: AppHandle) -> Result<Option<AndroidUpdate
         .get("sha256")
         .and_then(|x| x.as_str())
         .map(|s| s.trim().to_lowercase());
-    let url = v
+    // The signed manifest carries the ORIGINAL GitHub APK url (so its bytes — and
+    // thus the signature — are identical on GitHub and on the mirror). GitHub's
+    // release CDN doesn't traverse our VPN exit, so download from the same mirror
+    // we fetched the manifest from: keep the filename, swap the host/dir. Done
+    // AFTER signature verification, so this rewrite can't be abused.
+    let orig_url = v
         .get("url")
         .and_then(|x| x.as_str())
-        .ok_or("latest-android.json: missing url field")?
-        .to_string();
+        .ok_or("latest-android.json: missing url field")?;
+    let file = orig_url.rsplit('/').next().unwrap_or("nexussh-arm64-v8a.apk");
+    let url = format!("https://upd.hipogas.org/nexussh/android/{file}");
     Ok(Some(AndroidUpdateInfo {
         version: remote,
         current_version: cur,

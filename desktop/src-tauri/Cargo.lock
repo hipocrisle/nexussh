@@ -3502,6 +3502,7 @@ dependencies = [
  "hkdf 0.12.4",
  "jni 0.21.1",
  "libc",
+ "minisign-verify",
  "rand_core 0.6.4",
  "rayon",
  "russh",

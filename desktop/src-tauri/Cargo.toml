@@ -57,6 +57,10 @@ base64 = "0.22.1"
 tokio-socks = "0.5.2"
 ureq = { version = "2.12", features = ["json"] }
 sha2 = "0.10"
+# Verify the signature on downloaded manifests (backends.json / android update
+# manifest) against an embedded pubkey — same minisign key that signs desktop
+# updates. Already in the tree via tauri-plugin-updater; pinned here as a direct dep.
+minisign-verify = "0.2"
 
 # --- Account-sync (Phase 0) client-side E2E crypto (account_crypto.rs) ---
 # Split-KDF (Argon2id via the existing `argon2` dep) -> HKDF-SHA256 sub-keys

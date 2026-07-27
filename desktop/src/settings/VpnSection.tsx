@@ -394,6 +394,12 @@ export function VpnSection({ t }: Props) {
                   <div className="text-[11px] mt-0.5 truncate" style={{ color: t.textMuted }}>
                     {p.username}@{p.server}{p.requireEncryption ? " · 🔒" : ""}
                   </div>
+                  {/* PSK storage state (audit F11): empty in LS = it lives in the
+                      encrypted vault; non-empty = a legacy inline copy still in
+                      localStorage, moved on the next vault unlock. */}
+                  <div className="text-[11px] mt-0.5" style={{ color: p.psk ? "#d68a00" : t.textMuted }}>
+                    {p.psk ? tr("settings.vpn.l2tp.psk_in_ls") : tr("settings.vpn.l2tp.psk_in_vault")}
+                  </div>
                   <div className="text-[11px] mt-1 flex items-center gap-1.5" style={{ color: t.textMuted }}>
                     <span>{tr("settings.vpn.l2tp.routes")}</span>
                     <input

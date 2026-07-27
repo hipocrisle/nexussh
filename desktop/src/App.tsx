@@ -1422,6 +1422,17 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vaultChecked, appLocked]);
 
+  // Migrate legacy plaintext VPN secrets into the vault once it's available
+  // (audit F11). The vault unlocks at app entry — often BEFORE this component
+  // mounts — so the VAULT_UNLOCKED_EVENT listener can miss it; this effect
+  // covers that by running as soon as the vault is known-unlocked. Idempotent.
+  const vpnSecretsMigratedRef = useRef(false);
+  useEffect(() => {
+    if (vpnSecretsMigratedRef.current || !vaultChecked || appLocked) return;
+    vpnSecretsMigratedRef.current = true;
+    migrateL2tpSecrets().catch(() => {});
+  }, [vaultChecked, appLocked]);
+
   // Force every terminal to re-fit after a layout change (split created/closed,
   // divider dragged, pane moved, workspace switched). In the flat-layer split
   // model a pane's per-terminal ResizeObserver did NOT reliably fire on the

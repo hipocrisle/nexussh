@@ -276,16 +276,28 @@ mod imp {
 
     pub async fn connect(p: &L2tpProfile, password: &str, name: &str, host: &str) -> Result<(), String> {
         let enc = if p.require_encryption { "Required" } else { "Optional" };
-        // Build the ELEVATED setup: it (idempotently, -Force) creates the all-user
-        // L2TP connection with the PSK, proactively applies the NAT-T registry fix
-        // (we're already elevated), and bakes in the split-tunnel routes so the OS
-        // installs them on connect — no per-connect admin afterwards.
+        // Build the ELEVATED setup: it creates the all-user L2TP connection with
+        // the PSK, proactively applies the NAT-T registry fix (we're already
+        // elevated), and bakes in the split-tunnel routes so the OS installs them
+        // on connect — no per-connect admin afterwards.
+        //
+        // Add-VpnConnection -Force does NOT overwrite an existing entry (it only
+        // suppresses the confirm prompt) — a leftover profile from a previous
+        // session (app restarted / rasdial failed / crash) makes it fail with
+        // "This VPN connection has already been created". We only reach connect()
+        // when the manager has no LIVE tunnel for this profile (see
+        // acquire_system_vpn), so any existing entry is stale: disconnect + remove
+        // it first, then create fresh — genuinely idempotent, and re-applies the
+        // current PSK/routes if the profile changed.
         //
         // -SplitTunneling $true = "use remote gateway" OFF: the VPN is NEVER the
         // default gateway; only the host + profile routes go through it.
         let mut inner = format!(
             "reg add 'HKLM\\SYSTEM\\CurrentControlSet\\Services\\PolicyAgent' \
                /v AssumeUDPEncapsulationContextOnSendRule /t REG_DWORD /d 2 /f | Out-Null; \
+             rasdial '{name}' /disconnect 2>&1 | Out-Null; \
+             Remove-VpnConnection -Name '{name}' -AllUserConnection -Force \
+               -ErrorAction SilentlyContinue | Out-Null; \
              Add-VpnConnection -Name '{name}' -ServerAddress '{server}' -TunnelType L2tp \
                -L2tpPsk '{psk}' -EncryptionLevel {enc} -AuthenticationMethod MSChapv2 \
                -SplitTunneling $true -AllUserConnection -RememberCredential:$false -Force | Out-Null;",

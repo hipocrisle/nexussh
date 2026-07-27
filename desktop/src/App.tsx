@@ -95,7 +95,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID, getL2tpProfile, toL2tpBackend, l2tpActive, type L2tpProfile } from "./vpn";
+import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID, getL2tpProfile, toL2tpBackendWithSecret, migrateL2tpSecrets, l2tpActive, type L2tpProfile } from "./vpn";
 import { BackendProgress } from "./BackendProgress";
 import { CorpVpnStatus } from "./CorpVpnStatus";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
@@ -1003,8 +1003,9 @@ function App() {
     if (!h.l2tpProfileId) return null;
     const p = getL2tpProfile(h.l2tpProfileId);
     if (!p) return null;
-    const backend = toL2tpBackend(p);
-    if (await l2tpActive(p).catch(() => false)) {
+    // PSK is pulled from the vault (audit F11/F29) — not plaintext localStorage.
+    const backend = await toL2tpBackendWithSecret(p);
+    if (await l2tpActive(backend).catch(() => false)) {
       return { profile: backend, password: "" };
     }
     const entered = await askL2tpPassword(p);
@@ -1915,6 +1916,9 @@ function App() {
           setAppLocked(false);
           vaultStatus().then(setVault).catch(() => {});
           refreshHosts(); // re-read hosts now that the vault is open
+          // Vault just opened → move any legacy plaintext VPN secrets into it
+          // (audit F11/F29). No-ops once migrated.
+          migrateL2tpSecrets().catch(() => {});
         }).then(track);
       })
       .catch(() => {});

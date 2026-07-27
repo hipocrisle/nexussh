@@ -4,6 +4,7 @@
 // chosen node into a local SOCKS proxy that flagged SSH hosts dial through.
 
 import { invoke } from "@tauri-apps/api/core";
+import { vaultGet, vaultSet, vaultDelete } from "./vault";
 
 // Mirrors the Rust VpnNode (serde snake_case).
 export interface VpnNode {
@@ -292,6 +293,49 @@ export function toL2tpBackend(p: L2tpProfile): L2tpBackend {
   };
 }
 
+// The IPsec PSK is a secret and must NOT sit in plaintext localStorage (audit
+// F11/F29). It lives in the age-vault under this key; the LS profile keeps psk="".
+// The built-in VPN is single-user (the owner) and they run a vault, so the
+// coupling to an unlocked vault is acceptable.
+function l2tpPskVaultKey(id: string): string {
+  return `nexussh.l2tp.${id}.psk`;
+}
+
+/** Read a profile's PSK: prefer the vault; fall back to a not-yet-migrated inline
+ *  value so legacy profiles keep working until migrateL2tpSecrets() moves them. */
+export async function getL2tpPsk(p: L2tpProfile): Promise<string> {
+  if (p.psk) return p.psk; // legacy inline (pre-migration)
+  try {
+    return await vaultGet(l2tpPskVaultKey(p.id));
+  } catch {
+    return "";
+  }
+}
+
+/** Backend shape with the PSK resolved from the vault. Use at connect time. */
+export async function toL2tpBackendWithSecret(p: L2tpProfile): Promise<L2tpBackend> {
+  return { ...toL2tpBackend(p), psk: await getL2tpPsk(p) };
+}
+
+/** Move any inline PSKs from localStorage into the vault (one-time, idempotent).
+ *  Silently no-ops if the vault is locked/unavailable — retried on next call. */
+export async function migrateL2tpSecrets(): Promise<void> {
+  const list = loadL2tpProfiles();
+  let dirty = false;
+  for (const p of list) {
+    if (p.psk) {
+      try {
+        await vaultSet(l2tpPskVaultKey(p.id), p.psk);
+        p.psk = "";
+        dirty = true;
+      } catch {
+        return; // vault locked — leave inline for now, try again later
+      }
+    }
+  }
+  if (dirty) saveL2tpProfiles(list);
+}
+
 const LS_L2TP = "nexussh.l2tpProfiles";
 
 export function loadL2tpProfiles(): L2tpProfile[] {
@@ -314,27 +358,41 @@ export function getL2tpProfile(id: string | null | undefined): L2tpProfile | und
   return loadL2tpProfiles().find((p) => p.id === id);
 }
 
-export function addL2tpProfile(p: Omit<L2tpProfile, "id">): L2tpProfile {
-  const profile: L2tpProfile = { ...p, id: "l2tp-" + crypto.randomUUID() };
+export async function addL2tpProfile(p: Omit<L2tpProfile, "id">): Promise<L2tpProfile> {
+  const id = "l2tp-" + crypto.randomUUID();
+  // PSK → vault, never plaintext LS.
+  await vaultSet(l2tpPskVaultKey(id), p.psk ?? "");
+  const profile: L2tpProfile = { ...p, psk: "", id };
   saveL2tpProfiles([...loadL2tpProfiles(), profile]);
   return profile;
 }
 
-export function updateL2tpProfile(id: string, patch: Partial<L2tpProfile>) {
+export async function updateL2tpProfile(id: string, patch: Partial<L2tpProfile>) {
   const list = loadL2tpProfiles();
   const i = list.findIndex((p) => p.id === id);
   if (i < 0) return;
-  list[i] = { ...list[i], ...patch, id };
+  const next = { ...list[i], ...patch, id };
+  if (patch.psk !== undefined) {
+    await vaultSet(l2tpPskVaultKey(id), patch.psk); // secret → vault
+    next.psk = ""; // never persist the PSK in LS
+  }
+  list[i] = next;
   saveL2tpProfiles(list);
 }
 
-export function removeL2tpProfile(id: string) {
+export async function removeL2tpProfile(id: string) {
   saveL2tpProfiles(loadL2tpProfiles().filter((p) => p.id !== id));
+  try {
+    await vaultDelete(l2tpPskVaultKey(id));
+  } catch {
+    /* vault locked / key absent — best effort */
+  }
 }
 
-/** Whether a system L2TP VPN for this profile is already up (skip password + reuse). */
-export async function l2tpActive(p: L2tpProfile): Promise<boolean> {
-  return await invoke<boolean>("l2tp_active", { profile: toL2tpBackend(p) });
+/** Whether a system L2TP VPN for this (resolved-with-secret) profile is already
+ *  up (skip password + reuse). */
+export async function l2tpActive(backend: L2tpBackend): Promise<boolean> {
+  return await invoke<boolean>("l2tp_active", { profile: backend });
 }
 
 /** Force-disconnect all system L2TP VPNs (manual recovery). Returns how many. */

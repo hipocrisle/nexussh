@@ -108,23 +108,29 @@ export function VpnSection({ t }: Props) {
   const [lEnc, setLEnc] = useState(true);
   const [lDiscMsg, setLDiscMsg] = useState<string | null>(null);
 
-  function onAddL2tp() {
+  async function onAddL2tp() {
     if (!lServer.trim() || !lUser.trim() || !lPsk.trim()) return;
-    addL2tpProfile({
-      name: lName.trim() || lServer.trim(),
-      server: lServer.trim(),
-      username: lUser.trim(),
-      psk: lPsk.trim(),
-      requireEncryption: lEnc,
-      routes: lRoutes.split(/[\s,]+/).filter((r) => r.trim() !== ""),
-    });
+    try {
+      await addL2tpProfile({
+        name: lName.trim() || lServer.trim(),
+        server: lServer.trim(),
+        username: lUser.trim(),
+        psk: lPsk.trim(), // stored into the vault, not localStorage
+        requireEncryption: lEnc,
+        routes: lRoutes.split(/[\s,]+/).filter((r) => r.trim() !== ""),
+      });
+    } catch (e) {
+      // PSK save needs an unlocked vault.
+      setCError(`${tr("settings.vpn.l2tp.psk")}: ${String(e)}`);
+      return;
+    }
     setL2tp(loadL2tpProfiles());
     setLName(""); setLServer(""); setLUser(""); setLPsk(""); setLRoutes(""); setLEnc(true);
   }
 
-  function onDeleteL2tp(id: string) {
+  async function onDeleteL2tp(id: string) {
     if (!confirm(tr("settings.vpn.delete_confirm"))) return;
-    removeL2tpProfile(id);
+    await removeL2tpProfile(id);
     setL2tp(loadL2tpProfiles());
   }
 
@@ -393,8 +399,8 @@ export function VpnSection({ t }: Props) {
                     <input
                       type="text"
                       value={(p.routes ?? []).join(", ")}
-                      onChange={(e) => {
-                        updateL2tpProfile(p.id, {
+                      onChange={async (e) => {
+                        await updateL2tpProfile(p.id, {
                           routes: e.target.value.split(/[\s,]+/).filter((r) => r.trim() !== ""),
                         });
                         setL2tp(loadL2tpProfiles());

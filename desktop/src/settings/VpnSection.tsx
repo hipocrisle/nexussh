@@ -12,6 +12,7 @@ import {
   addProfileFromUrl,
   refreshProfile,
   removeProfile,
+  vpnSecretInVault,
   type VpnProfile,
   loadCorpProfiles,
   addCorpProfile,
@@ -233,8 +234,12 @@ export function VpnSection({ t }: Props) {
                   <div className="text-[11px] mt-0.5" style={{ color: t.textMuted }}>
                     {tr("settings.vpn.node_count", { n: p.nodes.length })} · {p.updatedAt.slice(0, 10)}
                   </div>
+                  {/* uuid/subscription storage state (audit F12). */}
+                  <div className="text-[11px] mt-0.5" style={{ color: vpnSecretInVault(p) ? t.textMuted : "#d68a00" }}>
+                    {vpnSecretInVault(p) ? tr("settings.vpn.secret_in_vault") : tr("settings.vpn.secret_in_ls")}
+                  </div>
                 </div>
-                {p.subUrl && (
+                {(p.subUrl || p.hasSubUrl) && (
                   <button
                     type="button"
                     onClick={() => onRefresh(p.id)}

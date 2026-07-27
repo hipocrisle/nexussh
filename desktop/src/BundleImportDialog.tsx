@@ -69,7 +69,7 @@ export function BundleImportDialog({ onClose }: Props) {
     setError(null);
     try {
       const { added, skipped } = await importBundleHosts(payload);
-      const vpnAdded = importBundleVpn(payload);
+      const vpnAdded = await importBundleVpn(payload);
       setDone(t("bundle.imported", { added, skipped, vpn: vpnAdded }));
     } catch (e) {
       setError(String(e));

@@ -118,7 +118,7 @@ export async function importBundleHosts(
 }
 
 /** Import the VPN profiles carried in a bundle (if any). Returns count added. */
-export function importBundleVpn(payload: BundlePayload): number {
+export async function importBundleVpn(payload: BundlePayload): Promise<number> {
   if (!payload.vpn || !payload.vpn.length) return 0;
-  return importProfiles(payload.vpn);
+  return await importProfiles(payload.vpn);
 }

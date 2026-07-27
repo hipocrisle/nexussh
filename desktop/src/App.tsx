@@ -95,7 +95,7 @@ import { ShortcutsOverlay } from "./ShortcutsOverlay";
 import { MobileTopBar } from "./MobileTopBar";
 import { MobileTabBar, type MobileTab } from "./MobileTabBar";
 import type { VpnNode } from "./vpn";
-import { getProfile, resolveExit, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID, getL2tpProfile, toL2tpBackendWithSecret, migrateL2tpSecrets, l2tpActive, type L2tpProfile } from "./vpn";
+import { getProfile, resolveExitWithSecret, migrateVpnSecrets, getCorpProfile, toCorpBackend, corpTunnelActive, type CorpVpnProfile, ensureVpnBackend, VPN_BACKEND_ID, getL2tpProfile, toL2tpBackendWithSecret, migrateL2tpSecrets, l2tpActive, type L2tpProfile } from "./vpn";
 import { BackendProgress } from "./BackendProgress";
 import { CorpVpnStatus } from "./CorpVpnStatus";
 import { HostRecord, bumpLastUsed, refreshHosts, reconcileHostEncryption, hostsEncrypted, newHostId, saveHost, listHosts, onHostsChanged } from "./hosts";
@@ -476,20 +476,27 @@ function WindowControls() {
   );
 }
 
-// Resolve a host's built-in-VPN choice into a concrete node (or null = direct).
+// Does this host route through the built-in (xray) VPN? Metadata-only (no vault),
+// used by reachability guards to decide direct-vs-VPN without needing the secret.
+function hostUsesVpn(h: HostRecord): boolean {
+  return !!(h.useVpn && h.vpnProfileId);
+}
+
+// Resolve a host's built-in-VPN choice into a concrete node with its uuid filled
+// from the vault (audit F12), or null = direct.
 // FAIL-CLOSED: if the host is pinned to a VPN profile but that profile (or its
 // exit) is missing on this device — e.g. it wasn't synced, or was deleted — we
 // THROW instead of returning null. Returning null silently sent the SSH session
 // DIRECT, leaking it outside the VPN the user explicitly required (audit F25).
-function resolveHostVpn(h: HostRecord): VpnNode | null {
-  if (!h.useVpn || !h.vpnProfileId) return null; // genuinely direct
+async function resolveHostVpnNode(h: HostRecord): Promise<VpnNode | null> {
+  if (!hostUsesVpn(h)) return null; // genuinely direct
   const profile = getProfile(h.vpnProfileId);
   if (!profile) {
     throw new Error(
       `VPN-профиль этого хоста не найден на устройстве — соединение отменено (не идём напрямую в обход VPN). Добавьте/синхронизируйте профиль в Настройках.`,
     );
   }
-  const node = resolveExit(profile, h.vpnExit);
+  const node = await resolveExitWithSecret(profile, h.vpnExit);
   if (!node) {
     throw new Error(
       `Не удалось выбрать выходной узел VPN-профиля — соединение отменено (не идём напрямую).`,
@@ -917,7 +924,7 @@ function App() {
     // path that asks for a password (quick-connect, always-ask, reconnect). An
     // offline host says "unreachable" instead of being mistaken for a wrong
     // password. Skip VPN hosts (SOCKS path); fail-open if the probe errors.
-    if (!resolveHostVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
+    if (!hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -1431,6 +1438,7 @@ function App() {
     if (vpnSecretsMigratedRef.current || !vaultChecked || appLocked) return;
     vpnSecretsMigratedRef.current = true;
     migrateL2tpSecrets().catch(() => {});
+    migrateVpnSecrets().catch(() => {}); // xray uuids + subUrl → vault (F12)
   }, [vaultChecked, appLocked]);
 
   // Force every terminal to re-fit after a layout change (split created/closed,
@@ -1559,7 +1567,7 @@ function App() {
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
         l2tp: await resolveHostL2tp(h),
-        vpn: resolveHostVpn(h),
+        vpn: await resolveHostVpnNode(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,
@@ -1928,8 +1936,9 @@ function App() {
           vaultStatus().then(setVault).catch(() => {});
           refreshHosts(); // re-read hosts now that the vault is open
           // Vault just opened → move any legacy plaintext VPN secrets into it
-          // (audit F11/F29). No-ops once migrated.
+          // (audit F11/F29/F12). No-ops once migrated.
           migrateL2tpSecrets().catch(() => {});
+          migrateVpnSecrets().catch(() => {});
         }).then(track);
       })
       .catch(() => {});
@@ -2047,7 +2056,7 @@ function App() {
     // host should say "unreachable", not be mistaken for a wrong password after
     // a long hang. Skip for VPN hosts (they go through SOCKS — a direct TCP
     // probe would falsely fail). Fail-open if the probe itself errors.
-    if (!resolveHostVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
+    if (!hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -2090,7 +2099,7 @@ function App() {
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
         l2tp: await resolveHostL2tp(h),
-        vpn: resolveHostVpn(h),
+        vpn: await resolveHostVpnNode(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,
@@ -2150,7 +2159,7 @@ function App() {
       auth,
       corp_vpn: await resolveHostCorpVpn(h),
       l2tp: await resolveHostL2tp(h),
-      vpn: resolveHostVpn(h),
+      vpn: await resolveHostVpnNode(h),
       allow_legacy: h.allowLegacy,
       encrypt_known_hosts: hostsEncrypted(),
       timeout: settings.timeout,
@@ -2448,7 +2457,7 @@ function App() {
         port: host.port,
         user,
         auth,
-        vpn: resolveHostVpn(host),
+        vpn: await resolveHostVpnNode(host),
         allow_legacy: host.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         record_history: doRec,
@@ -2539,7 +2548,7 @@ function App() {
         auth,
         corp_vpn: await resolveHostCorpVpn(h),
         l2tp: await resolveHostL2tp(h),
-        vpn: resolveHostVpn(h),
+        vpn: await resolveHostVpnNode(h),
         allow_legacy: h.allowLegacy,
         encrypt_known_hosts: hostsEncrypted(),
         timeout: settings.timeout,

@@ -29,8 +29,12 @@ export interface VpnNode {
 export interface VpnProfile {
   id: string;
   name: string;
-  /** Subscription URL (re-fetched on refresh). Empty if imported from raw text. */
+  /** Subscription URL (re-fetched on refresh). Empty if imported from raw text.
+   *  A SECRET (carries a token) → moved to the vault; blank in the LS copy. */
   subUrl: string;
+  /** Metadata flag kept in LS (the URL itself is in the vault): this profile was
+   *  imported from a subscription URL, so it can be refreshed. */
+  hasSubUrl?: boolean;
   nodes: VpnNode[];
   updatedAt: string; // ISO
 }
@@ -55,6 +59,92 @@ function saveProfiles(list: VpnProfile[]) {
 export function getProfile(id: string | null | undefined): VpnProfile | undefined {
   if (!id) return undefined;
   return loadProfiles().find((p) => p.id === id);
+}
+
+// ─── xray secrets → vault (audit F12) ─────────────────────────────────────────
+// The VLESS node uuids and the subscription URL are secrets and must not sit in
+// plaintext localStorage. They live in the age-vault; the LS profile keeps each
+// node's uuid="" and subUrl="". The built-in VPN is single-user (the owner runs
+// a vault that unlocks at app entry), so the vault coupling is fine.
+interface VpnSecret {
+  subUrl: string;
+  uuids: Record<string, string>; // node tag → uuid
+}
+
+function vpnSecretVaultKey(id: string): string {
+  return `nexussh.vpn.${id}`;
+}
+
+/** Pull the per-node uuids + subUrl for a profile out of the vault. */
+async function getVpnSecret(id: string): Promise<VpnSecret> {
+  try {
+    const raw = await vaultGet(vpnSecretVaultKey(id));
+    if (!raw) return { subUrl: "", uuids: {} };
+    const p = JSON.parse(raw);
+    return { subUrl: p.subUrl ?? "", uuids: p.uuids ?? {} };
+  } catch {
+    return { subUrl: "", uuids: {} };
+  }
+}
+
+/** Write a profile's secrets (node uuids + subUrl) into the vault. */
+async function putVpnSecret(id: string, profile: VpnProfile): Promise<void> {
+  const uuids: Record<string, string> = {};
+  for (const n of profile.nodes) if (n.uuid) uuids[n.tag] = n.uuid;
+  const sec: VpnSecret = { subUrl: profile.subUrl, uuids };
+  await vaultSet(vpnSecretVaultKey(id), JSON.stringify(sec));
+}
+
+/** Return a copy of a profile with node uuids + subUrl blanked (LS-safe form).
+ *  Keeps a `hasSubUrl` flag so the UI still knows the profile is refreshable. */
+function stripVpnSecret(profile: VpnProfile): VpnProfile {
+  return {
+    ...profile,
+    subUrl: "",
+    hasSubUrl: !!(profile.subUrl || profile.hasSubUrl),
+    nodes: profile.nodes.map((n) => ({ ...n, uuid: "" })),
+  };
+}
+
+/** True if a profile still carries inline secrets in LS (pre-migration). */
+function hasInlineVpnSecret(p: VpnProfile): boolean {
+  return !!p.subUrl || p.nodes.some((n) => !!n.uuid);
+}
+
+/** Whether a profile's secrets have been moved into the vault (for the UI badge). */
+export function vpnSecretInVault(p: VpnProfile): boolean {
+  return !hasInlineVpnSecret(p);
+}
+
+/** Resolve an exit node with its uuid filled from the vault (connect-time). */
+export async function resolveExitWithSecret(
+  profile: VpnProfile,
+  exit?: string | null,
+): Promise<VpnNode | undefined> {
+  const node = resolveExit(profile, exit);
+  if (!node) return undefined;
+  if (node.uuid) return node; // legacy inline (pre-migration)
+  const sec = await getVpnSecret(profile.id);
+  return { ...node, uuid: sec.uuids[node.tag] ?? "" };
+}
+
+/** Move any inline xray secrets from localStorage into the vault (idempotent).
+ *  No-ops silently if the vault is locked; retried on next call. */
+export async function migrateVpnSecrets(): Promise<void> {
+  const list = loadProfiles();
+  let dirty = false;
+  for (let i = 0; i < list.length; i++) {
+    if (hasInlineVpnSecret(list[i])) {
+      try {
+        await putVpnSecret(list[i].id, list[i]);
+        list[i] = stripVpnSecret(list[i]);
+        dirty = true;
+      } catch {
+        return; // vault locked — leave inline, retry later
+      }
+    }
+  }
+  if (dirty) saveProfiles(list);
 }
 
 // --- backend command wrappers ---------------------------------------------
@@ -84,7 +174,8 @@ export async function addProfileFromUrl(name: string, url: string): Promise<VpnP
     nodes,
     updatedAt: new Date().toISOString(),
   };
-  saveProfiles([...loadProfiles(), profile]);
+  await putVpnSecret(profile.id, profile); // uuids + subUrl → vault
+  saveProfiles([...loadProfiles(), stripVpnSecret(profile)]);
   return profile;
 }
 
@@ -98,7 +189,8 @@ export async function addProfileFromText(name: string, text: string): Promise<Vp
     nodes,
     updatedAt: new Date().toISOString(),
   };
-  saveProfiles([...loadProfiles(), profile]);
+  await putVpnSecret(profile.id, profile); // uuids → vault
+  saveProfiles([...loadProfiles(), stripVpnSecret(profile)]);
   return profile;
 }
 
@@ -106,21 +198,29 @@ export async function addProfileFromText(name: string, text: string): Promise<Vp
 export async function refreshProfile(id: string): Promise<VpnProfile | undefined> {
   const list = loadProfiles();
   const p = list.find((x) => x.id === id);
-  if (!p || !p.subUrl) return p;
-  const text = await vpnFetchSubscription(p.subUrl);
-  p.nodes = await vpnParseSubscription(text);
-  p.updatedAt = new Date().toISOString();
+  if (!p) return undefined;
+  // subUrl now lives in the vault (blanked in LS); fall back to any inline value.
+  const sec = await getVpnSecret(id);
+  const subUrl = p.subUrl || sec.subUrl;
+  if (!subUrl) return p;
+  const text = await vpnFetchSubscription(subUrl);
+  const nodes = await vpnParseSubscription(text);
+  const full: VpnProfile = { ...p, subUrl, nodes, updatedAt: new Date().toISOString() };
+  await putVpnSecret(id, full); // refreshed uuids + subUrl → vault
+  const i = list.findIndex((x) => x.id === id);
+  list[i] = stripVpnSecret(full);
   saveProfiles(list);
-  return p;
+  return full;
 }
 
 export function removeProfile(id: string) {
   saveProfiles(loadProfiles().filter((p) => p.id !== id));
+  vaultDelete(vpnSecretVaultKey(id)).catch(() => {});
 }
 
 /** Merge imported profiles into local storage, deduping by subUrl (or name
  *  when the URL is empty). Returns how many were newly added. */
-export function importProfiles(incoming: VpnProfile[]): number {
+export async function importProfiles(incoming: VpnProfile[]): Promise<number> {
   const list = loadProfiles();
   const seen = new Set(list.map((p) => p.subUrl || p.name));
   let added = 0;
@@ -128,7 +228,10 @@ export function importProfiles(incoming: VpnProfile[]): number {
     const key = p.subUrl || p.name;
     if (seen.has(key)) continue;
     seen.add(key);
-    list.push({ ...p, id: newId() });
+    const id = newId();
+    const full = { ...p, id };
+    await putVpnSecret(id, full); // secrets → vault
+    list.push(stripVpnSecret(full));
     added += 1;
   }
   if (added) saveProfiles(list);

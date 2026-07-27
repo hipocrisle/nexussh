@@ -1158,7 +1158,7 @@ pub async fn account_repull_snippets(
             continue;
         }
         let ct = B64.decode(&item.ciphertext)?;
-        let plaintext = ac::decrypt_item(&ct, &user_key)?;
+        let plaintext = ac::decrypt_item(&ct, &user_key, item.item_id.as_bytes())?;
         let remote_rec: serde_json::Map<String, serde_json::Value> =
             match serde_json::from_slice(&plaintext) {
                 Ok(serde_json::Value::Object(m)) => m,
@@ -1521,7 +1521,7 @@ pub async fn account_sync_now(
                 continue;
             }
             let ct = B64.decode(&item.ciphertext)?;
-            let plaintext = ac::decrypt_item(&ct, &user_key)?;
+            let plaintext = ac::decrypt_item(&ct, &user_key, key.as_bytes())?;
             let remote_rec: serde_json::Map<String, serde_json::Value> =
                 match serde_json::from_slice(&plaintext) {
                     Ok(serde_json::Value::Object(m)) => m,
@@ -1590,7 +1590,7 @@ pub async fn account_sync_now(
 
             // Decrypt the record JSON.
             let ct = B64.decode(&item.ciphertext)?;
-            let plaintext = ac::decrypt_item(&ct, &user_key)?;
+            let plaintext = ac::decrypt_item(&ct, &user_key, key.as_bytes())?;
             let remote_rec: serde_json::Map<String, serde_json::Value> =
                 match serde_json::from_slice(&plaintext) {
                     Ok(serde_json::Value::Object(m)) => m,
@@ -1676,7 +1676,7 @@ pub async fn account_sync_now(
         }
 
         let ct = B64.decode(&item.ciphertext)?;
-        let plaintext = ac::decrypt_item(&ct, &user_key)?;
+        let plaintext = ac::decrypt_item(&ct, &user_key, key.as_bytes())?;
         let remote_value = String::from_utf8_lossy(&plaintext).into_owned();
         let local_value = vault::get_opt(&vault_state, key);
 
@@ -1823,7 +1823,7 @@ fn build_push_changes(
             // Keep local_updated aligned with what we're uploading so the next
             // pull's LWW compares against the right timestamp.
             cfg.updated_at.insert(item_id.clone(), updated_at);
-            let ct = ac::encrypt_item(&bytes, user_key)?;
+            let ct = ac::encrypt_item(&bytes, user_key, item_id.as_bytes())?;
             changes.push(PushChange {
                 item_id: item_id.clone(),
                 r#type: ITEM_TYPE_HOST.to_string(),
@@ -1847,7 +1847,7 @@ fn build_push_changes(
                 || s_base == 0
                 || s_updated > cfg.last_sync_at.unwrap_or(0);
             if s_changed {
-                let ct = ac::encrypt_item(value.as_bytes(), user_key)?;
+                let ct = ac::encrypt_item(value.as_bytes(), user_key, sk.as_bytes())?;
                 changes.push(PushChange {
                     item_id: sk.clone(),
                     r#type: item_type_for_key(&sk).to_string(),
@@ -1882,7 +1882,7 @@ fn build_push_changes(
             || updated_at > cfg.last_sync_at.unwrap_or(0);
         if changed {
             cfg.updated_at.insert(item_id.clone(), updated_at);
-            let ct = ac::encrypt_item(&bytes, user_key)?;
+            let ct = ac::encrypt_item(&bytes, user_key, item_id.as_bytes())?;
             changes.push(PushChange {
                 item_id: item_id.clone(),
                 r#type: ITEM_TYPE_SNIPPET.to_string(),
@@ -1982,7 +1982,7 @@ async fn resolve_conflict(
         if local_updated > remote_updated {
             // We win → push our current value with the server rev as base.
             if let Some(value) = vault::get_opt(vault_state, key) {
-                let ct = ac::encrypt_item(value.as_bytes(), user_key)?;
+                let ct = ac::encrypt_item(value.as_bytes(), user_key, key.as_bytes())?;
                 push_single(cfg, server_url, token, key, item_type_for_key(key), &B64.encode(&ct), local_updated, false, report).await?;
             }
         } else {
@@ -1997,13 +1997,13 @@ async fn resolve_conflict(
 
     // Server has a value. Decrypt + LWW.
     let ct = B64.decode(&srv.ciphertext)?;
-    let remote_value = String::from_utf8_lossy(&ac::decrypt_item(&ct, user_key)?).into_owned();
+    let remote_value = String::from_utf8_lossy(&ac::decrypt_item(&ct, user_key, key.as_bytes())?).into_owned();
     let local_value = vault::get_opt(vault_state, key);
 
     match local_value {
         Some(lv) if remote_updated < local_updated && lv != remote_value => {
             // We win → re-push our value with the server rev as the new base.
-            let ct = ac::encrypt_item(lv.as_bytes(), user_key)?;
+            let ct = ac::encrypt_item(lv.as_bytes(), user_key, key.as_bytes())?;
             push_single(cfg, server_url, token, key, &item_type_for_key(key), &B64.encode(&ct), local_updated, false, report).await?;
         }
         _ => {
@@ -2045,7 +2045,7 @@ async fn resolve_host_conflict(
         match pos {
             Some(p) if record_is_synced(&hostlist[p]) && local_updated > remote_updated => {
                 let payload = record_for_upload(&hostlist[p]);
-                let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key)?;
+                let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key, key.as_bytes())?;
                 push_single(cfg, server_url, token, key, ITEM_TYPE_HOST, &B64.encode(&ct), local_updated, false, report).await?;
             }
             Some(p) if record_is_synced(&hostlist[p]) => {
@@ -2063,7 +2063,7 @@ async fn resolve_host_conflict(
     // Server has a record. Decrypt + LWW against the local record.
     let ct = B64.decode(&srv.ciphertext)?;
     let remote_rec: serde_json::Map<String, serde_json::Value> =
-        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key)?) {
+        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key, key.as_bytes())?) {
             Ok(serde_json::Value::Object(m)) => m,
             _ => return Ok(()),
         };
@@ -2075,7 +2075,7 @@ async fn resolve_host_conflict(
     if local_wins {
         if let Some(p) = pos {
             let payload = record_for_upload(&hostlist[p]);
-            let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key)?;
+            let ct = ac::encrypt_item(&serde_json::to_vec(&payload)?, user_key, key.as_bytes())?;
             push_single(cfg, server_url, token, key, ITEM_TYPE_HOST, &B64.encode(&ct), local_updated, false, report).await?;
         }
     } else {
@@ -2122,6 +2122,7 @@ async fn resolve_snippet_conflict(
                 let ct = ac::encrypt_item(
                     &serde_json::to_vec(&serde_json::Value::Object(list[p].clone()))?,
                     user_key,
+                    key.as_bytes(),
                 )?;
                 push_single(cfg, server_url, token, key, ITEM_TYPE_SNIPPET, &B64.encode(&ct), local_updated, false, report).await?;
             }
@@ -2139,7 +2140,7 @@ async fn resolve_snippet_conflict(
 
     let ct = B64.decode(&srv.ciphertext)?;
     let remote_rec: serde_json::Map<String, serde_json::Value> =
-        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key)?) {
+        match serde_json::from_slice(&ac::decrypt_item(&ct, user_key, key.as_bytes())?) {
             Ok(serde_json::Value::Object(m)) => m,
             _ => return Ok(()),
         };
@@ -2152,6 +2153,7 @@ async fn resolve_snippet_conflict(
             let ct = ac::encrypt_item(
                 &serde_json::to_vec(&serde_json::Value::Object(list[p].clone()))?,
                 user_key,
+                key.as_bytes(),
             )?;
             push_single(cfg, server_url, token, key, ITEM_TYPE_SNIPPET, &B64.encode(&ct), local_updated, false, report).await?;
         }
@@ -2297,12 +2299,12 @@ mod tests {
         let uk = fake_user_key();
         let value = "super-secret-host-password\nwith newline";
         // PUSH side: encrypt + base64 (what we send as `ciphertext`).
-        let ct = ac::encrypt_item(value.as_bytes(), &uk).unwrap();
+        let ct = ac::encrypt_item(value.as_bytes(), &uk, b"host.t.password").unwrap();
         let ct_b64 = B64.encode(&ct);
 
         // PULL side: base64-decode + decrypt (what the engine does on pull).
         let ct2 = B64.decode(&ct_b64).unwrap();
-        let pt = ac::decrypt_item(&ct2, &uk).unwrap();
+        let pt = ac::decrypt_item(&ct2, &uk, b"host.t.password").unwrap();
         let recovered = String::from_utf8(pt).unwrap();
         assert_eq!(recovered, value);
     }
@@ -2382,7 +2384,7 @@ mod tests {
         ];
         let mut server: Vec<RemoteItem> = Vec::new();
         for (i, (k, v)) in entries.iter().enumerate() {
-            let ct = ac::encrypt_item(v.as_bytes(), &uk).unwrap();
+            let ct = ac::encrypt_item(v.as_bytes(), &uk, k.as_bytes()).unwrap();
             server.push(RemoteItem {
                 item_id: k.to_string(),
                 r#type: item_type_for_key(k).to_string(),
@@ -2394,7 +2396,7 @@ mod tests {
         }
         for (item, (k, v)) in server.iter().zip(entries.iter()) {
             let ct = B64.decode(&item.ciphertext).unwrap();
-            let pt = ac::decrypt_item(&ct, &uk).unwrap();
+            let pt = ac::decrypt_item(&ct, &uk, k.as_bytes()).unwrap();
             assert_eq!(String::from_utf8(pt).unwrap(), *v);
             assert_eq!(item.r#type, item_type_for_key(k));
         }
@@ -2439,7 +2441,7 @@ mod tests {
                 let id = record_id(r).unwrap();
                 let item_id = host_item_id(&id);
                 let payload = record_for_upload(r);
-                let _ct = ac::encrypt_item(&serde_json::to_vec(&payload).unwrap(), &uk).unwrap();
+                let _ct = ac::encrypt_item(&serde_json::to_vec(&payload).unwrap(), &uk, item_id.as_bytes()).unwrap();
                 flagged.push(item_id);
                 cfg.synced_item_ids.insert(host_item_id(&id), 1);
             }

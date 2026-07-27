@@ -39,7 +39,7 @@
 use argon2::{Algorithm, Argon2, ParamsBuilder, Version};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use chacha20poly1305::aead::{Aead, KeyInit, OsRng};
+use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
 use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use rand_core::RngCore;
@@ -243,12 +243,14 @@ pub fn wrap_key(master_key: &[u8; KEY_LEN]) -> Result<Zeroizing<[u8; KEY_LEN]>> 
 // ---------------------------------------------------------------------------
 
 /// Seal `plaintext` under `key` with a fresh random 24-byte nonce, returning
-/// `nonce || ciphertext_with_tag`.
-fn aead_seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
+/// `nonce || ciphertext_with_tag`. `aad` is authenticated but not encrypted —
+/// the tag covers it, so opening requires the identical `aad` (used to bind an
+/// item's ciphertext to its slot; pass `b""` for slot-independent blobs).
+fn aead_seal(key: &[u8; KEY_LEN], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new(key.into());
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let ct = cipher
-        .encrypt(&nonce, plaintext)
+        .encrypt(&nonce, Payload { msg: plaintext, aad })
         .map_err(|_| CryptoError::Encrypt)?;
     let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
     out.extend_from_slice(nonce.as_slice());
@@ -256,10 +258,10 @@ fn aead_seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Open a `nonce || ciphertext_with_tag` blob under `key`. The Poly1305 tag is
-/// verified in constant time by the AEAD; a wrong key or tampered blob yields
-/// [`CryptoError::Decrypt`].
-fn aead_open(key: &[u8; KEY_LEN], blob: &[u8]) -> Result<Vec<u8>> {
+/// Open a `nonce || ciphertext_with_tag` blob under `key` + `aad`. The Poly1305
+/// tag is verified in constant time by the AEAD; a wrong key, wrong `aad`, or
+/// tampered blob yields [`CryptoError::Decrypt`].
+fn aead_open(key: &[u8; KEY_LEN], blob: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
     // Need at least nonce + a 16-byte tag to possibly be valid.
     if blob.len() < NONCE_LEN + 16 {
         return Err(CryptoError::Truncated);
@@ -267,7 +269,9 @@ fn aead_open(key: &[u8; KEY_LEN], blob: &[u8]) -> Result<Vec<u8>> {
     let (nonce_bytes, ct) = blob.split_at(NONCE_LEN);
     let nonce = XNonce::from_slice(nonce_bytes);
     let cipher = XChaCha20Poly1305::new(key.into());
-    cipher.decrypt(nonce, ct).map_err(|_| CryptoError::Decrypt)
+    cipher
+        .decrypt(nonce, Payload { msg: ct, aad })
+        .map_err(|_| CryptoError::Decrypt)
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +289,7 @@ pub fn generate_user_key() -> Zeroizing<[u8; KEY_LEN]> {
 /// Wrap (AEAD-seal) the user key under a 32-byte wrapping key (either the
 /// password-derived `wrap_key` or a `recovery_key`).
 pub fn wrap_user_key(user_key: &[u8; KEY_LEN], wrapping_key: &[u8; KEY_LEN]) -> Result<Vec<u8>> {
-    aead_seal(wrapping_key, user_key)
+    aead_seal(wrapping_key, user_key, b"") // slot-independent → no AAD
 }
 
 /// Unwrap the user key. Returns [`CryptoError::Decrypt`] if the wrapping key is
@@ -294,7 +298,7 @@ pub fn unwrap_user_key(
     wrapped: &[u8],
     wrapping_key: &[u8; KEY_LEN],
 ) -> Result<Zeroizing<[u8; KEY_LEN]>> {
-    let mut pt = aead_open(wrapping_key, wrapped)?;
+    let mut pt = aead_open(wrapping_key, wrapped, b"")?;
     if pt.len() != KEY_LEN {
         pt.zeroize();
         return Err(CryptoError::Decrypt);
@@ -309,15 +313,25 @@ pub fn unwrap_user_key(
 // 5. Item encryption with the user key
 // ---------------------------------------------------------------------------
 
-/// Encrypt an item's plaintext under the user key. Output is opaque to the
-/// server: `nonce || ciphertext || tag`.
-pub fn encrypt_item(plaintext: &[u8], user_key: &[u8; KEY_LEN]) -> Result<Vec<u8>> {
-    aead_seal(user_key, plaintext)
+/// Encrypt an item's plaintext under the user key, binding it to its storage
+/// slot via `aad` (the item's canonical key, e.g. `host.<id>`). Output is opaque
+/// to the server: `nonce || ciphertext || tag`. Because the tag covers `aad`,
+/// the server cannot relocate this ciphertext into a different item's slot and
+/// have it decrypt (audit F20).
+pub fn encrypt_item(plaintext: &[u8], user_key: &[u8; KEY_LEN], aad: &[u8]) -> Result<Vec<u8>> {
+    aead_seal(user_key, plaintext, aad)
 }
 
-/// Decrypt an item produced by [`encrypt_item`].
-pub fn decrypt_item(ciphertext: &[u8], user_key: &[u8; KEY_LEN]) -> Result<Vec<u8>> {
-    aead_open(user_key, ciphertext)
+/// Decrypt an item produced by [`encrypt_item`], checking it was sealed for this
+/// slot (`aad`). Falls back to opening WITHOUT aad so items written by older
+/// clients (pre-F20, no binding) still decrypt — they get re-sealed with aad on
+/// the next push. A slot mismatch on an aad-bound item fails (relocation blocked).
+pub fn decrypt_item(ciphertext: &[u8], user_key: &[u8; KEY_LEN], aad: &[u8]) -> Result<Vec<u8>> {
+    match aead_open(user_key, ciphertext, aad) {
+        Ok(pt) => Ok(pt),
+        Err(_) if !aad.is_empty() => aead_open(user_key, ciphertext, b""), // legacy, unbound
+        Err(e) => Err(e),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -786,16 +800,16 @@ mod tests {
     fn item_encrypt_decrypt_round_trip() {
         let uk = generate_user_key();
         let pt = b"ssh host: 10.0.0.1 user=root password=swordfish";
-        let ct = encrypt_item(pt, &uk).unwrap();
-        let back = decrypt_item(&ct, &uk).unwrap();
+        let ct = encrypt_item(pt, &uk, b"host.a").unwrap();
+        let back = decrypt_item(&ct, &uk, b"host.a").unwrap();
         assert_eq!(back, pt);
     }
 
     #[test]
     fn item_encrypt_empty_plaintext_round_trip() {
         let uk = generate_user_key();
-        let ct = encrypt_item(b"", &uk).unwrap();
-        assert_eq!(decrypt_item(&ct, &uk).unwrap(), b"");
+        let ct = encrypt_item(b"", &uk, b"host.a").unwrap();
+        assert_eq!(decrypt_item(&ct, &uk, b"host.a").unwrap(), b"");
     }
 
     #[test]
@@ -803,8 +817,8 @@ mod tests {
         let uk = generate_user_key();
         let pt = b"same plaintext";
         assert_ne!(
-            encrypt_item(pt, &uk).unwrap(),
-            encrypt_item(pt, &uk).unwrap()
+            encrypt_item(pt, &uk, b"host.a").unwrap(),
+            encrypt_item(pt, &uk, b"host.a").unwrap()
         );
     }
 
@@ -812,9 +826,9 @@ mod tests {
     fn item_decrypt_with_wrong_user_key_fails() {
         let uk = generate_user_key();
         let other = generate_user_key();
-        let ct = encrypt_item(b"secret", &uk).unwrap();
+        let ct = encrypt_item(b"secret", &uk, b"host.a").unwrap();
         assert_eq!(
-            decrypt_item(&ct, &other).unwrap_err(),
+            decrypt_item(&ct, &other, b"host.a").unwrap_err(),
             CryptoError::Decrypt
         );
     }
@@ -822,10 +836,37 @@ mod tests {
     #[test]
     fn item_decrypt_tampered_fails() {
         let uk = generate_user_key();
-        let mut ct = encrypt_item(b"secret payload", &uk).unwrap();
+        let mut ct = encrypt_item(b"secret payload", &uk, b"host.a").unwrap();
         let mid = ct.len() / 2;
         ct[mid] ^= 0xFF;
-        assert_eq!(decrypt_item(&ct, &uk).unwrap_err(), CryptoError::Decrypt);
+        assert_eq!(decrypt_item(&ct, &uk, b"host.a").unwrap_err(), CryptoError::Decrypt);
+    }
+
+    // --- F20: AAD binds an item to its slot (anti-relocation) ---------------
+
+    #[test]
+    fn item_relocation_to_another_slot_is_rejected() {
+        // A malicious server moves host.A's ciphertext into host.B's slot; the
+        // client opens host.B with aad="host.b" → must fail (no legacy fallback
+        // saves it, because this ciphertext WAS sealed with an aad).
+        let uk = generate_user_key();
+        let ct = encrypt_item(b"host A password", &uk, b"host.a").unwrap();
+        assert_eq!(
+            decrypt_item(&ct, &uk, b"host.b").unwrap_err(),
+            CryptoError::Decrypt
+        );
+        // ...but the correct slot still opens.
+        assert_eq!(decrypt_item(&ct, &uk, b"host.a").unwrap(), b"host A password");
+    }
+
+    #[test]
+    fn item_legacy_unbound_ciphertext_still_opens() {
+        // Ciphertext written by a pre-F20 client (sealed with NO aad) must still
+        // decrypt via the fallback, whatever slot aad we ask with — so upgrading
+        // never loses access to already-synced data (it re-seals on next push).
+        let uk = generate_user_key();
+        let legacy = aead_seal(&uk, b"legacy secret", b"").unwrap();
+        assert_eq!(decrypt_item(&legacy, &uk, b"host.a").unwrap(), b"legacy secret");
     }
 
     // --- recovery key ------------------------------------------------------
@@ -937,7 +978,7 @@ mod tests {
     #[test]
     fn item_encrypted_after_register_decrypts_after_login() {
         let reg = prepare_registration_with_params("pw", &fast_params()).unwrap();
-        let ct = encrypt_item(b"host secret", &reg.user_key).unwrap();
+        let ct = encrypt_item(b"host secret", &reg.user_key, b"host.x").unwrap();
         let lr = login(
             "pw",
             &reg.payload.account_salt,
@@ -945,7 +986,7 @@ mod tests {
             &reg.payload.wrapped_user_key,
         )
         .unwrap();
-        assert_eq!(decrypt_item(&ct, &lr.user_key).unwrap(), b"host secret");
+        assert_eq!(decrypt_item(&ct, &lr.user_key, b"host.x").unwrap(), b"host secret");
     }
 
     #[test]
@@ -985,9 +1026,9 @@ mod tests {
         assert_eq!(*reg.user_key, *dev_b.user_key);
 
         // And an item encrypted on A decrypts on B.
-        let ct = encrypt_item(b"cross-device item", &reg.user_key).unwrap();
+        let ct = encrypt_item(b"cross-device item", &reg.user_key, b"host.x").unwrap();
         assert_eq!(
-            decrypt_item(&ct, &dev_b.user_key).unwrap(),
+            decrypt_item(&ct, &dev_b.user_key, b"host.x").unwrap(),
             b"cross-device item"
         );
     }

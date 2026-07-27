@@ -372,8 +372,13 @@ import sys, re
 path = sys.argv[1]
 src = open(path).read()
 # 1) Inject a signingConfigs block as the first statement inside `android {`.
-#    The same pinned keystore (gen/android/debug.keystore) signs BOTH debug and
-#    release, so a single signer means existing installs update cleanly.
+#    debug builds keep the throwaway debug key. RELEASE builds are signed with a
+#    real, secret release keystore (dropped at gen/android/release.keystore, creds
+#    from env — see android.yml, backed by GH secrets / the vault). Signing the
+#    shipped APK with the public-password debug key let anyone forge a "valid"
+#    in-place update (audit F4); a secret release key closes that. If the release
+#    secret isn't present (local dev build), we fall back to the debug key so the
+#    build still works — CI is where the real key lives.
 inject = (
     "\n    signingConfigs {\n"
     "        getByName(\"debug\") {\n"
@@ -383,10 +388,18 @@ inject = (
     "            keyPassword = \"android\"\n"
     "        }\n"
     "        create(\"release\") {\n"
-    "            storeFile = rootProject.file(\"debug.keystore\")\n"
-    "            storePassword = \"android\"\n"
-    "            keyAlias = \"androiddebugkey\"\n"
-    "            keyPassword = \"android\"\n"
+    "            val rkPw = System.getenv(\"ANDROID_RELEASE_KEYSTORE_PASSWORD\")\n"
+    "            if (rkPw != null && rootProject.file(\"release.keystore\").exists()) {\n"
+    "                storeFile = rootProject.file(\"release.keystore\")\n"
+    "                storePassword = rkPw\n"
+    "                keyAlias = System.getenv(\"ANDROID_RELEASE_KEY_ALIAS\") ?: \"nexussh\"\n"
+    "                keyPassword = rkPw\n"
+    "            } else {\n"
+    "                storeFile = rootProject.file(\"debug.keystore\")\n"
+    "                storePassword = \"android\"\n"
+    "                keyAlias = \"androiddebugkey\"\n"
+    "                keyPassword = \"android\"\n"
+    "            }\n"
     "        }\n"
     "    }\n"
 )

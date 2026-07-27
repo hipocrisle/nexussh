@@ -134,6 +134,23 @@ jobs:
             echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 not set — debug.keystore in project tree won't exist, AGP will fall back."
           fi
 
+      - name: Drop RELEASE keystore into gen/android
+        env:
+          RELEASE_KEYSTORE_B64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_B64 }}
+        # The real (secret) release-signing key. The release signingConfig in
+        # build.gradle.kts uses it when ANDROID_RELEASE_KEYSTORE_PASSWORD is set,
+        # otherwise falls back to the debug key. Signing the shipped APK with a
+        # non-public key is what makes forged in-place updates impossible (F4).
+        working-directory: desktop
+        run: |
+          if [ -n "$RELEASE_KEYSTORE_B64" ]; then
+            echo "$RELEASE_KEYSTORE_B64" | base64 -d > src-tauri/gen/android/release.keystore
+            chmod 600 src-tauri/gen/android/release.keystore
+            echo "Dropped gen/android/release.keystore ($(stat -c%s src-tauri/gen/android/release.keystore) bytes)"
+          else
+            echo "::warning::ANDROID_RELEASE_KEYSTORE_B64 not set — release APK will fall back to the debug key."
+          fi
+
       - name: Patch AndroidManifest + signingConfig
         working-directory: desktop
         # Adds REQUEST_INSTALL_PACKAGES + FileProvider so the app can hand
@@ -148,6 +165,9 @@ jobs:
           # tauri.android.conf.json strips externalBin (xray sidecar) — we
           # don't ship the desktop VPN proxy in the APK.
           NDK_HOME: ${{ env.NDK_HOME }}
+          # Release-signing creds read by the release signingConfig in build.gradle.kts.
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
         # Release is the DEFAULT for `tauri android build` (debug needs
         # --debug), so we just omit --debug. Signed with the pinned keystore,
         # minify OFF (see patch-android-manifest.sh): arm64-only, no debug

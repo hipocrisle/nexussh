@@ -3,7 +3,8 @@
 // to avoid cross-contamination. All theming via the --nx-* token utilities.
 
 import React, { ReactNode, forwardRef } from "react";
-import { Check, Eye, EyeOff } from "lucide-react";
+import { Check, Eye, EyeOff, ArrowBigUp } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 // ============================================================
 // Button
@@ -294,6 +295,35 @@ export function RowLabel({
 // PasswordInput — Input + show/hide eye
 // ============================================================
 
+// Caps Lock guard — the #1 cause of "wrong password" on a correct password.
+// getModifierState is only reliable on key events, so we read it on keydown/up
+// and reset on blur. Spread `capsProps` onto any password <input>, and render
+// <CapsLockHint show={caps}/> right below it.
+export function useCapsLock() {
+  const [caps, setCaps] = React.useState(false);
+  const read = (e: React.KeyboardEvent) => {
+    if (typeof e.getModifierState === "function") setCaps(e.getModifierState("CapsLock"));
+  };
+  return {
+    caps,
+    capsProps: { onKeyDown: read, onKeyUp: read, onBlur: () => setCaps(false) },
+  };
+}
+
+export function CapsLockHint({ show }: { show: boolean }) {
+  const { t } = useTranslation();
+  if (!show) return null;
+  return (
+    <div
+      className="mt-1 flex items-center gap-1 font-mono text-[11px]"
+      style={{ color: "var(--nx-warning)" }}
+    >
+      <ArrowBigUp size={12} />
+      {t("app.caps_lock")}
+    </div>
+  );
+}
+
 export function PasswordInput({
   value,
   onChange,
@@ -304,6 +334,8 @@ export function PasswordInput({
   placeholder?: string;
 }) {
   const [shown, setShown] = React.useState(false);
+  const { caps, capsProps } = useCapsLock();
+
   return (
     <div className="relative">
       <Input
@@ -311,6 +343,7 @@ export function PasswordInput({
         value={value}
         onChange={onChange}
         placeholder={placeholder}
+        {...capsProps}
       />
       <button
         type="button"
@@ -319,6 +352,7 @@ export function PasswordInput({
       >
         {shown ? <EyeOff size={14} /> : <Eye size={14} />}
       </button>
+      <CapsLockHint show={caps} />
     </div>
   );
 }

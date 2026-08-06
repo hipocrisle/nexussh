@@ -18,6 +18,7 @@ import {
 } from "./vault";
 import { ensureHostsInVault } from "./hosts";
 import { useBackdropClose } from "./useBackdropClose";
+import { useCapsLock, CapsLockHint } from "./components/primitives";
 
 interface Props {
   onClose: () => void;
@@ -31,6 +32,7 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
   const [status, setStatus] = useState<VaultStatus | null>(null);
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
+  const { caps, capsProps } = useCapsLock();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Change-password sub-flow (manage mode).
@@ -236,11 +238,17 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
                 type="password"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && mode === "unlock" && submit()}
+                onKeyDown={(e) => {
+                  capsProps.onKeyDown(e);
+                  if (e.key === "Enter" && mode === "unlock") submit();
+                }}
+                onKeyUp={capsProps.onKeyUp}
+                onBlur={capsProps.onBlur}
                 placeholder="••••••••"
                 autoFocus
                 className={inputBase}
               />
+              <CapsLockHint show={caps} />
             </div>
             {mode === "create" && (
               <div>
@@ -249,7 +257,12 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
                   type="password"
                   value={pw2}
                   onChange={(e) => setPw2(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  onKeyDown={(e) => {
+                    capsProps.onKeyDown(e);
+                    if (e.key === "Enter") submit();
+                  }}
+                  onKeyUp={capsProps.onKeyUp}
+                  onBlur={capsProps.onBlur}
                   placeholder="••••••••"
                   className={inputBase}
                 />
@@ -325,6 +338,7 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
                 type="password"
                 value={oldPw}
                 onChange={(e) => setOldPw(e.target.value)}
+                {...capsProps}
                 placeholder="••••••••"
                 autoFocus
                 className={inputBase}
@@ -336,6 +350,7 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
                 type="password"
                 value={newPw}
                 onChange={(e) => setNewPw(e.target.value)}
+                {...capsProps}
                 placeholder="••••••••"
                 className={inputBase}
               />
@@ -346,11 +361,17 @@ export function VaultPanel({ onClose, onChange, onLock }: Props) {
                 type="password"
                 value={newPw2}
                 onChange={(e) => setNewPw2(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && changePassword()}
+                onKeyDown={(e) => {
+                  capsProps.onKeyDown(e);
+                  if (e.key === "Enter") changePassword();
+                }}
+                onKeyUp={capsProps.onKeyUp}
+                onBlur={capsProps.onBlur}
                 placeholder="••••••••"
                 className={inputBase}
               />
             </div>
+            <CapsLockHint show={caps} />
           </div>
         )}
 

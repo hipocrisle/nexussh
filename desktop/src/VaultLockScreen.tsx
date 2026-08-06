@@ -21,6 +21,7 @@ import {
   clearKnownFolders,
   ensureHostsInVault,
 } from "./hosts";
+import { useCapsLock, CapsLockHint } from "./components/primitives";
 
 interface Props {
   onUnlocked: () => void;
@@ -31,6 +32,7 @@ const HAS_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in wind
 export function VaultLockScreen({ onUnlocked }: Props) {
   const { t } = useTranslation();
   const [pw, setPw] = useState("");
+  const { caps, capsProps } = useCapsLock();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetting, setResetting] = useState(false);
@@ -197,11 +199,19 @@ export function VaultLockScreen({ onUnlocked }: Props) {
                 type="password"
                 value={pw}
                 onChange={(e) => setPw(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submit()}
+                onKeyDown={(e) => {
+                  capsProps.onKeyDown(e);
+                  if (e.key === "Enter") submit();
+                }}
+                onKeyUp={capsProps.onKeyUp}
+                onBlur={capsProps.onBlur}
                 placeholder={t("vault.master")}
                 autoFocus
                 className="w-full bg-[var(--nx-bg-panel)] border border-[var(--nx-border)] rounded px-3 py-2 text-center text-[var(--nx-text-primary)] focus:outline-none focus:border-[var(--nx-accent)] font-mono text-sm"
               />
+              <div className="flex justify-center">
+                <CapsLockHint show={caps} />
+              </div>
               {error && (
                 <div className="text-[var(--nx-error)] text-sm font-mono break-all mt-3">
                   ✗ {error}

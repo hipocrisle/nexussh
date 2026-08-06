@@ -1,12 +1,12 @@
 // SettingsScreen — full-window Settings replacement for the tiny popover that
-// shipped through v0.0.3. Three sections (Appearance, Updates, Behavior) with a
-// left nav rail, scroll-spy, smooth-scroll on nav click, Esc-to-close.
+// shipped through v0.0.3. Sections (Appearance, General, VPN, Account, About —
+// Updates live at the end under About) with a left nav rail, scroll-spy,
+// smooth-scroll on nav click, Esc-to-close.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Palette,
-  Download,
   SlidersHorizontal,
   ArrowLeft,
   Terminal as TerminalIcon,
@@ -38,10 +38,10 @@ interface Props {
 
 const SECTIONS = [
   { id: "appearance", key: "appearance", Icon: Palette },
-  { id: "updates", key: "updates", Icon: Download },
   { id: "behavior", key: "behavior", Icon: SlidersHorizontal },
   { id: "vpn", key: "vpn", Icon: Globe },
   { id: "account", key: "account", Icon: CloudCog },
+  // Updates live at the end, under "About" (they belong with version/program info).
   { id: "about", key: "about", Icon: Info },
 ] as const;
 
@@ -380,7 +380,6 @@ export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Pr
               )}
 
               <AppearanceSection s={settings} set={set} t={t} />
-              <UpdatesSection s={settings} set={set} t={t} />
               <BehaviorSection s={settings} set={set} t={t} />
               {/* VPN: hidden on mobile — Android APK doesn't ship the xray
                   sidecar. Will come back when we wire VPN through Android's
@@ -388,6 +387,9 @@ export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Pr
               {!isMobile && <VpnSection t={t} />}
               <AccountSection t={t} />
               <AboutSection t={t} />
+              {/* Updates moved to the very end — grouped with "About"
+                  (program/version info), per UX cleanup. */}
+              <UpdatesSection s={settings} set={set} t={t} />
 
               {!isMobile && (
                 <div

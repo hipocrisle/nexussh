@@ -1,6 +1,6 @@
 // Monospace font choices. Stack always falls back to a generic monospace.
 
-export type FontId = "jetbrains" | "fira" | "cascadia" | "system";
+export type FontId = "jetbrains" | "ibmplex" | "sourcecodepro" | "fira" | "cascadia" | "system";
 
 export interface FontDef {
   id: FontId;
@@ -11,6 +11,8 @@ export interface FontDef {
 
 export const FONTS: FontDef[] = [
   { id: "jetbrains", label: "JetBrains Mono", stack: '"JetBrains Mono", monospace' },
+  { id: "ibmplex", label: "IBM Plex Mono", stack: '"IBM Plex Mono", monospace' },
+  { id: "sourcecodepro", label: "Source Code Pro", stack: '"Source Code Pro", monospace' },
   { id: "fira", label: "Fira Code", stack: '"Fira Code", monospace' },
   { id: "cascadia", label: "Cascadia Code", stack: '"Cascadia Code", monospace' },
   { id: "system", label: "System Mono", stack: "ui-monospace, SFMono-Regular, Menlo, monospace" },

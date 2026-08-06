@@ -30,7 +30,7 @@ export interface ThemePalette {
   swatch: [string, string, string];
 }
 
-export type ThemeId = "matrix" | "solarized" | "dracula" | "light";
+export type ThemeId = "matrix" | "solarized" | "dracula" | "nord" | "gruvbox" | "light";
 
 export const THEMES: Record<ThemeId, ThemePalette> = {
   matrix: {
@@ -74,6 +74,34 @@ export const THEMES: Record<ThemeId, ThemePalette> = {
     accentGlow: "rgba(80, 250, 123, 0.18)",
     rainOverlay: "rgba(80, 250, 123, 0.03)",
     swatch: ["#282a36", "#bd93f9", "#ff79c6"],
+  },
+  nord: {
+    label: "Nord",
+    bgBase: "#2e3440", bgSecondary: "#272c36", bgPanel: "#3b4252",
+    bgElevated: "#434c5e", border: "#434c5e",
+    textPrimary: "#d8dee9", textMuted: "#616e88", textSoft: "#88c0d0",
+    accent: "#88c0d0", accent2: "#81a1c1", warning: "#ebcb8b", error: "#bf616a",
+    textDim: "#c0c8d8",
+    divider: "rgba(67, 76, 94, 0.55)",
+    edgeTop: "rgba(136, 192, 208, 0.06)",
+    edgeBot: "rgba(0, 0, 0, 0.35)",
+    accentGlow: "rgba(136, 192, 208, 0.20)",
+    rainOverlay: "rgba(136, 192, 208, 0.03)",
+    swatch: ["#2e3440", "#88c0d0", "#a3be8c"],
+  },
+  gruvbox: {
+    label: "Gruvbox Dark",
+    bgBase: "#282828", bgSecondary: "#1d2021", bgPanel: "#3c3836",
+    bgElevated: "#504945", border: "#504945",
+    textPrimary: "#ebdbb2", textMuted: "#7c6f64", textSoft: "#8ec07c",
+    accent: "#fe8019", accent2: "#b8bb26", warning: "#fabd2f", error: "#fb4934",
+    textDim: "#d5c4a1",
+    divider: "rgba(80, 73, 69, 0.6)",
+    edgeTop: "rgba(254, 128, 25, 0.06)",
+    edgeBot: "rgba(0, 0, 0, 0.4)",
+    accentGlow: "rgba(254, 128, 25, 0.18)",
+    rainOverlay: "rgba(254, 128, 25, 0.03)",
+    swatch: ["#282828", "#fe8019", "#b8bb26"],
   },
   light: {
     label: "Light",
@@ -136,6 +164,7 @@ export function applyTheme(id: ThemeId) {
   set("--nx-accent-glow",  t.accentGlow);
   set("--nx-rain-overlay", t.rainOverlay);
 
-  root.classList.remove("theme-matrix", "theme-solarized", "theme-dracula", "theme-light");
+  root.classList.remove("theme-matrix", "theme-solarized", "theme-dracula",
+    "theme-nord", "theme-gruvbox", "theme-light");
   root.classList.add(`theme-${id}`);
 }

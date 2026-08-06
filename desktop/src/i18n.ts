@@ -704,7 +704,7 @@ const ru = {
       account: "Аккаунт / Sync",
       account_sub: "вход · E2E-синхронизация · 2FA",
       about: "О программе",
-      about_sub: "версия · ссылки · кредиты",
+      about_sub: "версия · обновления · ссылки",
       current: "сейчас",
       theme: "тема",
       font: "шрифт",
@@ -714,7 +714,7 @@ const ru = {
       off: "выкл",
     },
     vpn: {
-      kicker: "04 транспорт",
+      kicker: "03 транспорт",
       section: "VPN",
       intro: "VPN-профили, через которые могут ходить SSH-хосты. У каждого хоста в его настройках выбирается нужный профиль. Профили хранятся локально, в репозиторий и в sync не попадают.",
       xray_header: "Xray / VLESS",
@@ -779,7 +779,7 @@ const ru = {
       },
     },
     account: {
-      kicker: "05 синхронизация",
+      kicker: "04 синхронизация",
       section: "Аккаунт / Sync",
       intro: "Облачная синхронизация хостов между устройствами со сквозным (E2E) шифрованием. Сервер видит только зашифрованные данные. Один мастер-пароль на всё: тот же, которым открывается локальный vault — им же шифруются данные синхронизации.",
       loading: "Загрузка состояния аккаунта…",
@@ -894,7 +894,7 @@ const ru = {
       delete_confirm: "Да, удалить учётку",
     },
     appearance: {
-      kicker: "01 визуал",
+      kicker: "02 визуал",
       section: "Внешний вид",
       theme: "Тема",
       theme_hint: "Цветовая палитра всего приложения, включая встроенный терминал (xterm).",
@@ -920,7 +920,7 @@ const ru = {
       sample_comment: "// => !== && ||",
     },
     updates: {
-      kicker: "02 жизненный цикл",
+      kicker: "05 обновления",
       section: "Обновления",
       version: "Версия",
       version_hint: "Сборка из main · Tauri 2 · React 19",
@@ -943,7 +943,7 @@ const ru = {
       released_at: "выпущено {{date}}",
     },
     behavior: {
-      kicker: "03 общие",
+      kicker: "01 общие",
       section: "Общие",
       port: "Порт SSH по умолчанию",
       port_hint: "Используется при добавлении хоста, если порт не указан.",
@@ -1921,7 +1921,7 @@ const en = {
       account: "Account / Sync",
       account_sub: "sign in · E2E sync · 2FA",
       about: "About",
-      about_sub: "version · links · credits",
+      about_sub: "version · updates · links",
       current: "current",
       theme: "theme",
       font: "font",
@@ -1931,7 +1931,7 @@ const en = {
       off: "off",
     },
     vpn: {
-      kicker: "04 transport",
+      kicker: "03 transport",
       section: "VPN",
       intro: "VPN profiles your SSH hosts can route through. Pick one per host in its settings. Profiles stay local — they never go to the repo or the sync.",
       xray_header: "Xray / VLESS",
@@ -1996,7 +1996,7 @@ const en = {
       },
     },
     account: {
-      kicker: "05 sync",
+      kicker: "04 sync",
       section: "Account / Sync",
       intro: "Cloud-sync your hosts across devices with end-to-end (E2E) encryption. The server only ever sees ciphertext. One master password for everything: the same one that unlocks your local vault also encrypts your sync data.",
       loading: "Loading account state…",
@@ -2108,7 +2108,7 @@ const en = {
       delete_confirm: "Yes, delete account",
     },
     appearance: {
-      kicker: "01 visual",
+      kicker: "02 visual",
       section: "Appearance",
       theme: "Theme",
       theme_hint: "Color palette for the whole app, including the embedded terminal (xterm).",
@@ -2134,7 +2134,7 @@ const en = {
       sample_comment: "// => !== && ||",
     },
     updates: {
-      kicker: "02 lifecycle",
+      kicker: "05 updates",
       section: "Updates",
       version: "Version",
       version_hint: "Built from main · Tauri 2 · React 19",
@@ -2157,7 +2157,7 @@ const en = {
       released_at: "released {{date}}",
     },
     behavior: {
-      kicker: "03 general",
+      kicker: "01 general",
       section: "General",
       port: "Default SSH port",
       port_hint: "Used when adding a new host with no port specified.",

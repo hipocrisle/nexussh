@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Palette,
+  Download,
   SlidersHorizontal,
   ArrowLeft,
   Terminal as TerminalIcon,
@@ -37,12 +38,14 @@ interface Props {
 }
 
 const SECTIONS = [
-  { id: "appearance", key: "appearance", Icon: Palette },
-  { id: "behavior", key: "behavior", Icon: SlidersHorizontal },
-  { id: "vpn", key: "vpn", Icon: Globe },
-  { id: "account", key: "account", Icon: CloudCog },
-  // Updates live at the end, under "About" (they belong with version/program info).
-  { id: "about", key: "about", Icon: Info },
+  // General first (conventional), then Appearance, then the rest.
+  { id: "behavior", key: "behavior", Icon: SlidersHorizontal, sub: false },
+  { id: "appearance", key: "appearance", Icon: Palette, sub: false },
+  { id: "vpn", key: "vpn", Icon: Globe, sub: false },
+  { id: "account", key: "account", Icon: CloudCog, sub: false },
+  { id: "about", key: "about", Icon: Info, sub: false },
+  // Updates: last, indented as a sub-item under "About" (version/program info).
+  { id: "updates", key: "updates", Icon: Download, sub: true },
 ] as const;
 
 export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Props) {
@@ -260,14 +263,17 @@ export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Pr
             </div>
 
             <nav className="flex-1 overflow-y-auto py-3">
-              {SECTIONS.map(({ id, key, Icon }) => {
+              {SECTIONS.map(({ id, key, Icon, sub }) => {
                 const isActive = active === id;
                 return (
                   <button
                     key={id}
                     type="button"
                     onClick={() => jump(id)}
-                    className="w-full text-left px-4 py-3 flex items-start gap-3 group transition-colors cursor-pointer"
+                    className={
+                      "w-full text-left py-3 flex items-start gap-3 group transition-colors cursor-pointer " +
+                      (sub ? "pl-9 pr-4" : "px-4")
+                    }
                     style={{
                       background: isActive ? t.bgPanel : "transparent",
                       borderLeft: `2px solid ${isActive ? t.accent : "transparent"}`,
@@ -379,16 +385,16 @@ export function SettingsScreen({ onClose, sessionCount = 0, initialSection }: Pr
                 </div>
               )}
 
-              <AppearanceSection s={settings} set={set} t={t} />
+              {/* General first, then Appearance (conventional ordering). */}
               <BehaviorSection s={settings} set={set} t={t} />
+              <AppearanceSection s={settings} set={set} t={t} />
               {/* VPN: hidden on mobile — Android APK doesn't ship the xray
                   sidecar. Will come back when we wire VPN through Android's
                   VPN service. */}
               {!isMobile && <VpnSection t={t} />}
               <AccountSection t={t} />
               <AboutSection t={t} />
-              {/* Updates moved to the very end — grouped with "About"
-                  (program/version info), per UX cleanup. */}
+              {/* Updates at the very end — a sub-section of "About". */}
               <UpdatesSection s={settings} set={set} t={t} />
 
               {!isMobile && (

@@ -18,6 +18,7 @@
 // dismiss it). Output goes through `onSend` (active terminal send-bytes).
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { readClipboard } from "./clipboard";
 import {
   listSnippets,
@@ -99,6 +100,7 @@ type PwState = {
 };
 
 export function SmartKeyBar({ onSend, visible }: Props) {
+  const { t } = useTranslation();
   const [mods, setMods] = useState<Set<Mod>>(new Set());
   const [panel, setPanel] = useState<null | "fn" | "more" | "pw" | "snip">(null);
   const [pw, setPw] = useState<PwState>({ status: "idle", items: [] });
@@ -262,8 +264,8 @@ export function SmartKeyBar({ onSend, visible }: Props) {
             <Key label="Del" onTap={() => emitRaw("\x1b[3~")} />
           </div>
           <div className="flex gap-1.5">
-            <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} title="Alt (модификатор)" />
-            <Key label="Tab" onTap={() => emitRaw("\t")} title="Tab (автодополнение)" />
+            <Key label="Alt" armed={altArmed} onTap={() => toggleMod("alt")} title={t("smartkey.alt_mod")} />
+            <Key label="Tab" onTap={() => emitRaw("\t")} title={t("smartkey.tab_complete")} />
             <Key label="⌃D" onTap={() => onSend("\x04")} title="Ctrl+D" />
             <Key label="⌃Z" onTap={() => onSend("\x1a")} title="Ctrl+Z" />
             <Key label="⌃L" onTap={() => onSend("\x0c")} title="Ctrl+L (clear)" />
@@ -277,7 +279,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
             <Key label="*" onTap={() => emit("*")} />
             <Key label="&" onTap={() => emit("&")} />
             <Key label="$" onTap={() => emit("$")} />
-            <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} title="Ctrl (модификатор)" />
+            <Key label="Ctrl" armed={ctrlArmed} onTap={() => toggleMod("ctrl")} title={t("smartkey.ctrl_mod")} />
           </div>
         </div>
       )}
@@ -286,17 +288,13 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       {panel === "pw" && (
         <div className="flex flex-col gap-1.5 px-2 pt-2 pb-2 border-b border-nx-border max-h-[42vh] overflow-y-auto">
           {pw.status === "loading" && (
-            <div className="px-1 py-2 text-[13px] text-nx-muted">Загрузка…</div>
+            <div className="px-1 py-2 text-[13px] text-nx-muted">{t("smartkey.loading")}</div>
           )}
           {pw.status === "locked" && (
-            <div className="px-1 py-2 text-[13px] text-nx-muted">
-              Вольт заблокирован — разблокируйте, чтобы вставить пароль.
-            </div>
+            <div className="px-1 py-2 text-[13px] text-nx-muted">{t("smartkey.vault_locked")}</div>
           )}
           {pw.status === "ready" && pw.items.length === 0 && (
-            <div className="px-1 py-2 text-[13px] text-nx-muted">
-              Нет паролей, сохранённых в вольте.
-            </div>
+            <div className="px-1 py-2 text-[13px] text-nx-muted">{t("smartkey.no_passwords")}</div>
           )}
           {pw.status === "ready" &&
             pw.items.map((it) => (
@@ -321,9 +319,8 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         <div className="flex flex-col gap-2 px-2 pt-2 pb-2 border-b border-nx-border max-h-[46vh] overflow-y-auto">
           {snips.length === 0 ? (
             <div className="px-1 py-2 text-[13px] text-nx-muted leading-relaxed">
-              Нет сниппетов. Добавьте их через{" "}
-              <span className="text-nx-soft">управление сниппетами</span> — значок в
-              шапке вкладки «Сессии».
+              {t("smartkey.empty_before")}
+              <span className="text-nx-soft">{t("smartkey.empty_link")}</span>{t("smartkey.empty_after")}
             </div>
           ) : (
             <>
@@ -364,7 +361,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
                           : "border-nx-border text-nx-muted",
                       ].join(" ")}
                     >
-                      {c === "all" ? "все" : c}
+                      {c === "all" ? t("smartkey.cat_all") : c}
                     </button>
                   ))}
                 </div>
@@ -377,37 +374,37 @@ export function SmartKeyBar({ onSend, visible }: Props) {
       {/* Row 1 — Esc, modifiers, panels, keyboard toggle. */}
       <div className="flex gap-1.5 px-2 pt-1.5">
         <Key label="Esc" onTap={() => emitRaw(ESC)} />
-        <Key label="📋" title="Вставить" onTap={paste} />
+        <Key label="📋" title={t("smartkey.paste")} onTap={paste} />
         <Key
           label="⌫"
-          title="Backspace (зажми — повтор)"
+          title={t("smartkey.backspace")}
           repeat
           onTap={() => onSend("\x7f")}
         />
         <Key
           label="⚡"
           armed={panel === "snip"}
-          title="Сниппеты — команды в один тап"
+          title={t("smartkey.snippets_tip")}
           onTap={() => setPanel((p) => (p === "snip" ? null : "snip"))}
         />
         <Key
           label="CC"
-          title="Claude Code: показать переписку (Ctrl+O)"
+          title={t("smartkey.cc_transcript")}
           onTap={() => emitRaw("\x0f")}
         />
         <Key
           label="Fn"
           armed={panel === "fn"}
-          title="Функциональные клавиши"
+          title={t("smartkey.fn_keys")}
           onTap={() => setPanel((p) => (p === "fn" ? null : "fn"))}
         />
         <Key
           label="⋯"
           armed={panel === "more"}
-          title="Ещё клавиши"
+          title={t("smartkey.more_keys")}
           onTap={() => setPanel((p) => (p === "more" ? null : "more"))}
         />
-        <Key label="⌨" title="Показать/скрыть клавиатуру" onTap={toggleKeyboard} />
+        <Key label="⌨" title={t("smartkey.toggle_kbd")} onTap={toggleKeyboard} />
       </div>
 
       {/* Row 2 — passwords, Ctrl+C, arrows, Enter. */}
@@ -415,7 +412,7 @@ export function SmartKeyBar({ onSend, visible }: Props) {
         <Key
           label="✱✱✱"
           armed={panel === "pw"}
-          title="Сохранённые пароли (из вольта)"
+          title={t("smartkey.saved_passwords")}
           onTap={() => setPanel((p) => (p === "pw" ? null : "pw"))}
         />
         <Key label="⌃C" onTap={() => onSend("\x03")} title="Ctrl+C" />

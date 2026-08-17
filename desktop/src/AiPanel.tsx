@@ -194,7 +194,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
             isMobile ? "" : "cursor-move"
           }`}
           onPointerDown={onHeaderPointerDown}
-          title={isMobile ? undefined : "Потяни, чтобы переместить"}
+          title={isMobile ? undefined : t("ai.drag_move")}
         >
           <span className="nx-ai-orb">
             <Sparkles size={15} />
@@ -230,7 +230,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
           <button
             type="button"
             onClick={onClose}
-            title="Свернуть (Esc) — запрос продолжит выполняться"
+            title={t("ai.collapse_esc")}
             className={`${granted && ai.hasDraft ? "" : "ml-auto"} text-nx-muted hover:text-nx-text px-1.5 leading-none text-lg`}
           >
             —
@@ -242,10 +242,8 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
           <div className="p-5 space-y-3 text-sm">
             {status?.status === "pending" ? (
               <>
-                <p>⏳ Запрос отправлен. Ожидает одобрения администратором.</p>
-                <p className="text-nx-muted text-xs">
-                  Статус обновится автоматически. Долго нет ответа — переотправь.
-                </p>
+                <p>{t("ai.gate_pending")}</p>
+                <p className="text-nx-muted text-xs">{t("ai.gate_pending_sub")}</p>
                 <div className="flex gap-2">
                   <button
                     type="button"
@@ -253,42 +251,39 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                     onClick={requestAccess}
                     className="px-3 py-1.5 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
                   >
-                    Переотправить запрос
+                    {t("ai.gate_resend")}
                   </button>
                   <button
                     type="button"
                     onClick={clear}
                     className="px-3 py-1.5 rounded-lg border border-nx-border text-sm"
                   >
-                    Отмена
+                    {t("app.cancel")}
                   </button>
                 </div>
               </>
             ) : status?.status === "denied" ? (
               <>
-                <p>⛔ Доступ к AI отклонён.</p>
+                <p>{t("ai.gate_denied")}</p>
                 <button
                   type="button"
                   disabled={busy}
                   onClick={requestAccess}
                   className="px-4 py-2 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
                 >
-                  Запросить снова
+                  {t("ai.gate_request_again")}
                 </button>
               </>
             ) : (
               <>
-                <p className="text-nx-muted">
-                  AI-подсказки команд требуют одобрения (подписка с лимитом
-                  токенов). Отправить запрос администратору?
-                </p>
+                <p className="text-nx-muted">{t("ai.gate_intro")}</p>
                 <button
                   type="button"
                   disabled={busy}
                   onClick={requestAccess}
                   className="px-4 py-2 rounded-lg bg-nx-accent text-white text-sm disabled:opacity-50"
                 >
-                  Запросить доступ к AI
+                  {t("ai.gate_request")}
                 </button>
               </>
             )}
@@ -406,7 +401,7 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                         <button
                           type="button"
                           onClick={() => copy(it.cmd, `cmd${i}`)}
-                          title="Скопировать команду"
+                          title={t("ai.copy_cmd")}
                           className="shrink-0 text-nx-muted hover:text-nx-text p-1 rounded"
                         >
                           {copied === `cmd${i}` ? <Check size={13} /> : <Copy size={13} />}
@@ -427,8 +422,8 @@ export default function AiPanel({ open, onClose, onInsert, hasSession, ai }: Pro
                 </div>
                 <p className="text-[11px] text-nx-muted mt-1.5">
                   {isMobile
-                    ? "Тап «→ выполнить» — вставить в терминал (не запускается), копия — иконкой."
-                    : "↑/↓ — выбор, Enter или «→ выполнить» — вставить (не запускается), Esc — свернуть."}
+                    ? t("ai.hint_mobile")
+                    : t("ai.hint_desktop")}
                 </p>
               </div>
             )}

@@ -373,6 +373,25 @@ export function BehaviorSection({ s, set, t }: Props) {
 
       {!isMobile && (
       <Row
+        label={tr("settings.behavior.native_decorations")}
+        hint={tr("settings.behavior.native_decorations_hint")}
+        t={t}
+      >
+        <Toggle
+          checked={s.nativeDecorations}
+          onChange={(v) => set({ nativeDecorations: v })}
+          t={t}
+          label={tr("settings.behavior.native_decorations_label")}
+          onLabel={tr("settings.nav.on")}
+          offLabel={tr("settings.nav.off")}
+          enabledLabel={tr("settings.toggle.enabled")}
+          disabledLabel={tr("settings.toggle.disabled")}
+        />
+      </Row>
+      )}
+
+      {!isMobile && (
+      <Row
         label={tr("settings.behavior.ssh_config_import")}
         hint={tr("settings.behavior.ssh_config_import_hint")}
         t={t}

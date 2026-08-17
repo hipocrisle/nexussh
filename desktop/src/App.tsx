@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, Fragment, Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "./i18n";
 import {
   Lock,
   Unlock,
@@ -492,15 +493,11 @@ async function resolveHostVpnNode(h: HostRecord): Promise<VpnNode | null> {
   if (!hostUsesVpn(h)) return null; // genuinely direct
   const profile = getProfile(h.vpnProfileId);
   if (!profile) {
-    throw new Error(
-      `VPN-профиль этого хоста не найден на устройстве — соединение отменено (не идём напрямую в обход VPN). Добавьте/синхронизируйте профиль в Настройках.`,
-    );
+    throw new Error(i18n.t("app.vpn_profile_missing"));
   }
   const node = await resolveExitWithSecret(profile, h.vpnExit);
   if (!node) {
-    throw new Error(
-      `Не удалось выбрать выходной узел VPN-профиля — соединение отменено (не идём напрямую).`,
-    );
+    throw new Error(i18n.t("app.vpn_exit_failed"));
   }
   return node;
 }
@@ -541,6 +538,14 @@ function App() {
     applyTheme(settings.theme);
   }, [settings.theme]);
 
+  // Native window decorations (OS title bar / borders / controls) — issue #4.
+  // Opt-in (mainly Linux/GNOME): when on, the OS draws the frame and we hide our
+  // custom WindowControls + resize zones below. Applied at startup and on change.
+  useEffect(() => {
+    if (!HAS_TAURI) return;
+    getCurrentWindow().setDecorations(settings.nativeDecorations).catch(() => {});
+  }, [settings.nativeDecorations]);
+
   // Round the borderless Linux window corners — but ONLY when a compositor is
   // present. The window is created transparent (tauri.linux.conf.json); on a
   // machine WITHOUT a compositor that transparency renders as BLACK corners, so
@@ -554,6 +559,12 @@ function App() {
   // attribute unset → plain square opaque window (the safe default).
   useEffect(() => {
     let cancelled = false;
+    // Native decorations draw the OS frame — the custom rounded-transparent-corner
+    // hack must be off (it would fight the native title bar). Clear the attribute.
+    if (settings.nativeDecorations) {
+      document.documentElement.removeAttribute("data-os");
+      return;
+    }
     (async () => {
       try {
         const ua = navigator.userAgent || "";
@@ -583,7 +594,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settings.nativeDecorations]);
 
   // Square the window corners while maximised/fullscreen — rounded corners
   // there cut holes that show the desktop at the screen edge. Maximise and
@@ -2287,10 +2298,10 @@ function App() {
     for (const h of paletteHosts) {
       out.push({
         id: `host:${h.id}`,
-        section: "Хосты",
+        section: "hosts",
         icon: <Server size={14} />,
         label: h.name || `${h.user}@${h.host}`,
-        hint: "подключиться",
+        hint: t("palette.hint_connect"),
         keywords: `${h.user}@${h.host} ${h.group ?? ""}`,
         run: () => {
           close();
@@ -2305,15 +2316,15 @@ function App() {
     for (const s of listSnippets()) {
       out.push({
         id: `snip:${s.id}`,
-        section: "Сниппеты",
+        section: "snippets",
         icon: <Zap size={14} />,
         label: s.name,
-        hint: activeId ? "→ в терминал" : "нет активной сессии",
+        hint: activeId ? t("palette.hint_to_terminal") : t("palette.hint_no_session"),
         keywords: s.command + " " + (s.category ?? ""),
         run: () => {
           close();
           if (!activeId) {
-            showToast("Нет активной сессии — команду некуда отправить");
+            showToast(t("palette.no_session_toast"));
             return;
           }
           const cmd = expandPlaceholders(s.command, ctx);
@@ -2328,10 +2339,10 @@ function App() {
         const s = p.session;
         out.push({
           id: `tab:${s.id}`,
-          section: "Вкладки",
+          section: "tabs",
           icon: <TerminalIcon size={14} />,
           label: s.host.name || `${s.host.user}@${s.host.host}`,
-          hint: s.id === activeId ? "текущая" : "переключиться",
+          hint: s.id === activeId ? t("palette.hint_current") : t("palette.hint_switch"),
           keywords: `${s.host.user}@${s.host.host}`,
           run: () => {
             close();
@@ -2342,18 +2353,18 @@ function App() {
     }
     // Действия.
     const actions: PaletteItem[] = [
-      { id: "act:newtab", icon: <Plus size={14} />, label: "Новая вкладка (SSH)", run: openSshPicker },
-      { id: "act:sftp", icon: <FolderOpen size={14} />, label: "Открыть SFTP активного хоста", hint: activeSession ? undefined : "нет сессии", run: () => activeSession && openSftp(activeSession) },
-      { id: "act:ai", icon: <Sparkles size={14} className="text-nx-accent2" />, label: "AI-подсказка команд", run: () => setAiPanelOpen(true) },
-      { id: "act:snippets", icon: <Zap size={14} />, label: "Управление сниппетами", run: () => setSnippetsOpen(true) },
-      { id: "act:tunnels", icon: <Cable size={14} />, label: "Туннели (проброс портов)", run: () => openTunnelsPanel() },
+      { id: "act:newtab", icon: <Plus size={14} />, label: t("palette.act_newtab"), run: openSshPicker },
+      { id: "act:sftp", icon: <FolderOpen size={14} />, label: t("palette.act_sftp"), hint: activeSession ? undefined : t("palette.act_no_session"), run: () => activeSession && openSftp(activeSession) },
+      { id: "act:ai", icon: <Sparkles size={14} className="text-nx-accent2" />, label: t("palette.act_ai"), run: () => setAiPanelOpen(true) },
+      { id: "act:snippets", icon: <Zap size={14} />, label: t("palette.act_snippets"), run: () => setSnippetsOpen(true) },
+      { id: "act:tunnels", icon: <Cable size={14} />, label: t("palette.act_tunnels"), run: () => openTunnelsPanel() },
       { id: "act:vault", icon: <Lock size={14} />, label: "Vault", run: () => setVaultPanelOpen(true) },
-      { id: "act:sync", icon: <Cloud size={14} />, label: "Облачный синк", run: () => setSyncPanelOpen(true) },
-      { id: "act:history", icon: <HistoryIcon size={14} />, label: "История сессий", run: () => setHistoryPanelOpen(true) },
+      { id: "act:sync", icon: <Cloud size={14} />, label: t("palette.act_sync"), run: () => setSyncPanelOpen(true) },
+      { id: "act:history", icon: <HistoryIcon size={14} />, label: t("palette.act_history"), run: () => setHistoryPanelOpen(true) },
       {
         id: "act:update",
         icon: <ArrowUpCircle size={14} />,
-        label: "Проверить обновление",
+        label: t("palette.act_update"),
         run: () => {
           setUpdatePanel({ initial: undefined });
           startupCheck()
@@ -2361,24 +2372,24 @@ function App() {
             .catch(() => {});
         },
       },
-    ].map((a) => ({ ...a, section: "Действия", run: () => { close(); a.run(); } }));
+    ].map((a) => ({ ...a, section: "actions", run: () => { close(); a.run(); } }));
     out.push(...actions);
     // Настройки (deep-link).
     const settings: Array<[string, string]> = [
-      ["appearance", "Внешний вид"],
-      ["behavior", "Поведение"],
-      ["vpn", "VPN-профили"],
-      ["account", "Аккаунт / синк"],
-      ["updates", "Обновления"],
-      ["about", "О программе"],
+      ["appearance", t("settings.nav.appearance")],
+      ["behavior", t("settings.nav.behavior")],
+      ["vpn", t("settings.nav.vpn")],
+      ["account", t("settings.nav.account")],
+      ["updates", t("settings.nav.updates")],
+      ["about", t("settings.nav.about")],
     ];
     for (const [sec, label] of settings) {
       out.push({
         id: `set:${sec}`,
-        section: "Настройки",
+        section: "settings",
         icon: <SettingsIcon size={14} />,
         label,
-        hint: "настройки",
+        hint: t("palette.hint_settings"),
         run: () => {
           close();
           setSettingsSection(sec);
@@ -3726,7 +3737,7 @@ function App() {
                     <button
                       type="button"
                       onClick={() => setAiPanelOpen(true)}
-                      aria-label="AI-подсказка команд"
+                      aria-label={t("app.ai_hint")}
                       className={`shrink-0 inline-flex items-center justify-center w-10 h-10 rounded-full active:bg-nx-elevated ${
                         ai.granted ? "text-nx-accent" : "text-nx-soft"
                       }`}
@@ -3865,7 +3876,7 @@ function App() {
               <HeaderButton
                 icon={<Sparkles size={12} />}
                 onClick={() => setAiPanelOpen(true)}
-                title="AI-подсказка команд (Ctrl+Shift+A)"
+                title={t("app.ai_hint_hotkey")}
                 active={ai.granted || aiPanelOpen}
               >
                 AI
@@ -3983,7 +3994,7 @@ function App() {
           <div className="ml-1">
             <LanguageSwitcher />
           </div>
-          <WindowControls />
+          {!settings.nativeDecorations && <WindowControls />}
         </div>
       </header>
       )}
@@ -4373,15 +4384,15 @@ function App() {
       )}
       {hostKeyReq && (
         <ConfirmDialog
-          title={hostKeyReq.info.changed ? "⚠ Ключ сервера ИЗМЕНИЛСЯ" : "Новый ключ сервера"}
+          title={hostKeyReq.info.changed ? t("app.hostkey_title_changed") : t("app.hostkey_title_new")}
           message={
             (hostKeyReq.info.changed
-              ? "Ключ хоста отличается от сохранённого. Это может быть переустановка сервера — или подмена (MITM). Принимайте только если вы знаете причину.\n\n"
-              : "Это первое подключение к хосту. Примите ключ, чтобы продолжить.\n\n") +
+              ? t("app.hostkey_body_changed")
+              : t("app.hostkey_body_new")) +
             `${hostKeyReq.info.host}:${hostKeyReq.info.port}\nSHA256: ${hostKeyReq.info.fingerprint}`
           }
-          confirmLabel="Принять ключ"
-          cancelLabel="Отмена"
+          confirmLabel={t("app.hostkey_accept")}
+          cancelLabel={t("app.cancel")}
           destructive={hostKeyReq.info.changed}
           onConfirm={() => {
             hostKeyReq.resolve(true);
@@ -4561,8 +4572,9 @@ function App() {
       )}
 
       {/* Window-edge resize zones (decorations:false has no native resize
-       *  border/cursors). Desktop only — mobile windows aren't resized. */}
-      {HAS_TAURI && !isMobile && <ResizeHandles />}
+       *  border/cursors). Desktop only — mobile windows aren't resized. Skipped
+       *  when native decorations are on (the OS provides resize borders). */}
+      {HAS_TAURI && !isMobile && !settings.nativeDecorations && <ResizeHandles />}
     </main>
   );
 }

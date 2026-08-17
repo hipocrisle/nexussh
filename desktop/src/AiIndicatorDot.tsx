@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { AiAssistant } from "./useAiAssistant";
 
 /**
@@ -13,6 +14,7 @@ export default function AiIndicatorDot({
   ai: AiAssistant;
   panelOpen: boolean;
 }) {
+  const { t } = useTranslation();
   if (panelOpen) return null;
   const ctxOn = ai.useCtx && ai.contextAllowed;
   const base =
@@ -21,23 +23,23 @@ export default function AiIndicatorDot({
     return (
       <span
         className={`${base} animate-ping ${ctxOn ? "bg-red-500" : "bg-nx-accent"}`}
-        title={ctxOn ? "AI думает (видит экран)" : "AI думает"}
+        title={ctxOn ? t("ai.dot_thinking_ctx") : t("ai.dot_thinking")}
       />
     );
   if (ctxOn)
     return (
       <span
         className={`${base} bg-red-500 animate-pulse`}
-        title="Контекст-режим: AI видит экран"
+        title={t("ai.dot_ctx")}
       />
     );
   if (ai.ready)
-    return <span className={`${base} bg-green-500`} title="Ответ готов" />;
+    return <span className={`${base} bg-green-500`} title={t("ai.dot_ready")} />;
   if (ai.hasDraft)
     return (
       <span
         className={`${base} bg-nx-accent animate-pulse`}
-        title="Есть черновик"
+        title={t("ai.dot_draft")}
       />
     );
   return null;

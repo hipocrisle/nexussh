@@ -4,7 +4,7 @@ import { fuzzyMatch } from "./fuzzy";
 
 export interface PaletteItem {
   id: string;
-  /** Заголовок секции: "Хосты" | "Сниппеты" | "Вкладки" | "Действия" | "Настройки". */
+  /** Стабильный id секции: "hosts" | "snippets" | "tabs" | "actions" | "settings" (локализуется при показе). */
   section: string;
   icon: ReactNode; // lucide-иконка 14px
   label: string;
@@ -23,30 +23,32 @@ interface Props {
   onAskAi?: (query: string) => void;
 }
 
-const SECTION_ORDER = ["Хосты", "Сниппеты", "Вкладки", "Действия", "Настройки"];
+const SECTION_ORDER = ["hosts", "snippets", "tabs", "actions", "settings"];
 // Префиксы-фильтры (как VS Code): ограничить одной секцией.
 const PREFIX: Record<string, string> = {
-  "@": "Хосты",
-  "#": "Сниппеты",
-  ">": "Действия",
-  "/": "Настройки",
+  "@": "hosts",
+  "#": "snippets",
+  ">": "actions",
+  "/": "settings",
 };
-// Скоуп-чипы: подпись + префикс (для @#>/) либо прямой section (вкладки).
-const CHIPS: { label: string; scope: string | null; prefix?: string }[] = [
-  { label: "все", scope: null },
-  { label: "хосты @", scope: "Хосты", prefix: "@" },
-  { label: "сниппеты #", scope: "Сниппеты", prefix: "#" },
-  { label: "вкладки", scope: "Вкладки" },
-  { label: "действия >", scope: "Действия", prefix: ">" },
-];
 const EMPTY_SECTION_CAP = 6;
 
 type Row =
   | { kind: "header"; section: string }
   | { kind: "item"; item: PaletteItem; positions: number[] };
 
+type Chip = { label: string; scope: string | null; prefix?: string };
+
 export default function CommandPalette({ open, onClose, items, onAskAi }: Props) {
   const { t } = useTranslation();
+  // Скоуп-чипы: подпись (локализованная) + префикс (для @#>/) либо прямой section id (вкладки).
+  const CHIPS: Chip[] = [
+    { label: t("palette.chip_all"), scope: null },
+    { label: t("palette.chip_hosts"), scope: "hosts", prefix: "@" },
+    { label: t("palette.chip_snippets"), scope: "snippets", prefix: "#" },
+    { label: t("palette.chip_tabs"), scope: "tabs" },
+    { label: t("palette.chip_actions"), scope: "actions", prefix: ">" },
+  ];
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
@@ -173,7 +175,7 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
     );
   }
 
-  function pickChip(c: (typeof CHIPS)[number]) {
+  function pickChip(c: Chip) {
     if (c.prefix) {
       setQuery(c.prefix);
       setScope(null);
@@ -257,7 +259,7 @@ export default function CommandPalette({ open, onClose, items, onAskAi }: Props)
                   key={`h-${row.section}`}
                   className="px-[18px] pt-2.5 pb-1 text-micro uppercase tracking-[0.22em] text-nx-soft"
                 >
-                  // {row.section}
+                  // {t(`palette.sec_${row.section}`)}
                 </div>
               );
             }

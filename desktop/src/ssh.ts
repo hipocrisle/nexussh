@@ -1,6 +1,7 @@
 // Thin TypeScript wrapper around our Rust Tauri commands.
 
 import { invoke } from "@tauri-apps/api/core";
+import i18n from "./i18n";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { VpnNode } from "./vpn";
 import { vaultGet, hostKeyDataKey } from "./vault";
@@ -121,7 +122,7 @@ export async function sshConnect(
     const reachable = await hostReachable(args.host, args.port, 5).catch(
       () => true,
     );
-    if (!reachable) throw `Хост недоступен: ${args.host}:${args.port}`;
+    if (!reachable) throw i18n.t("ssh.host_unreachable", { host: args.host, port: args.port });
   }
   try {
     const res = await invoke<{ session_id: string; recording: boolean }>(
@@ -141,7 +142,7 @@ export async function sshConnect(
     ) {
       const info = e as unknown as HostKeyPromptInfo;
       const accepted = await hostKeyPrompt(info);
-      if (!accepted) throw "Подключение отменено: ключ хоста не принят";
+      if (!accepted) throw i18n.t("ssh.conn_cancelled_key");
       await invoke("ssh_pin_host_key", {
         host: info.host,
         port: info.port,
@@ -158,7 +159,7 @@ export async function sshConnect(
     } catch {
       /* logging unavailable — keep the bare error */
     }
-    throw log ? `${e}\n\n— SSH-протокол —\n${log}` : String(e);
+    throw log ? `${e}\n\n${i18n.t("ssh.protocol_label")}\n${log}` : String(e);
   }
 }
 

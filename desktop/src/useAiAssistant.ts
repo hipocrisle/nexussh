@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18n from "./i18n";
 import {
   aiStatus,
   aiRequest,
@@ -13,16 +14,16 @@ function aiErrorMessage(e: unknown): string {
   const s = String(e);
   // Серверные коды из ApiError — проверяем ДО сетевых, чтобы 502/timeout от
   // upstream не мапились ошибочно в «нет интернета» (был разовый 502 → мис-лейбл).
-  if (/ai not enabled|403/i.test(s)) return "AI-доступ не активен.";
-  if (/daily limit|429/i.test(s)) return "Дневной лимит запросов исчерпан.";
-  if (/too long|413/i.test(s)) return "Запрос слишком длинный.";
-  if (/unavailable|503/i.test(s)) return "AI временно недоступен (общий лимит). Попробуй позже.";
+  if (/ai not enabled|403/i.test(s)) return i18n.t("ai.err_not_enabled");
+  if (/daily limit|429/i.test(s)) return i18n.t("ai.err_daily_limit");
+  if (/too long|413/i.test(s)) return i18n.t("ai.err_too_long");
+  if (/unavailable|503/i.test(s)) return i18n.t("ai.err_unavailable");
   // upstream/шлюз/таймаут AI — это НЕ отсутствие интернета у пользователя.
   if (/ai upstream|bad gateway|502|gateway|timeout|504/i.test(s))
-    return "AI не смог ответить (сервис перегружен). Попробуй ещё раз.";
+    return i18n.t("ai.err_overloaded");
   // Только настоящая сетевая ошибка клиента.
   if (/network|connection|fetch|unreachable|dns|refused|offline|error sending/i.test(s)) {
-    return "Нет соединения с сервером AI. Проверь интернет и попробуй снова.";
+    return i18n.t("ai.err_no_conn");
   }
   return s.replace(/^Error:\s*/, "");
 }
@@ -101,7 +102,7 @@ export function useAiAssistant(
       setSel(0);
       setReady(true);
       if (!r.suggestions.length && !r.answer.trim())
-        setErr("Модель не вернула ответ — уточни запрос.");
+        setErr(i18n.t("ai.err_no_answer"));
       refreshStatus();
     } catch (e) {
       setErr(aiErrorMessage(e));

@@ -8,7 +8,8 @@
 // Heuristics, not guarantees. The UI must still warn the user that turning on
 // "AI видит экран" can leak sensitive data.
 
-const MASK = "«скрыто»";
+import i18n from "./i18n";
+const MASK = i18n.t("redact.mask");
 
 // PEM private-key blocks (SSH, RSA, EC, OpenSSH, PGP) — mask the whole body.
 const PEM_BLOCK =

@@ -312,9 +312,9 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
               disabled={!(cloudActive && syncOn)}
               title={
                 !cloudActive
-                  ? "Войдите в облачный аккаунт"
+                  ? t("snippets.login_to_cloud")
                   : !syncOn
-                    ? "Включите синхронизацию сниппетов"
+                    ? t("snippets.enable_snip_sync")
                     : t("snippets.sync_now")
               }
               className={
@@ -468,7 +468,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
             title={
               cloudActive
                 ? ""
-                : "Войдите в облачный аккаунт, чтобы синхронизировать сниппеты"
+                : t("snippets.login_to_sync")
             }
           >
             <Toggle

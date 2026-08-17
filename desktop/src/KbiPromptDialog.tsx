@@ -4,6 +4,7 @@
 // blindly sent the password to every prompt and MFA hosts failed ("auth failed").
 
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { ShieldCheck } from "lucide-react";
 import { Button, Input } from "./components/primitives";
 import { useBackdropClose } from "./useBackdropClose";
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export function KbiPromptDialog({ req, onSubmit, onCancel }: Props) {
+  const { t } = useTranslation();
   const [vals, setVals] = useState<string[]>(req.prompts.map(() => ""));
   const { backdropProps, contentProps } = useBackdropClose(onCancel);
 
@@ -50,7 +52,7 @@ export function KbiPromptDialog({ req, onSubmit, onCancel }: Props) {
         <div className="flex items-center gap-2 mb-2 font-mono">
           <ShieldCheck size={15} className="text-nx-accent" />
           <span className="text-lead text-nx-text">
-            {req.name || "Двухфакторная аутентификация"}
+            {req.name || t("app.kbi_title")}
           </span>
         </div>
         {req.instruction && (
@@ -77,7 +79,7 @@ export function KbiPromptDialog({ req, onSubmit, onCancel }: Props) {
         </div>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onCancel}>
-            Отмена
+            {t("app.cancel")}
           </Button>
           <Button type="submit" variant="primary">
             OK

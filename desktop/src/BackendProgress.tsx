@@ -18,7 +18,7 @@ interface Prog {
 }
 
 function mb(n: number): string {
-  return `${(n / 1048576).toFixed(1)} МБ`;
+  return `${(n / 1048576).toFixed(1)} MB`;
 }
 
 export function BackendProgress() {

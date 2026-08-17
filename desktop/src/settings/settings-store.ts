@@ -42,6 +42,12 @@ export interface NexuSettings {
   historyMode: "light";
   /** Биндинг Command palette (см. hotkeys.ts). "Mod"=Ctrl/Cmd. */
   paletteHotkey: string;
+  /** Use the OS-native window title bar, borders and controls instead of the
+   *  app's custom chrome. Mainly for Linux/GNOME (native header bar). When on,
+   *  the in-app window controls and manual resize zones are hidden. Default off
+   *  (branded custom chrome). Applied at startup and on change via
+   *  window.setDecorations. */
+  nativeDecorations: boolean;
 }
 
 export const DEFAULTS: NexuSettings = {
@@ -67,6 +73,7 @@ export const DEFAULTS: NexuSettings = {
   historyEnabled: false, // off by default; opt-in (requires vault)
   historyMode: "light",
   paletteHotkey: "Mod+Shift+KeyZ",
+  nativeDecorations: false,
 };
 
 const STORAGE_KEY = "nexussh.settings.v1";

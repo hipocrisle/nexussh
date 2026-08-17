@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Lock, Minus, X, Fingerprint } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useSettingValue } from "./settings/settings-store";
 import {
   vaultUnlock,
   vaultReset,
@@ -101,6 +102,7 @@ export function VaultLockScreen({ onUnlocked }: Props) {
   }
 
   const win = HAS_TAURI ? getCurrentWindow() : null;
+  const nativeDecorations = useSettingValue("nativeDecorations");
   const ctrlBtn =
     "inline-flex items-center justify-center w-11 h-9 text-[var(--nx-text-muted)] hover:bg-[var(--nx-bg-panel)] hover:text-[var(--nx-text-primary)] transition-colors";
 
@@ -112,7 +114,7 @@ export function VaultLockScreen({ onUnlocked }: Props) {
         data-tauri-drag-region
         className="flex items-center justify-end h-9 shrink-0 select-none"
       >
-        {win && (
+        {win && !nativeDecorations && (
           <div className="flex items-stretch h-9">
             <button className={ctrlBtn} onClick={() => win.minimize()} title="Minimize">
               <Minus size={14} />

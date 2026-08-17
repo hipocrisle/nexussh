@@ -462,7 +462,7 @@ export function Sidebar({
             const copy: HostRecord = {
               ...h,
               id: "h-" + crypto.randomUUID(),
-              name: h.name + " (копия)",
+              name: h.name + t("sidebar.copy_suffix"),
               lastUsedAt: undefined,
             };
             const { saveHost } = await import("./hosts");

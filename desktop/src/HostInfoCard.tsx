@@ -4,6 +4,7 @@
 
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import i18n from "./i18n";
 import {
   Server,
   Folder,
@@ -45,7 +46,7 @@ function authBadge(auth: HostRecord["auth"]) {
   return {
     icon: <Database size={12} />,
     label: /^host\.h-[\w-]+\.password$/.test(auth.key)
-      ? "vault (пароль хоста)"
+      ? i18n.t("host.vault_host_password")
       : `vault: ${auth.key}`,
   };
 }

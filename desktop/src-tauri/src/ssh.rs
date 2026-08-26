@@ -31,6 +31,14 @@ pub enum SshError {
     Io(#[from] std::io::Error),
     #[error("auth failed")]
     AuthFailed,
+    /// Authentication SUCCEEDED, but the server tore the connection down while we
+    /// were setting up the session channel (open / pty / shell). Almost always a
+    /// server-side restriction rather than a bad credential: a PAM `session`
+    /// module failing (common on 2FA hosts), ForceCommand, or a bastion that
+    /// refuses a plain interactive shell. Reported separately so the UI never
+    /// tells the user their (correct) password/OTP was wrong.
+    #[error("server closed the connection after successful authentication (stage: {stage}): {detail}")]
+    PostAuthClosed { stage: &'static str, detail: String },
     #[error("session {0} not found")]
     SessionNotFound(String),
     #[error("other: {0}")]
@@ -884,10 +892,18 @@ pub async fn ssh_connect(
     // — the real cause of variable VPN drops. With 0, we never proactively
     // disconnect; a truly dead link is still caught when the TCP socket closes.
     let mut cfg = client::Config::default();
-    // Interval is user-configurable (0/absent → DEFAULT_KEEPALIVE_SECS = 20s,
-    // the historical value). keepalive_max stays 0 — see the comment above; we
-    // never force-disconnect on missed keepalives (critical for VPN sessions).
-    cfg.keepalive_interval = Some(keepalive_interval(args.keepalive));
+    // russh's BUILT-IN keepalive timer is deliberately OFF: it runs from the
+    // moment the session loop starts, i.e. it fires SSH_MSG_GLOBAL_REQUEST
+    // ("keepalive@openssh.com") while we are still authenticating. Global
+    // requests belong AFTER authentication (RFC 4254); tolerant servers just
+    // answer REQUEST_FAILURE, but it is needless noise on a 2FA handshake and
+    // a stricter peer or middlebox may object. We keep our OWN keepalive in
+    // `run_session_loop`, which by construction only runs post-auth and honours
+    // the same user-configurable interval.
+    cfg.keepalive_interval = None;
+    // Irrelevant while the built-in timer is off, but keep 0 so that re-enabling
+    // it can never force-disconnect on missed replies (critical for VPN sessions:
+    // a lossy cascade delays keepalive replies — the real cause of variable drops).
     cfg.keepalive_max = 0;
     // Offer legacy algorithms only when the host opted in (old gear Cisco/ESXi).
     cfg.preferred = preferred_for(args.allow_legacy);
@@ -1016,13 +1032,24 @@ pub async fn ssh_connect(
         return Err(SshError::AuthFailed);
     }
 
-    let mut channel = session.channel_open_session().await?;
+    // Past this point authentication has SUCCEEDED. Any failure here is the
+    // server refusing/killing the session, so map it to PostAuthClosed instead
+    // of a bare protocol error — otherwise the user sees "Disconnected" and
+    // reasonably assumes their 2FA code was wrong (it was not).
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| SshError::PostAuthClosed { stage: "channel-open", detail: e.to_string() })?;
     let cols = args.cols.unwrap_or(80);
     let rows = args.rows.unwrap_or(24);
     channel
         .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
-        .await?;
-    channel.request_shell(false).await?;
+        .await
+        .map_err(|e| SshError::PostAuthClosed { stage: "pty", detail: e.to_string() })?;
+    channel
+        .request_shell(false)
+        .await
+        .map_err(|e| SshError::PostAuthClosed { stage: "shell", detail: e.to_string() })?;
 
     let (tx, mut rx) = mpsc::unbounded_channel::<SessionCommand>();
     let gate = Arc::new(Mutex::new(OutputGate::Buffering(Vec::new())));
@@ -1055,6 +1082,8 @@ pub async fn ssh_connect(
     let sid = session_id.clone();
     let app_handle = app.clone();
     let manager = state.inner().clone();
+    // Post-auth keepalive interval (0/absent → DEFAULT_KEEPALIVE_SECS).
+    let ka = keepalive_interval(args.keepalive);
 
     tokio::spawn(async move {
         let close_reason = run_session_loop(
@@ -1064,6 +1093,7 @@ pub async fn ssh_connect(
             &mut rx,
             session,
             gate,
+            ka,
         )
         .await;
         manager.sessions.lock().await.remove(&sid);
@@ -1100,6 +1130,9 @@ async fn run_session_loop(
     rx: &mut mpsc::UnboundedReceiver<SessionCommand>,
     session: client::Handle<TofuHandler>,
     gate: Arc<Mutex<OutputGate>>,
+    // Post-auth keepalive interval (user-configurable; russh's built-in timer
+    // is off — see the client::Config comment in `connect`).
+    ka_interval: std::time::Duration,
 ) -> String {
     // Emit-or-buffer for ssh-data. Atomic under the gate Mutex so that
     // `ssh_ready` either sees this push (and flushes it) or runs first
@@ -1136,7 +1169,7 @@ async fn run_session_loop(
     // via the Handle's Msg channel — the server's reply generates bidirectional
     // traffic that resets the WS proxy's ~60s idle timeout. Harmless for direct
     // sessions too. First tick is immediate; consume it so we don't fire at t=0.
-    let mut keepalive = tokio::time::interval(std::time::Duration::from_secs(25));
+    let mut keepalive = tokio::time::interval(ka_interval);
     keepalive.tick().await;
 
     loop {

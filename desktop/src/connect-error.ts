@@ -13,6 +13,10 @@ export interface ParsedError {
 
 // Known causes → friendlier i18n key (see connect_err.cause_* in i18n.ts).
 const CAUSES: { test: RegExp; key: string }[] = [
+  // Must precede cause_auth: authentication SUCCEEDED here, the server killed the
+  // session afterwards. Telling the user "auth failed" would send them chasing a
+  // correct password/OTP.
+  { test: /closed the connection after successful authentication/i, key: "connect_err.cause_post_auth" },
   { test: /os error 2/i, key: "connect_err.cause_keyfile" },
   { test: /connection refused/i, key: "connect_err.cause_refused" },
   { test: /timed out|timeout/i, key: "connect_err.cause_timeout" },

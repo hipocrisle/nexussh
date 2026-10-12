@@ -24,6 +24,7 @@ import {
   Plus,
   Copy,
   FileCode2,
+  ShieldCheck,
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
@@ -525,6 +526,10 @@ function describeHostVpn(
   return null;
 }
 
+/** ⛔ Оболочка с правами администратора есть только в Windows: на Linux
+ *  повышение делается через sudo прямо в самой оболочке. */
+const isWindows = /Windows/i.test(navigator.userAgent);
+
 function App() {
   const { t } = useTranslation();
   const [settings, setSettings] = useSettings();
@@ -935,7 +940,9 @@ function App() {
     // path that asks for a password (quick-connect, always-ask, reconnect). An
     // offline host says "unreachable" instead of being mistaken for a wrong
     // password. Skip VPN hosts (SOCKS path); fail-open if the probe errors.
-    if (!hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
+    // ⛔ У местной оболочки нет ни адреса, ни порта: проверка
+    // доступности выдавала «хост недоступен: :0» и обрывала запуск.
+    if (!h.local && !hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -1554,6 +1561,18 @@ function App() {
   // restore). Mirrors openHost's success/error handling but doesn't add a
   // tab, since the pane is already there.
   async function kickoffConnect(pendingId: string, h: HostRecord) {
+    // ⛔ Местная оболочка — до разбора входа: у неё нет ни ключа, ни
+    // пароля, и resolveAuth с запросом пароля тут только мешают.
+    if (h.local) {
+      try {
+        await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
+        bumpLastUsed(h.id).catch(() => {});
+        promoteSession(pendingId, pendingId, "connected");
+      } catch (e) {
+        updateSession(pendingId, (s) => ({ ...s, status: "closed", error: String(e) }));
+      }
+      return;
+    }
     let auth: AuthMethod = await resolveAuth(h.auth, h.id);
     if (h.auth.kind === "password" && h.alwaysAskPassword) {
       const creds = await askPassword(h);
@@ -2076,7 +2095,9 @@ function App() {
     // host should say "unreachable", not be mistaken for a wrong password after
     // a long hang. Skip for VPN hosts (they go through SOCKS — a direct TCP
     // probe would falsely fail). Fail-open if the probe itself errors.
-    if (!hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
+    // ⛔ У местной оболочки нет ни адреса, ни порта: проверка
+    // доступности выдавала «хост недоступен: :0» и обрывала запуск.
+    if (!h.local && !hostUsesVpn(h) && !h.corpVpnProfileId && !h.l2tpProfileId) {
       const reachable = await hostReachable(h.host, h.port, 5).catch(() => true);
       if (!reachable) {
         showToast(t("host.unreachable", { host: `${h.host}:${h.port}` }), "error");
@@ -2104,6 +2125,19 @@ function App() {
       focusedPaneId: paneId,
     };
     setWorkspaces((ws_) => [...ws_, ws]);
+
+    // ⛔ Местная оболочка — сразу после появления вкладки, до разбора
+    // входа: ни адреса, ни ключа, ни пароля у неё нет.
+    if (h.local) {
+      try {
+        await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
+        bumpLastUsed(h.id).catch(() => {});
+        promoteSession(pendingId, pendingId, "connected");
+      } catch (e) {
+        updateSession(pendingId, (s) => ({ ...s, status: "closed", error: String(e) }));
+      }
+      return;
+    }
     setActiveWorkspaceId(ws.id);
     try {
       // History recording is started in the BACKEND before the output loop, so
@@ -2112,15 +2146,6 @@ function App() {
       // password). recordHistory per-host overrides the global on/off + mode.
       const hist = historyArgsFor(h);
       const doRec = hist.record && !!vault?.configured;
-      // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
-      // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
-      // работает как обычно, потому что сессия та же.
-      if (h.local) {
-        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
-        bumpLastUsed(h.id).catch(() => {});
-        promoteSession(pendingId, sid, "connected");
-        return;
-      }
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -2437,7 +2462,41 @@ function App() {
             setPickerOpen(true);
           },
         },
+        // ⛔ Оболочка этой машины — здесь же, рядом с ssh и sftp: это
+        // такой же вид вкладки, а не ссылка в подвале списка.
+        {
+          label: t("tabnew.local"),
+          icon: <TerminalIcon size={13} />,
+          onClick: () => openLocalShell(false),
+        },
+        ...(isWindows
+          ? [
+              {
+                label: t("tabnew.local_admin"),
+                icon: <ShieldCheck size={13} />,
+                onClick: () => openLocalShell(true),
+              },
+            ]
+          : []),
       ],
+    });
+  }
+
+  /// Открыть оболочку этой машины новой вкладкой.
+  ///
+  /// ⛔ Запись в списке хостов НЕ заводим: это не хост, а способ открыть
+  /// оболочку под рукой. Сохранять её — значит засорять список тем, что
+  /// и так доступно из меню. Подсказки и история при этом работают: они
+  /// привязаны к сессии, а не к записи.
+  function openLocalShell(elevated: boolean) {
+    openHost({
+      id: "local-" + crypto.randomUUID(),
+      name: elevated ? t("tabnew.local_admin_tab") : t("tabnew.local"),
+      host: "",
+      port: 0,
+      user: "",
+      auth: { kind: "password", password: "" },
+      local: { elevated },
     });
   }
 
@@ -4343,24 +4402,6 @@ function App() {
             // Open HostDialog in CREATE mode. TabPicker closes itself
             // after invoking the callback.
             setCreateHostOpen(true);
-          }}
-            onLocalShell={(elevated: boolean) => {
-            setPickerOpen(false);
-            setPendingSplit(null);
-            // ⛔ Запись НЕ сохраняем в списке: это не хост, а способ
-            // открыть оболочку под рукой. Сохранять её — значит
-            // засорять список тем, что и так доступно одной кнопкой.
-            // Подсказки и история при этом работают: они привязаны к
-            // сессии, а не к записи.
-            openHost({
-              id: "local-" + crypto.randomUUID(),
-                name: elevated ? t("connect.local_admin_tab") : t("connect.local"),
-              host: "",
-              port: 0,
-              user: "",
-              auth: { kind: "password", password: "" },
-              local: { elevated },
-            });
           }}
           onQuickConnect={(host, port, save, user, password) => {
             setPickerOpen(false);

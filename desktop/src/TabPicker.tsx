@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Server, ChevronRight, ChevronDown, Folder, Plus, X, Zap, Terminal as TerminalIcon, ShieldCheck as ShieldIcon,
+import { Server, ChevronRight, ChevronDown, Folder, Plus, X, Zap,
   Loader2, Check, AlertTriangle } from "lucide-react";
 import { HostRecord, listHosts } from "./hosts";
 import { tcpPing } from "./ssh";
@@ -23,8 +23,6 @@ import { POPOVER_SURFACE, PopoverDivider } from "./Popover";
 interface Props {
   onPick: (h: HostRecord) => void;
   onCreateNew?: () => void;
-  /** Открыть оболочку на этой же машине — без сети и без входа. */
-  onLocalShell?: (elevated: boolean) => void;
   /** Quick connect after the in-card reachability check + creds: open host:port
    *  with the given login/password (saved as a host when `save`). */
   onQuickConnect?: (host: string, port: number, save: boolean, user: string, password: string) => void;
@@ -261,11 +259,7 @@ function QuickConnectCard({
   );
 }
 
-/** ⛔ Запуск с правами администратора есть только в Windows: на macOS
- *  повышение работает иначе и отдельной оболочкой не делается. */
-const isWindows = /Windows/i.test(navigator.userAgent);
-
-export function TabPicker({ onPick, onCreateNew, onLocalShell, onQuickConnect, onClose }: Props) {
+export function TabPicker({ onPick, onCreateNew, onQuickConnect, onClose }: Props) {
   const { t } = useTranslation();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [q, setQ] = useState("");
@@ -632,30 +626,6 @@ export function TabPicker({ onPick, onCreateNew, onLocalShell, onQuickConnect, o
           <span className="max-md:hidden">
             <kbd className="text-nx-accent">↵</kbd> {t("connect.open")}
           </span>
-            {onLocalShell && (
-              <button
-                onClick={() => {
-                  onLocalShell(false);
-                  onClose();
-                }}
-                className="ml-auto inline-flex items-center gap-1.5 text-nx-accent normal-case tracking-normal text-meta hover:underline"
-                title={t("connect.local_hint")}
-              >
-                <TerminalIcon size={14} /> {t("connect.local")}
-              </button>
-            )}
-            {onLocalShell && isWindows && (
-              <button
-                onClick={() => {
-                  onLocalShell(true);
-                  onClose();
-                }}
-                className="inline-flex items-center gap-1.5 text-nx-accent normal-case tracking-normal text-meta hover:underline"
-                title={t("connect.local_admin_hint")}
-              >
-                <ShieldIcon size={14} /> {t("connect.local_admin")}
-              </button>
-            )}
           {onCreateNew && (
             <button
               onClick={() => {

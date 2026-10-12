@@ -87,7 +87,7 @@ import { THEMES, applyTheme } from "./settings/themes";
 import { fontStackOf } from "./settings/fonts";
 import { MatrixRain } from "./settings/MatrixRain";
 import { UpdateInfo, startupCheck } from "./updater";
-import { sshConnect, sshDisconnect, sshSend, hostReachable, resolveAuth, setHostKeyPrompt } from "./ssh";
+import { sshConnect, sshDisconnect, sshSend, hostReachable, resolveAuth, setHostKeyPrompt, localConnect } from "./ssh";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { AuthMethod } from "./ssh";
 import { useIsMobile } from "./useIsMobile";
@@ -1571,6 +1571,15 @@ function App() {
     try {
       const hist = historyArgsFor(h);
       const doRec = hist.record && !!vault?.configured;
+      // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
+      // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
+      // работает как обычно, потому что сессия та же.
+      if (h.local) {
+        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
+        bumpLastUsed(h.id).catch(() => {});
+        promoteSession(pendingId, sid, "connected");
+        return;
+      }
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -2103,6 +2112,15 @@ function App() {
       // password). recordHistory per-host overrides the global on/off + mode.
       const hist = historyArgsFor(h);
       const doRec = hist.record && !!vault?.configured;
+      // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
+      // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
+      // работает как обычно, потому что сессия та же.
+      if (h.local) {
+        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
+        bumpLastUsed(h.id).catch(() => {});
+        promoteSession(pendingId, sid, "connected");
+        return;
+      }
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -2463,6 +2481,15 @@ function App() {
     try {
       const hist = historyArgsFor(host);
       const doRec = hist.record && !!vault?.configured;
+      // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
+      // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
+      // работает как обычно, потому что сессия та же.
+        if (host.local) {
+          await localConnect(sessionId, host.local.shell, 80, 24, host.local.elevated);
+          bumpLastUsed(host.id).catch(() => {});
+          updateSession(sessionId, (s) => ({ ...s, status: "connected", reconnecting: false }));
+          return;
+        }
       const { sessionId: sid, recording } = await sshConnect({
         host: host.host,
         port: host.port,
@@ -2552,6 +2579,15 @@ function App() {
     try {
       const hist = historyArgsFor(h);
       const doRec = hist.record && !!vault?.configured;
+      // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
+      // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
+      // работает как обычно, потому что сессия та же.
+      if (h.local) {
+        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
+        bumpLastUsed(h.id).catch(() => {});
+        promoteSession(pendingId, sid, "connected");
+        return;
+      }
       const { sessionId: sid, recording } = await sshConnect({
         host: h.host,
         port: h.port,
@@ -4307,6 +4343,24 @@ function App() {
             // Open HostDialog in CREATE mode. TabPicker closes itself
             // after invoking the callback.
             setCreateHostOpen(true);
+          }}
+            onLocalShell={(elevated: boolean) => {
+            setPickerOpen(false);
+            setPendingSplit(null);
+            // ⛔ Запись НЕ сохраняем в списке: это не хост, а способ
+            // открыть оболочку под рукой. Сохранять её — значит
+            // засорять список тем, что и так доступно одной кнопкой.
+            // Подсказки и история при этом работают: они привязаны к
+            // сессии, а не к записи.
+            openHost({
+              id: "local-" + crypto.randomUUID(),
+                name: elevated ? t("connect.local_admin_tab") : t("connect.local"),
+              host: "",
+              port: 0,
+              user: "",
+              auth: { kind: "password", password: "" },
+              local: { elevated },
+            });
           }}
           onQuickConnect={(host, port, save, user, password) => {
             setPickerOpen(false);

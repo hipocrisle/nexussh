@@ -371,6 +371,11 @@ const ru = {
     password: "Пароль",
   },
   connect: {
+      local: "эта машина",
+      local_hint: "Оболочка на этом компьютере — подсказки и история работают как с серверами",
+      local_admin: "от администратора",
+      local_admin_tab: "эта машина (администратор)",
+      local_admin_hint: "Оболочка с правами администратора — Windows спросит подтверждение",
     title: "connect",
     kicker: "подключение",
     search_placeholder: "IP, хост или имя сохранённого…",
@@ -1685,6 +1690,11 @@ const en = {
     password: "Password",
   },
   connect: {
+      local: "this machine",
+      local_hint: "Shell on this computer — snippets and history work as with servers",
+      local_admin: "as administrator",
+      local_admin_tab: "this machine (administrator)",
+      local_admin_hint: "Shell with administrator rights — Windows will ask for confirmation",
     title: "connect",
     kicker: "connect",
     search_placeholder: "IP, host, or saved host name…",

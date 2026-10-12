@@ -9,6 +9,9 @@ mod cleanup;
 mod history;
 mod import_sources;
 mod l2tp;
+mod local;
+#[cfg(windows)]
+pub use local::run_pty_bridge;
 mod localfs;
 mod sftp;
 mod ssh;
@@ -249,6 +252,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             ssh::ssh_connect,
+            local::local_connect,
+            local::local_shells,
             ssh::ssh_pin_host_key,
             ssh::ssh_kbi_respond,
             ssh::host_reachable,

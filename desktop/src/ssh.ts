@@ -227,3 +227,25 @@ export function onSshClosed(
 ): Promise<UnlistenFn> {
   return listen<ClosedEvent>("ssh-closed", (e) => handler(e.payload));
 }
+
+/** Какие оболочки есть на этой машине. */
+export async function localShells(): Promise<string[]> {
+  return await invoke<string[]>("local_shells");
+}
+
+/** Поднять оболочку на этой же машине.
+ *
+ * ⛔ Возвращает то же, что и сетевое подключение, и сессия встаёт в тот
+ * же список: «послать», «изменить размер», «готов» и «отключить»
+ * работают с ней без единой правки — они не знают, сеть под ними или
+ * нет. Поэтому подсказки, история и вкладки достались даром. */
+export async function localConnect(
+  sessionId: string,
+  shell?: string,
+  cols = 80,
+  rows = 24,
+  elevated = false,
+): Promise<{ sessionId: string; shell: string }> {
+  const used = await invoke<string>("local_connect", { sessionId, shell, cols, rows, elevated });
+  return { sessionId, shell: used };
+}

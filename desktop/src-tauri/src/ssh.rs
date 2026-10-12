@@ -286,13 +286,13 @@ pub struct ConnectResult {
 /// connection succeeded). Backend therefore buffers `ssh-data` payloads
 /// until the frontend calls `ssh_ready`, then flushes and switches to
 /// direct emit.
-enum OutputGate {
+pub(crate) enum OutputGate {
     Buffering(Vec<Vec<u8>>),
     Ready,
 }
 
 /// One active SSH session.
-struct ActiveSession {
+pub(crate) struct ActiveSession {
     /// Channel handle for sending data/resize to server.
     sender: mpsc::UnboundedSender<SessionCommand>,
     /// Output gate (see `OutputGate`). Shared with the session loop task.
@@ -304,7 +304,7 @@ struct ActiveSession {
 }
 
 
-enum SessionCommand {
+pub(crate) enum SessionCommand {
     Data(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     Disconnect,
@@ -313,6 +313,30 @@ enum SessionCommand {
 #[derive(Default)]
 pub struct SessionManager {
     sessions: Mutex<HashMap<String, ActiveSession>>,
+}
+
+impl SessionManager {
+    /// Записать в общий список сессию, поднятую не по сети.
+    ///
+    /// ⛔ Через неё локальная оболочка получает всё остальное даром:
+    /// «послать», «изменить размер», «готов», «отключить» работают с
+    /// любой записью этого списка и не знают, сеть под ней или нет.
+    pub(crate) async fn register(
+        &self,
+        session_id: String,
+        sender: mpsc::UnboundedSender<SessionCommand>,
+        gate: Arc<Mutex<OutputGate>>,
+    ) {
+        self.sessions.lock().await.insert(
+            session_id,
+            ActiveSession { sender, gate, _transport: crate::vpn::TransportHold::None },
+        );
+    }
+
+    /// Убрать сессию из списка — когда оболочка завершилась.
+    pub(crate) async fn forget(&self, session_id: &str) {
+        self.sessions.lock().await.remove(session_id);
+    }
 }
 
 impl SessionManager {

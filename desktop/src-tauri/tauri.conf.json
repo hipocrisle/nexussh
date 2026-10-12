@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "NexuSSH",
-  "version": "3.0.5",
+  "version": "3.1.0-beta.1",
   "identifier": "org.hipogas.nexussh",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -26,9 +26,15 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "rpm", "nsis"],
+    "targets": [
+      "deb",
+      "rpm",
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/xray"],
+    "externalBin": [
+      "binaries/xray"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

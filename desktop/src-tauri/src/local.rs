@@ -30,6 +30,33 @@ use tokio::sync::{mpsc, Mutex};
 // стороны Rust, с другой TypeScript, между ними строка.
 use crate::ssh::{ClosedEvent, DataEvent, OutputGate, SessionCommand, SessionManager};
 
+/// Короткий журнал запуска местной вкладки.
+///
+/// ⛔ Нужен ровно для одной развилки, которую иначе не разобрать на
+/// чужой машине: не запустилась оболочка, не читается её вывод, или
+/// вывод читается, но не доходит до окна. По виду пустой вкладки эти
+/// три случая неотличимы, и каждый круг «посмотрите ещё раз» стоит
+/// человеку дня. Пишем скупо — несколько строк на сессию, рядом с
+/// настройками, кодировка UTF-8.
+fn записать<R: Runtime>(app: &AppHandle<R>, строка: &str) {
+    use std::io::Write as _;
+    use tauri::Manager;
+    let Ok(каталог) = app.path().app_config_dir() else { return };
+    let _ = std::fs::create_dir_all(&каталог);
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(каталог.join("local-terminal.log"))
+    else {
+        return;
+    };
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(f, "{t} {строка}");
+}
+
 /// Кадр в канале между обычным и повышенным процессом.
 ///
 /// ⛔ Повысить права у работающего процесса нельзя — Windows умеет
@@ -111,7 +138,15 @@ pub async fn local_connect<R: Runtime>(
     rows: u16,
     elevated: Option<bool>,
 ) -> Result<String, String> {
-    let shell = pick_shell(shell.as_deref())?;
+    let выбор = pick_shell(shell.as_deref());
+    записать(
+        &app,
+        &format!(
+            "запуск сессии {session_id}: оболочка={:?} админ={:?}",
+            выбор, elevated
+        ),
+    );
+    let shell = выбор?;
 
     #[cfg(windows)]
     if elevated.unwrap_or(false) {
@@ -122,9 +157,15 @@ pub async fn local_connect<R: Runtime>(
         return Err("запуск с правами администратора есть только в Windows".into());
     }
 
-    let pty = NativePtySystem::default()
+    let pty = match NativePtySystem::default()
         .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| format!("не открыть терминал: {e}"))?;
+    {
+        Ok(p) => p,
+        Err(e) => {
+            записать(&app, &format!("терминал не открылся: {e}"));
+            return Err(format!("не открыть терминал: {e}"));
+        }
+    };
 
     let mut cmd = CommandBuilder::new(&shell);
     if let Some(home) = dirs_home() {
@@ -134,10 +175,14 @@ pub async fn local_connect<R: Runtime>(
     // курсора приходят не теми последовательностями, и вывод рассыпается.
     cmd.env("TERM", "xterm-256color");
 
-    let mut child = pty
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("не запустить {shell}: {e}"))?;
+    let mut child = match pty.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            записать(&app, &format!("оболочка не запустилась: {e}"));
+            return Err(format!("не запустить {shell}: {e}"));
+        }
+    };
+    записать(&app, "оболочка запущена, читаю вывод");
     // Сторона оболочки нам больше не нужна: держа её открытой, мы не
     // заметили бы её завершения — чтение никогда не вернуло бы ноль.
     drop(pty.slave);
@@ -169,11 +214,26 @@ pub async fn local_connect<R: Runtime>(
         let gate = gate.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            // Пишем в журнал только о первых порциях: дальше это был бы
+            // поток в сотни строк, а развилку видно по самому началу.
+            let mut порций = 0usize;
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        записать(&app, &format!("вывод кончился, порций было {порций}"));
+                        break;
+                    }
+                    Err(e) => {
+                        записать(&app, &format!("чтение оборвалось: {e}"));
+                        break;
+                    }
                     Ok(n) => {
+                        порций += 1;
+                        if порций <= 3 {
+                            записать(&app, &format!("прочитано {n} байт (порция {порций})"));
+                        }
                         let bytes = buf[..n].to_vec();
+                        let порция = порций;
                         let app = app.clone();
                         let sid = sid.clone();
                         let gate = gate.clone();
@@ -184,9 +244,17 @@ pub async fn local_connect<R: Runtime>(
                         tauri::async_runtime::spawn(async move {
                             let mut g = gate.lock().await;
                             match &mut *g {
-                                OutputGate::Buffering(v) => v.push(bytes),
+                                OutputGate::Buffering(v) => {
+                                    if порция <= 3 {
+                                        записать(&app, "вкладка ещё не слушает — коплю");
+                                    }
+                                    v.push(bytes)
+                                }
                                 OutputGate::Ready => {
                                     drop(g);
+                                    if порция <= 3 {
+                                        записать(&app, "шлю во вкладку");
+                                    }
                                     let _ = app.emit(
                                         "ssh-data",
                                         DataEvent { session_id: sid, data: bytes },
@@ -599,6 +667,16 @@ mod живой_прогон {
             текст(&собрано).contains("/bin/sh"),
             "во вкладке нет отметки о запуске: {:?}",
             текст(&собрано)
+        );
+
+        // ⛔ И журнал должен существовать: он и нужен затем, чтобы на
+        // чужой машине отличить «не запустилось» от «не доходит».
+        use tauri::Manager;
+        let файл = h.path().app_config_dir().unwrap().join("local-terminal.log");
+        let записи = std::fs::read_to_string(&файл).unwrap_or_default();
+        assert!(
+            записи.contains("оболочка запущена") && записи.contains("прочитано"),
+            "журнал пуст или неполон ({файл:?}): {записи:?}"
         );
     }
 

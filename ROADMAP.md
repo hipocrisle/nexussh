@@ -29,7 +29,7 @@
 - [ ] Language switcher
 
 ### Phase 4 — Vault integration (1-2 days)
-- [ ] Tauri command bridging our `/matrix/secrets/vault.age` CLI
+- [ ] Tauri command bridging our the local age-vault CLI
 - [ ] Lookup password/key by vault key path
 - [ ] Optional: write-back from "save to vault" button in add-host dialog
 

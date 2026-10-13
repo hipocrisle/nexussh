@@ -1,7 +1,7 @@
 //! NexuSSH account-sync — Phase-0 client-side end-to-end-encryption primitives.
 //!
 //! This module is **self-contained crypto** for the account-based sync feature
-//! (design: `/matrix/docs/nexussh-account-sync-design.md`). It deliberately does
+//! (design: the account-sync design notes). It deliberately does
 //! NOT touch Tauri, IO, or the existing `vault.rs`/age stack — it is a separate,
 //! simpler symmetric scheme for the sync layer, written as pure functions so it
 //! is fully unit-testable and so the (future) sync-server can reproduce the exact

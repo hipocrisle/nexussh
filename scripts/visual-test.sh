@@ -3,7 +3,7 @@
 
 set -e
 
-BIN="${1:-/matrix/nexussh/desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/nexussh}"
+BIN="${1:-./desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/nexussh}"
 SHOTS=/tmp/nexussh-shots
 mkdir -p "$SHOTS"
 rm -f "$SHOTS"/*.png

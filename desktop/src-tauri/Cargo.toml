@@ -113,3 +113,8 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Securit
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+
+[dev-dependencies]
+# ⛔ Мок-приложение Tauri: только так локальную вкладку можно прогнать
+# целиком — команда, задвижка, событие — без экрана и оконного менеджера.
+tauri = { version = "2", features = ["test"] }

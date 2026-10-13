@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
@@ -1136,15 +1136,15 @@ pub async fn ssh_connect(
 }
 
 #[derive(Clone, Serialize)]
-struct DataEvent {
-    session_id: String,
-    data: Vec<u8>,
+pub(crate) struct DataEvent {
+    pub(crate) session_id: String,
+    pub(crate) data: Vec<u8>,
 }
 
 #[derive(Clone, Serialize)]
-struct ClosedEvent {
-    session_id: String,
-    reason: String,
+pub(crate) struct ClosedEvent {
+    pub(crate) session_id: String,
+    pub(crate) reason: String,
 }
 
 async fn run_session_loop(
@@ -1281,8 +1281,8 @@ pub async fn ssh_resize(
 /// ready to receive events. Backend flushes any buffered output through
 /// the same `ssh-data` channel, then switches to direct emit. Idempotent.
 #[tauri::command]
-pub async fn ssh_ready(
-    app: AppHandle,
+pub async fn ssh_ready<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, Arc<SessionManager>>,
     session_id: String,
 ) -> Result<(), SshError> {

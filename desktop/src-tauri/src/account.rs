@@ -1,6 +1,6 @@
 //! NexuSSH account-based sync — Phase-1 CLIENT side.
 //!
-//! Design: `/matrix/docs/nexussh-account-sync-design.md`. This module provides
+//! Design: the account-sync design notes. This module provides
 //! (a) account auth (register / login / logout / TOTP) and (b) a per-item sync
 //! engine that bridges the **local vault KV store** (`vault.rs`) to the server's
 //! per-item encrypted store.

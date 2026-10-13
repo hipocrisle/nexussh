@@ -20,10 +20,15 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::ssh::{OutputGate, SessionCommand, SessionManager};
+// ⛔ Событие собираем ТЕМ ЖЕ типом, что и сетевая часть, а не вручную.
+// Собранное вручную разошлось с окном в имени поля — движок слал
+// «sessionId», окно слушало «session_id», и вкладка молча оставалась
+// пустой. Ни компилятор, ни проверка типов такого не видят: с одной
+// стороны Rust, с другой TypeScript, между ними строка.
+use crate::ssh::{ClosedEvent, DataEvent, OutputGate, SessionCommand, SessionManager};
 
 /// Кадр в канале между обычным и повышенным процессом.
 ///
@@ -97,8 +102,8 @@ pub fn local_shells() -> Vec<String> {
 }
 
 #[tauri::command]
-pub async fn local_connect(
-    app: AppHandle,
+pub async fn local_connect<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, Arc<SessionManager>>,
     session_id: String,
     shell: Option<String>,
@@ -177,7 +182,7 @@ pub async fn local_connect(
                                     drop(g);
                                     let _ = app.emit(
                                         "ssh-data",
-                                        serde_json::json!({ "session_id": sid, "data": bytes }),
+                                        DataEvent { session_id: sid, data: bytes },
                                     );
                                 }
                             }
@@ -187,7 +192,7 @@ pub async fn local_connect(
             }
             let _ = app.emit(
                 "ssh-closed",
-                serde_json::json!({ "session_id": sid, "reason": "оболочка завершилась" }),
+                ClosedEvent { session_id: sid, reason: "оболочка завершилась".into() },
             );
         });
     }
@@ -241,8 +246,8 @@ fn dirs_home() -> Option<std::path::PathBuf> {
 /// оболочка под администратором — разные пункты, а не переключатель
 /// внутри одной сессии.
 #[cfg(windows)]
-async fn elevated_connect(
-    app: AppHandle,
+async fn elevated_connect<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, Arc<SessionManager>>,
     session_id: String,
     shell: String,
@@ -313,7 +318,7 @@ async fn elevated_connect(
                                 drop(g);
                                 let _ = app.emit(
                                     "ssh-data",
-                                    serde_json::json!({ "session_id": sid, "data": bytes }),
+                                    DataEvent { session_id: sid.clone(), data: bytes },
                                 );
                             }
                         }
@@ -322,7 +327,7 @@ async fn elevated_connect(
             }
             let _ = app.emit(
                 "ssh-closed",
-                serde_json::json!({ "session_id": sid, "reason": "оболочка завершилась" }),
+                ClosedEvent { session_id: sid, reason: "оболочка завершилась".into() },
             );
         });
     }
@@ -452,4 +457,177 @@ pub fn run_pty_bridge(args: &[String]) -> Result<(), String> {
         let _ = child.wait();
         Ok::<(), String>(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// ⛔ Имя поля в событии должно совпадать с тем, что слушает окно
+    /// (`session_id`). Расхождение не ловится ни компилятором, ни
+    /// проверкой типов — между движком и окном просто строка, — и
+    /// кончается молча пустой вкладкой.
+    #[test]
+    fn событие_называет_поля_так_же_как_окно() {
+        let ev = crate::ssh::DataEvent {
+            session_id: "s1".into(),
+            data: vec![65, 66],
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains("\"session_id\""), "окно не узнает это событие: {json}");
+        assert!(!json.contains("\"sessionId\""), "{json}");
+
+        let closed = crate::ssh::ClosedEvent {
+            session_id: "s1".into(),
+            reason: "всё".into(),
+        };
+        let json = serde_json::to_string(&closed).unwrap();
+        assert!(json.contains("\"session_id\""), "{json}");
+        assert!(json.contains("\"reason\""), "{json}");
+    }
+
+    /// Оболочка по умолчанию должна находиться хоть одна: иначе вкладка
+    /// откроется с отказом «не найдено ни одной оболочки».
+    #[test]
+    fn оболочка_по_умолчанию_находится() {
+        assert!(!super::local_shells().is_empty(), "на этой системе не нашлось оболочки");
+        assert!(super::pick_shell(None).is_ok());
+        assert_eq!(super::pick_shell(Some("/bin/sh")).unwrap(), "/bin/sh");
+    }
+}
+
+/// ⛔ Полный прогон локальной вкладки без экрана: мок-приложение Tauri,
+/// настоящая оболочка в псевдотерминале, настоящий слушатель события.
+/// Ровно этот путь дважды выходил пустой вкладкой у человека, а сборка
+/// и проверка типов молчали: между движком и окном — строка с именем
+/// события и имена полей, их не сверяет никто, кроме такого прогона.
+#[cfg(all(test, not(windows)))]
+mod живой_прогон {
+    use crate::ssh::{ssh_ready, ssh_send, SessionManager};
+    use std::sync::{Arc, Mutex};
+    use tauri::{Listener, Manager};
+
+    fn накопитель(app: &tauri::App<tauri::test::MockRuntime>) -> Arc<Mutex<Vec<u8>>> {
+        let собрано = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let c = собрано.clone();
+        // Слушаем так же, как окно: по имени события и по имени поля.
+        app.listen("ssh-data", move |e| {
+            let v: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
+            let sid = v["session_id"].as_str().unwrap_or("");
+            assert_eq!(sid, "T1", "вкладка не узнает это событие");
+            let байты: Vec<u8> = v["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_u64().unwrap() as u8)
+                .collect();
+            c.lock().unwrap().extend(байты);
+        });
+        собрано
+    }
+
+    fn текст(собрано: &Arc<Mutex<Vec<u8>>>) -> String {
+        String::from_utf8_lossy(&собрано.lock().unwrap()).to_string()
+    }
+
+    fn ждать(собрано: &Arc<Mutex<Vec<u8>>>, чего: &str, сек: u64) -> bool {
+        for _ in 0..(сек * 20) {
+            if текст(собрано).contains(чего) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn вкладка_печатает_вывод_оболочки() {
+        let app = tauri::test::mock_app();
+        app.manage(Arc::new(SessionManager::default()));
+        let собрано = накопитель(&app);
+        let h = app.handle().clone();
+
+        tauri::async_runtime::block_on(async {
+            let оболочка = super::local_connect(
+                h.clone(),
+                h.state::<Arc<SessionManager>>(),
+                "T1".into(),
+                Some("/bin/sh".into()),
+                80,
+                24,
+                Some(false),
+            )
+            .await
+            .expect("оболочка не запустилась");
+            assert_eq!(оболочка, "/bin/sh");
+
+            // Окно говорит «слушаю» — задвижка открывается и копившееся уходит.
+            ssh_ready(h.clone(), h.state::<Arc<SessionManager>>(), "T1".into())
+                .await
+                .expect("готовность не принята");
+
+            // Enter — это \r, как с клавиатуры в терминале, а не \n.
+            ssh_send(
+                h.state::<Arc<SessionManager>>(),
+                "T1".into(),
+                b"echo PRIVET-123\r".to_vec(),
+            )
+            .await
+            .expect("команда не ушла в оболочку");
+        });
+
+        assert!(
+            ждать(&собрано, "PRIVET-123", 10),
+            "вкладка осталась пустой, пришло: {:?}",
+            текст(&собрано)
+        );
+    }
+
+    #[test]
+    fn вкладка_сообщает_о_закрытии_оболочки() {
+        let app = tauri::test::mock_app();
+        app.manage(Arc::new(SessionManager::default()));
+        let закрылась = Arc::new(Mutex::new(String::new()));
+        let c = закрылась.clone();
+        app.listen("ssh-closed", move |e| {
+            let v: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
+            if v["session_id"] == "T2" {
+                *c.lock().unwrap() = v["reason"].as_str().unwrap_or("").to_string();
+            }
+        });
+        let h = app.handle().clone();
+
+        tauri::async_runtime::block_on(async {
+            super::local_connect(
+                h.clone(),
+                h.state::<Arc<SessionManager>>(),
+                "T2".into(),
+                Some("/bin/sh".into()),
+                80,
+                24,
+                None,
+            )
+            .await
+            .unwrap();
+            ssh_ready(h.clone(), h.state::<Arc<SessionManager>>(), "T2".into())
+                .await
+                .unwrap();
+            ssh_send(
+                h.state::<Arc<SessionManager>>(),
+                "T2".into(),
+                b"exit\r".to_vec(),
+            )
+            .await
+            .unwrap();
+        });
+
+        for _ in 0..200 {
+            if !закрылась.lock().unwrap().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !закрылась.lock().unwrap().is_empty(),
+            "вкладка не узнает, что оболочка закрылась"
+        );
+    }
 }

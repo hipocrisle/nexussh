@@ -215,7 +215,23 @@ export async function sshDisconnect(sessionId: string): Promise<void> {
  * listener has finished attaching.
  */
 export async function sshReady(sessionId: string): Promise<void> {
-  await invoke("ssh_ready", { sessionId });
+  // ⛔ Вкладка может сказать «слушаю» раньше, чем движок успел завести
+  // сессию: она возникает до того, как подключение заведено. Один отказ
+  // «сессия не найдена» тут ничего не значит, а вот бросить после него —
+  // значит оставить задвижку закрытой навсегда и получить немую вкладку:
+  // движок пишет вывод в буфер, окно его никогда не увидит. Поэтому
+  // повторяем — коротко и несколько раз.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await invoke("ssh_ready", { sessionId });
+      return;
+    } catch (e) {
+      const missing = String(e).toLowerCase().includes("not found")
+        || String(e).toLowerCase().includes("не найдена");
+      if (!missing || attempt >= 20) throw e;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
 }
 
 export function onSshData(handler: (ev: DataEvent) => void): Promise<UnlistenFn> {

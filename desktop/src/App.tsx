@@ -1565,9 +1565,7 @@ function App() {
     // пароля, и resolveAuth с запросом пароля тут только мешают.
     if (h.local) {
       try {
-        await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
-        bumpLastUsed(h.id).catch(() => {});
-        promoteSession(pendingId, pendingId, "connected");
+        await startLocalShell(pendingId, h);
       } catch (e) {
         updateSession(pendingId, (s) => ({ ...s, status: "closed", error: String(e) }));
       }
@@ -1594,9 +1592,7 @@ function App() {
       // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
       // работает как обычно, потому что сессия та же.
       if (h.local) {
-        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
-        bumpLastUsed(h.id).catch(() => {});
-        promoteSession(pendingId, sid, "connected");
+        await startLocalShell(pendingId, h);
         return;
       }
       const { sessionId: sid, recording } = await sshConnect({
@@ -2131,14 +2127,12 @@ function App() {
     // входа: ни адреса, ни ключа, ни пароля у неё нет.
     if (h.local) {
       try {
-        await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
-        bumpLastUsed(h.id).catch(() => {});
-        promoteSession(pendingId, pendingId, "connected");
+        await startLocalShell(pendingId, h);
       } catch (e) {
         updateSession(pendingId, (s) => ({ ...s, status: "closed", error: String(e) }));
       }
-        return;
-      }
+      return;
+    }
     try {
       // History recording is started in the BACKEND before the output loop, so
       // the banner/prompt isn't missed (the old frontend start raced it → empty
@@ -2482,6 +2476,29 @@ function App() {
     });
   }
 
+  /// Поднять оболочку этой машины для уже появившейся вкладки.
+  ///
+  /// Идентификатор берём свой, а не временный, с которым вкладка
+  /// появилась: сетевая сессия после подключения тоже получает новый,
+  /// вкладка из-за этого пересоздаётся и заново говорит движку
+  /// «слушаю». Местная идёт тем же путём — и при первом запуске, и при
+  /// переподключении, где прежняя сессия движку уже неизвестна.
+  async function startLocalShell(pendingId: string, h: HostRecord) {
+    const sid = "local-" + crypto.randomUUID();
+    try {
+      await localConnect(sid, h.local?.shell, 80, 24, h.local?.elevated);
+    } catch (e) {
+      // ⛔ Отказ в запуске обязан быть ВИДЕН. Молча закрытая вкладка для
+      // человека выглядит ровно так же, как открытая и пустая, и мы
+      // второй раз получаем «не работает, ничего не печатается» вместо
+      // текста ошибки, по которому понятно, что чинить.
+      showToast(String(e), "error");
+      throw e;
+    }
+    bumpLastUsed(h.id).catch(() => {});
+    promoteSession(pendingId, sid, "connected");
+  }
+
   /// Открыть оболочку этой машины новой вкладкой.
   ///
   /// ⛔ Запись в списке хостов НЕ заводим: это не хост, а способ открыть
@@ -2543,12 +2560,14 @@ function App() {
       // ⛔ Местная оболочка — своим путём: ни адреса, ни входа по ключу
       // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
       // работает как обычно, потому что сессия та же.
-        if (host.local) {
-          await localConnect(sessionId, host.local.shell, 80, 24, host.local.elevated);
-          bumpLastUsed(host.id).catch(() => {});
-          updateSession(sessionId, (s) => ({ ...s, status: "connected", reconnecting: false }));
-          return;
-        }
+      // ⛔ И при переподключении — через startLocalShell, с НОВЫМ
+      // идентификатором. Оставить прежний значит не пересоздать вкладку,
+      // а значит не услышать от неё «слушаю» — и получить немую вкладку
+      // ровно так же, как при первом открытии.
+      if (host.local) {
+        await startLocalShell(sessionId, host);
+        return;
+      }
       const { sessionId: sid, recording } = await sshConnect({
         host: host.host,
         port: host.port,
@@ -2642,9 +2661,7 @@ function App() {
       // у неё нет. Всё остальное — вкладка, подсказки, история — дальше
       // работает как обычно, потому что сессия та же.
       if (h.local) {
-        const { sessionId: sid } = await localConnect(pendingId, h.local.shell, 80, 24, h.local.elevated);
-        bumpLastUsed(h.id).catch(() => {});
-        promoteSession(pendingId, sid, "connected");
+        await startLocalShell(pendingId, h);
         return;
       }
       const { sessionId: sid, recording } = await sshConnect({

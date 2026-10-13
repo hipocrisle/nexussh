@@ -151,7 +151,14 @@ pub async fn local_connect<R: Runtime>(
         .take_writer()
         .map_err(|e| format!("не писать в оболочку: {e}"))?;
 
-    let gate = Arc::new(Mutex::new(OutputGate::Buffering(Vec::new())));
+    // ⛔ Первой строкой кладём в задвижку отметку о запуске. Без неё
+    // вкладка, в которую ничего не пришло, выглядит одинаково и когда
+    // молчит оболочка, и когда событие не доходит до окна, — различить
+    // это по виду нельзя, а человек видит просто пустоту. С отметкой
+    // пустой вкладки не бывает: либо она есть и молчит оболочка, либо
+    // нет и дело в доставке до окна.
+    let запуск = format!("\u{1b}[2m[{shell}]\u{1b}[0m\r\n").into_bytes();
+    let gate = Arc::new(Mutex::new(OutputGate::Buffering(vec![запуск])));
     let (tx, mut rx) = mpsc::unbounded_channel::<SessionCommand>();
     state.register(session_id.clone(), tx, gate.clone()).await;
 
@@ -295,7 +302,14 @@ async fn elevated_connect<R: Runtime>(
     .map_err(|e| format!("повышенная оболочка не подключилась: {e}"))?;
 
     let (mut reader, mut writer) = tokio::io::split(server);
-    let gate = Arc::new(Mutex::new(OutputGate::Buffering(Vec::new())));
+    // ⛔ Первой строкой кладём в задвижку отметку о запуске. Без неё
+    // вкладка, в которую ничего не пришло, выглядит одинаково и когда
+    // молчит оболочка, и когда событие не доходит до окна, — различить
+    // это по виду нельзя, а человек видит просто пустоту. С отметкой
+    // пустой вкладки не бывает: либо она есть и молчит оболочка, либо
+    // нет и дело в доставке до окна.
+    let запуск = format!("\u{1b}[2m[{shell}]\u{1b}[0m\r\n").into_bytes();
+    let gate = Arc::new(Mutex::new(OutputGate::Buffering(vec![запуск])));
     let (tx, mut rx) = mpsc::unbounded_channel::<SessionCommand>();
     state.register(session_id.clone(), tx, gate.clone()).await;
 
@@ -577,6 +591,13 @@ mod живой_прогон {
         assert!(
             ждать(&собрано, "PRIVET-123", 10),
             "вкладка осталась пустой, пришло: {:?}",
+            текст(&собрано)
+        );
+        // Отметка о запуске должна дойти до вкладки раньше всего прочего:
+        // именно она отличает «оболочка молчит» от «событие не доходит».
+        assert!(
+            текст(&собрано).contains("/bin/sh"),
+            "во вкладке нет отметки о запуске: {:?}",
             текст(&собрано)
         );
     }

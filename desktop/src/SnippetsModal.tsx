@@ -17,6 +17,8 @@ import {
   reorderSnippets,
   addCategory,
   removeCategory,
+  lastCategory,
+  rememberCategory,
   exportSnippets,
   importSnippets,
   expandPlaceholders,
@@ -52,7 +54,9 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
   const { t } = useTranslation();
   const [list, setList] = useState<Snippet[]>(() => listSnippets());
   const [q, setQ] = useState("");
-  const [cat, setCat] = useState<string>("all");
+  // Открываемся в той же группе, где закрылись: человек работает в одной
+  // группе подряд, а выбор сбрасывался на «все» при каждом открытии.
+  const [cat, setCat] = useState<string>(() => lastCategory());
   const [editing, setEditing] = useState<Snippet | "new" | null>(null);
   const [syncOn, setSyncOn] = useState(snippetsSyncEnabled());
   // Cloud sync only works when an account is logged in. Track it so the snippet-
@@ -74,6 +78,7 @@ export function SnippetsModal({ onClose, onRun, activeCtx, onToast, onSync, mana
   useEffect(() => onSnippetsChanged(() => setList(listSnippets())), []);
   // Reset grid selection whenever the visible set changes (search / category).
   useEffect(() => setSelIdx(-1), [q, cat]);
+  useEffect(() => rememberCategory(cat), [cat]);
 
   // Mouse drag-reorder over the WHOLE tile. HTML5 `draggable` doesn't fire
   // reliably in Tauri/webkit, so: mousedown anywhere on a tile arms a pending

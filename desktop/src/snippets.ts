@@ -34,6 +34,7 @@ export interface Snippet {
 const LS = "nexussh.snippets.v1";
 const LS_CATS = "nexussh.snippets.categories.v1";
 const LS_SYNC = "nexussh.snippets.sync";
+const LS_CAT_LAST = "nexussh.snippets.lastCategory";
 const EVT = "nx:snippets-changed";
 
 interface LegacySnippet {
@@ -168,6 +169,25 @@ export function listCategories(): string[] {
   }
   for (const c of explicit) fromSnips.add(c);
   return Array.from(fromSnips).sort((a, b) => a.localeCompare(b));
+}
+
+/// Последняя выбранная группа — чтобы окно сниппетов открывалось там же,
+/// где его закрыли. Человек работает в одной группе подряд и каждый раз
+/// выбирал её заново.
+///
+/// Если группу успели удалить или переименовать, возвращаем «все»: иначе
+/// окно открылось бы с пустым списком и выглядело бы как потеря сниппетов.
+export function lastCategory(): string {
+  const c = localStorage.getItem(LS_CAT_LAST) || "all";
+  return c === "all" || listCategories().includes(c) ? c : "all";
+}
+
+export function rememberCategory(c: string) {
+  try {
+    localStorage.setItem(LS_CAT_LAST, c);
+  } catch {
+    // Память браузера может быть недоступна — это мелочь, не повод падать.
+  }
 }
 
 export function addCategory(name: string) {

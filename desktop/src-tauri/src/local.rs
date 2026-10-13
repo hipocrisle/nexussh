@@ -177,10 +177,7 @@ pub async fn local_connect(
                                     drop(g);
                                     let _ = app.emit(
                                         "ssh-data",
-                                        serde_json::json!({
-                                            "sessionId": sid,
-                                            "data": bytes,
-                                        }),
+                                        serde_json::json!({ "session_id": sid, "data": bytes }),
                                     );
                                 }
                             }
@@ -190,7 +187,7 @@ pub async fn local_connect(
             }
             let _ = app.emit(
                 "ssh-closed",
-                serde_json::json!({ "sessionId": sid, "reason": "оболочка завершилась" }),
+                serde_json::json!({ "session_id": sid, "reason": "оболочка завершилась" }),
             );
         });
     }
@@ -316,7 +313,7 @@ async fn elevated_connect(
                                 drop(g);
                                 let _ = app.emit(
                                     "ssh-data",
-                                    serde_json::json!({ "sessionId": sid, "data": bytes }),
+                                    serde_json::json!({ "session_id": sid, "data": bytes }),
                                 );
                             }
                         }
@@ -325,7 +322,7 @@ async fn elevated_connect(
             }
             let _ = app.emit(
                 "ssh-closed",
-                serde_json::json!({ "sessionId": sid, "reason": "оболочка завершилась" }),
+                serde_json::json!({ "session_id": sid, "reason": "оболочка завершилась" }),
             );
         });
     }

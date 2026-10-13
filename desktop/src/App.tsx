@@ -2125,6 +2125,7 @@ function App() {
       focusedPaneId: paneId,
     };
     setWorkspaces((ws_) => [...ws_, ws]);
+    setActiveWorkspaceId(ws.id);
 
     // ⛔ Местная оболочка — сразу после появления вкладки, до разбора
     // входа: ни адреса, ни ключа, ни пароля у неё нет.
@@ -2136,9 +2137,8 @@ function App() {
       } catch (e) {
         updateSession(pendingId, (s) => ({ ...s, status: "closed", error: String(e) }));
       }
-      return;
-    }
-    setActiveWorkspaceId(ws.id);
+        return;
+      }
     try {
       // History recording is started in the BACKEND before the output loop, so
       // the banner/prompt isn't missed (the old frontend start raced it → empty

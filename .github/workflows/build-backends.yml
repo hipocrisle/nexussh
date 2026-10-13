@@ -113,13 +113,28 @@ jobs:
           git checkout "$OC_FORK_REF"
           git submodule update --init --recursive   # lwIP
           ./autogen.sh
+          # ⛔ compat.c включает <sec_api/stdlib_s.h> безусловно на Windows —
+          # так в самом openconnect. В окружении UCRT64 этого заголовка не
+          # стало, и сборка падает на первом же файле. Системные каталоги не
+          # трогаем: если заголовка нет, кладём рядом свою заглушку, где
+          # объявлено ровно то, ради чего он включался (errno_t), а объявления
+          # getenv_s/_putenv_s openconnect делает сам.
+          SHIM=""
+          if ! echo '#include <sec_api/stdlib_s.h>' | gcc -E -xc - >/dev/null 2>&1; then
+            mkdir -p "$PWD/shim/sec_api"
+            printf '%s\n' '#pragma once' '#include <stdlib.h>' '#include <crtdefs.h>' \
+              '#ifndef _ERRCODE_DEFINED' '#define _ERRCODE_DEFINED' \
+              'typedef int errno_t;' '#endif' > "$PWD/shim/sec_api/stdlib_s.h"
+            SHIM="-I$PWD/shim"
+            echo "заголовка sec_api нет — подставляю заглушку"
+          fi
           # --with-vpnc-script required by configure even though --socks5-port
           # never invokes it. gnutls (MSYS2 ucrt64), static single .exe.
           ./configure --enable-socks5-tun --with-gnutls --without-openssl \
             --with-vpnc-script=vpnc-script \
             --disable-nls --without-libpcsclite --without-libproxy \
             --without-gssapi --without-stoken --without-libpskc \
-            CFLAGS="-O2 -s -static"
+            CFLAGS="-O2 -s -static $SHIM"
           make -j"$(nproc)"
           OUT="$(cygpath -u "$GITHUB_WORKSPACE")/out"
           mkdir -p "$OUT"

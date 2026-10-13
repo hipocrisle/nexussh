@@ -21,15 +21,20 @@ built-in VPN transport.
 
 ## Features
 
-**AI command assistant** *(new)*
+**AI command assistant**
 - Describe a task in plain language — get suggested commands to insert (never auto-run), or a plain-text explanation of on-screen output
 - Platform-aware: detects the target (Linux, Cisco IOS, MikroTik, Juniper…) from the prompt and adapts the syntax
 - Optional "AI sees the screen" mode sends the last ~40 lines for accuracy — passwords and keys are stripped client-side; off by default, only a platform label leaves the machine otherwise
 - Access-gated with per-user daily limits; suggestions are copyable and inserted only on your click
 
-**Command palette** *(new, desktop)*
+**Command palette** *(desktop)*
 - One hotkey (default `Ctrl+Shift+Z`, configurable) — fuzzy-search across hosts, snippets, open tabs, actions and settings
 - Keyboard-only: arrows, Enter, `Tab` to jump sections, `@ # > /` prefixes to scope; plus an "ask AI" row
+
+**Local shell** *(new)*
+- Open this machine's shell in a tab — same snippets, history and tabs as a remote session, no SSH server or open port
+- Windows: a separate "terminal (administrator)" entry runs it elevated
+- Multi-line snippets are sent as a paste, so the shell runs the block as one piece
 
 **Terminal**
 - Split tabs and keyboard shortcuts

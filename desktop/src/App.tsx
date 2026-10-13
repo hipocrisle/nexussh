@@ -2365,7 +2365,7 @@ function App() {
             return;
           }
           const cmd = expandPlaceholders(s.command, ctx);
-          sshSend(activeId, new TextEncoder().encode(cmd + (s.autoRun ? "\r" : "")));
+          отправитьСниппет(activeId, cmd + (s.autoRun ? "\r" : ""));
           if (!isMobile) focusActiveTerminal();
         },
       });
@@ -2497,6 +2497,28 @@ function App() {
     }
     bumpLastUsed(h.id).catch(() => {});
     promoteSession(pendingId, sid, "connected");
+  }
+
+  /// Отправить сниппет в терминал.
+  ///
+  /// ⛔ Многострочный — через вставку в сам xterm, а не байтами мимо
+  /// него: оболочка включает режим скобочной вставки, и только xterm
+  /// знает, включён ли он сейчас. Иначе блок уходит построчно, оболочка
+  /// разбирает его как череду команд, и код ломается на первой же
+  /// открытой скобке. Хвостовой перевод строки (автозапуск) шлём
+  /// отдельно: внутри вставки он остался бы частью текста и ничего бы
+  /// не запустил.
+  function отправитьСниппет(sessionId: string, data: string) {
+    const автозапуск = data.endsWith("\r");
+    const тело = автозапуск ? data.slice(0, -1) : data;
+    if (тело.includes("\n")) {
+      window.dispatchEvent(
+        new CustomEvent("nx:paste", { detail: { sessionId, text: тело } }),
+      );
+      if (автозапуск) sshSend(sessionId, new TextEncoder().encode("\r"));
+      return;
+    }
+    sshSend(sessionId, new TextEncoder().encode(data));
   }
 
   /// Открыть оболочку этой машины новой вкладкой.
@@ -4550,7 +4572,7 @@ function App() {
           onClose={() => setSnippetsOpen(false)}
           onRun={(data) => {
             if (activeId) {
-              sshSend(activeId, new TextEncoder().encode(data));
+              отправитьСниппет(activeId, data);
               // Nudge the terminal to clear selection + take focus (so the user
               // can type right after a snippet, no mouse click needed).
               window.dispatchEvent(

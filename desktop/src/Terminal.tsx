@@ -1041,6 +1041,23 @@ export function TerminalView({
     return () => window.removeEventListener("nx:input", onInput);
   }, [sessionId]);
 
+  // ⛔ Многострочный сниппет уходит в оболочку как ВСТАВКА, а не как
+  // набор с клавиатуры. Оболочка (PSReadLine, bash, zsh) включает режим
+  // скобочной вставки и по нему понимает: это один блок, выполнять его
+  // надо целиком и после закрывающей скобки. Отправленный построчно
+  // блок она разбирает как череду отдельных команд — на экране череда
+  // «>>», а сам код ломается. Отправляем через сам xterm: он знает,
+  // включён ли режим у этой оболочки, и обрамит текст сам.
+  useEffect(() => {
+    const onPaste = (e: Event) => {
+      const ce = e as CustomEvent<{ sessionId?: string; text?: string }>;
+      if (ce.detail?.sessionId !== sessionId || !ce.detail.text) return;
+      termRef.current?.paste(ce.detail.text);
+    };
+    window.addEventListener("nx:paste", onPaste);
+    return () => window.removeEventListener("nx:paste", onPaste);
+  }, [sessionId]);
+
   return (
     <div
       className="relative w-full h-full"

@@ -208,10 +208,18 @@ pub async fn local_connect<R: Runtime>(
     state.register(session_id.clone(), tx, gate.clone()).await;
 
     // ── вывод оболочки → в окно ──
+    //
+    // ⛔ Порядок порций СВЯЩЕНЕН. Читаем в отдельном потоке (чтение из
+    // псевдотерминала блокирующее), но в окно отправляет РОВНО ОДНА
+    // задача, которая забирает порции из очереди по одной. Раньше на
+    // каждую порцию заводилась своя задача — и выполнялись они в каком
+    // угодно порядке: на длинном выводе строки приходили во вкладку
+    // перемешанными, а многострочный сниппет уезжал в оболочку задом
+    // наперёд и ломался. У сетевых сессий этого нет: там всё идёт одной
+    // задачей, потому и не всплывало.
     {
-        let app = app.clone();
-        let sid = session_id.clone();
-        let gate = gate.clone();
+        let (поток, mut очередь) = mpsc::unbounded_channel::<Vec<u8>>();
+        let app_чтения = app.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             // Пишем в журнал только о первых порциях: дальше это был бы
@@ -220,48 +228,53 @@ pub async fn local_connect<R: Runtime>(
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
-                        записать(&app, &format!("вывод кончился, порций было {порций}"));
+                        записать(&app_чтения, &format!("вывод кончился, порций было {порций}"));
                         break;
                     }
                     Err(e) => {
-                        записать(&app, &format!("чтение оборвалось: {e}"));
+                        записать(&app_чтения, &format!("чтение оборвалось: {e}"));
                         break;
                     }
                     Ok(n) => {
                         порций += 1;
                         if порций <= 3 {
-                            записать(&app, &format!("прочитано {n} байт (порция {порций})"));
+                            записать(&app_чтения, &format!("прочитано {n} байт (порция {порций})"));
                         }
-                        let bytes = buf[..n].to_vec();
-                        let порция = порций;
-                        let app = app.clone();
-                        let sid = sid.clone();
-                        let gate = gate.clone();
-                        // ⛔ Через ту же задвижку, что и у сетевых сессий:
-                        // пока окно не сказало «готово», вывод копится, а
-                        // не теряется. Первые строки приглашения приходят
-                        // раньше, чем окно успевает подписаться.
-                        tauri::async_runtime::spawn(async move {
-                            let mut g = gate.lock().await;
-                            match &mut *g {
-                                OutputGate::Buffering(v) => {
-                                    if порция <= 3 {
-                                        записать(&app, "вкладка ещё не слушает — коплю");
-                                    }
-                                    v.push(bytes)
-                                }
-                                OutputGate::Ready => {
-                                    drop(g);
-                                    if порция <= 3 {
-                                        записать(&app, "шлю во вкладку");
-                                    }
-                                    let _ = app.emit(
-                                        "ssh-data",
-                                        DataEvent { session_id: sid, data: bytes },
-                                    );
-                                }
-                            }
-                        });
+                        if поток.send(buf[..n].to_vec()).is_err() {
+                            break;              // окно закрылось
+                        }
+                    }
+                }
+            }
+        });
+
+        let app = app.clone();
+        let sid = session_id.clone();
+        let gate = gate.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut отправлено = 0usize;
+            while let Some(bytes) = очередь.recv().await {
+                отправлено += 1;
+                let mut g = gate.lock().await;
+                match &mut *g {
+                    // Пока окно не сказало «слушаю», вывод копится, а не
+                    // теряется: первые строки приглашения приходят раньше,
+                    // чем окно успевает подписаться.
+                    OutputGate::Buffering(v) => {
+                        if отправлено <= 3 {
+                            записать(&app, "вкладка ещё не слушает — коплю");
+                        }
+                        v.push(bytes);
+                    }
+                    OutputGate::Ready => {
+                        drop(g);
+                        if отправлено <= 3 {
+                            записать(&app, "шлю во вкладку");
+                        }
+                        let _ = app.emit(
+                            "ssh-data",
+                            DataEvent { session_id: sid.clone(), data: bytes },
+                        );
                     }
                 }
             }
@@ -588,13 +601,20 @@ mod живой_прогон {
     use tauri::{Listener, Manager};
 
     fn накопитель(app: &tauri::App<tauri::test::MockRuntime>) -> Arc<Mutex<Vec<u8>>> {
+        накопитель_для(app, "T1")
+    }
+
+    fn накопитель_для(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        ждём: &'static str,
+    ) -> Arc<Mutex<Vec<u8>>> {
         let собрано = Arc::new(Mutex::new(Vec::<u8>::new()));
         let c = собрано.clone();
         // Слушаем так же, как окно: по имени события и по имени поля.
         app.listen("ssh-data", move |e| {
             let v: serde_json::Value = serde_json::from_str(e.payload()).unwrap();
             let sid = v["session_id"].as_str().unwrap_or("");
-            assert_eq!(sid, "T1", "вкладка не узнает это событие");
+            assert_eq!(sid, ждём, "вкладка не узнает это событие");
             let байты: Vec<u8> = v["data"]
                 .as_array()
                 .unwrap()
@@ -678,6 +698,70 @@ mod живой_прогон {
             записи.contains("оболочка запущена") && записи.contains("прочитано"),
             "журнал пуст или неполон ({файл:?}): {записи:?}"
         );
+    }
+
+    /// ⛔ Порядок порций вывода. Многострочный сниппет уходит в оболочку
+    /// целиком, и оболочка отзывается длинной чередой порций. Если
+    /// отправлять каждую своей задачей, они приходят во вкладку как
+    /// придётся: у человека строки сниппета встали задом наперёд, и
+    /// команда сломалась. Проверяем сотней пронумерованных строк —
+    /// перестановку видно сразу, а на коротком выводе её не поймать.
+    #[test]
+    fn порядок_строк_не_рассыпается() {
+        let app = tauri::test::mock_app();
+        app.manage(Arc::new(SessionManager::default()));
+        let собрано = накопитель_для(&app, "T3");
+        let h = app.handle().clone();
+
+        tauri::async_runtime::block_on(async {
+            super::local_connect(
+                h.clone(),
+                h.state::<Arc<SessionManager>>(),
+                "T3".into(),
+                Some("/bin/sh".into()),
+                200,
+                50,
+                None,
+            )
+            .await
+            .unwrap();
+            ssh_ready(h.clone(), h.state::<Arc<SessionManager>>(), "T3".into())
+                .await
+                .unwrap();
+            ssh_send(
+                h.state::<Arc<SessionManager>>(),
+                "T3".into(),
+                "i=1; while [ $i -le 100 ]; do echo СТРОКА-$i; i=$((i+1)); done\r"
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .await
+            .unwrap();
+        });
+
+        assert!(ждать(&собрано, "СТРОКА-100", 15), "вывод не доехал: {}", текст(&собрано));
+        // Хвост последней порции мог ещё не дойти — даём ему долететь,
+        // иначе проверка полноты сорвётся на ровном месте.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let вывод = текст(&собрано);
+        let номера: Vec<usize> = вывод
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("СТРОКА-"))
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        // ⛔ Не придираемся к точному числу: самая первая строка вывода
+        // иногда слипается с эхом команды, и тогда счёт на единицу
+        // меньше — это не поломка, а свойство псевдотерминала. Ловим то,
+        // что действительно сломалось: номера обязаны ИДТИ ПО ВОЗРАСТАНИЮ
+        // без единой перестановки.
+        assert!(номера.len() >= 90, "вывод пришёл не весь: {} строк", номера.len());
+        assert_eq!(*номера.last().unwrap(), 100, "хвост вывода потерялся");
+        let мимо: Vec<_> = номера
+            .windows(2)
+            .filter(|п| п[1] != п[0] + 1)
+            .map(|п| format!("{} → {}", п[0], п[1]))
+            .collect();
+        assert!(мимо.is_empty(), "строки пришли вперемешку: {мимо:?}");
     }
 
     #[test]

@@ -47,9 +47,43 @@ channels.
 - [ ] Trim the startup diagnostics of the local terminal once the
       feature settles (log and shell banner are there while it is new).
 
+## Virtual machine management
+
+A panel for running virtual machines next to the terminal: inventory,
+power, snapshots and a graphical console in a tab. Driven by the
+hypervisor's own API, not by shell commands — the point is a real
+management surface, not a wrapper over `qm` and `vim-cmd`.
+
+Scope per host:
+
+- inventory: machines, state, assigned CPU/RAM/disk, guest address;
+- power: start, shutdown, reset, suspend, with the state reflected live;
+- snapshots: list, create, roll back, delete;
+- console: graphical, in a tab beside terminals;
+- credentials in the vault like everything else, never in the host list.
+
+Staged, because each backend is its own protocol:
+
+- [ ] **Proxmox** — REST with API tokens; console over their proxy
+      (`vncproxy` / `termproxy`) rendered by noVNC. The cheapest start
+      and the full feature set in one place.
+- [ ] **vCenter** — vSphere Automation REST: session auth, then
+      inventory, power and snapshots map closely onto the Proxmox work.
+- [ ] **VMware console** — WebMKS. Needs their HTML5 SDK, which pulls
+      external JavaScript and does not fit the strict CSP the app runs
+      under; decide between hosting the SDK in-bundle or leaving the
+      console to the browser for this backend.
+- [ ] **ESXi without vCenter** — SOAP (vim25) only; no usable Rust
+      client exists, so this is hand-written XML. Last, and only if the
+      earlier stages prove the panel is worth it.
+
+This is a large piece of work — closer to a second product inside the
+client than to a feature. Sequencing matters: Proxmox end to end first,
+including the console, so the shape of the panel is settled before a
+second backend is added.
+
 ## Considered
 
-- Hypervisor panels (Proxmox / QEMU over their APIs).
 - Remote forwarding (`ssh -R`).
 
 ## Decided against

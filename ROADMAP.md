@@ -42,45 +42,72 @@ channels.
 
 - [ ] **macOS build** — the only desktop platform still missing;
       unsigned build first, signing needs an Apple developer account.
-- [ ] **Telnet and RDP** entries in the new-tab menu, next to SSH, SFTP
-      and the local terminal.
+- [ ] **Telnet** entry in the new-tab menu, next to SSH, SFTP and the
+      local terminal (the serial console joins them as a module).
 - [ ] Trim the startup diagnostics of the local terminal once the
       feature settles (log and shell banner are there while it is new).
 
-## Virtual machine management
+## Modules
 
-A panel for running virtual machines next to the terminal: inventory,
-power, snapshots and a graphical console in a tab. Driven by the
-hypervisor's own API, not by shell commands — the point is a real
-management surface, not a wrapper over `qm` and `vim-cmd`.
+Everything beyond SSH arrives as a **module**: a panel that is off by
+default, switched on per taste, with its interface loaded only when
+opened. Someone who wants a plain SSH client never sees the rest.
 
-Scope per host:
+Why inside this app and not a second one: the terminal, vault, sync,
+history, snippets, updater and four-platform build are shared, and a
+separate repository would mean maintaining two copies of all of it. If a
+genuinely slimmer edition is ever needed, that is a build flag, not a
+second project.
 
-- inventory: machines, state, assigned CPU/RAM/disk, guest address;
-- power: start, shutdown, reset, suspend, with the state reflected live;
-- snapshots: list, create, roll back, delete;
-- console: graphical, in a tab beside terminals;
-- credentials in the vault like everything else, never in the host list.
+Modules are compiled in and toggled, not loaded from disk as plugins:
+third-party plugins would need signing, a stable interface and would run
+with the app's full rights — complexity that buys nothing here.
 
-Staged, because each backend is its own protocol:
+### Serial console
 
-- [ ] **Proxmox** — REST with API tokens; console over their proxy
-      (`vncproxy` / `termproxy`) rendered by noVNC. The cheapest start
-      and the full feature set in one place.
+Connect to hardware over a COM/tty port — the usual first step when
+configuring switches and routers before they have an address. Same
+terminal, same snippets and history; only the transport differs. Port
+picker, speed and framing, reconnect when the adapter is re-plugged.
+
+Small and self-contained, so it doubles as the first test of the module
+mechanics.
+
+### VNC
+
+Remote desktop over RFB: the protocol is simple and well-documented, and
+a session fits the existing tab model.
+
+### Virtual machine management
+
+A panel for running machines: inventory with state and resources, power
+(start, shutdown, reset, suspend) reflected live, snapshots (list,
+create, roll back, delete), and a graphical console in a tab. Driven by
+the hypervisor's API, not by shell commands — the point is real
+management, not a wrapper over `qm` and `vim-cmd`. Credentials live in
+the vault, never in the host list.
+
 - [ ] **vCenter** — vSphere Automation REST: session auth, then
-      inventory, power and snapshots map closely onto the Proxmox work.
-- [ ] **VMware console** — WebMKS. Needs their HTML5 SDK, which pulls
-      external JavaScript and does not fit the strict CSP the app runs
-      under; decide between hosting the SDK in-bundle or leaving the
-      console to the browser for this backend.
-- [ ] **ESXi without vCenter** — SOAP (vim25) only; no usable Rust
-      client exists, so this is hand-written XML. Last, and only if the
-      earlier stages prove the panel is worth it.
+      inventory, power and snapshots. First, because it is the
+      hypervisor we can actually test against.
+- [ ] **VMware console** — WebMKS needs their HTML5 SDK, which pulls
+      external JavaScript and does not fit the app's strict CSP. Decide
+      between bundling the SDK and leaving this console to the browser.
+- [ ] **Proxmox** — REST with API tokens, console over their proxy and
+      noVNC. Deferred: no instance to test on. Technically the simplest
+      of the three.
+- [ ] **ESXi without vCenter** — SOAP (vim25) only, no usable Rust
+      client, hand-written XML. Last, and only if the panel proves
+      worthwhile.
 
-This is a large piece of work — closer to a second product inside the
-client than to a feature. Sequencing matters: Proxmox end to end first,
-including the console, so the shape of the panel is settled before a
-second backend is added.
+Each backend is its own protocol, so they land one at a time, the first
+one end to end, console included, before the next is started.
+
+### Not planned
+
+RDP in our own code is a product of its own; it would mean embedding an
+existing engine, with its licence and its build on four platforms. Not
+promised until there is a reason.
 
 ## Considered
 

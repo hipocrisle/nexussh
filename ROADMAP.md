@@ -1,82 +1,62 @@
 # NexuSSH Roadmap
 
-## v0.1 — Desktop MVP (3-4 weeks)
+Current release: **3.1.0** (stable). The beta channel must always be
+numbered above stable, so the next beta is `3.2.0-beta.1`.
 
-### Phase 0 — Scaffold (DONE)
-- [x] `desktop/` Tauri 2 + React + TS + Vite
-- [x] Identifier `org.hipogas.nexussh`, product name "NexuSSH"
-- [x] GitHub repo `hipocrisle/nexussh` (private)
+## Shipped
 
-### Phase 1 — SSH core (3-5 days)
-- [ ] Install `russh` Rust crate, integrate as Tauri command
-- [ ] Connect to host (password / key file / agent)
-- [ ] Single terminal session, raw bytes to xterm.js
-- [ ] Host record schema (id, name, host, port, user, auth_method, key_ref)
-- [ ] Save host list to encrypted JSON in app data dir
+**Core** — SSH over [russh](https://github.com/Eugeny/russh) (pure Rust),
+tabs and splits, keyboard-interactive and MFA, legacy algorithms for old
+Cisco IOS / ESXi, host-key verification (TOFU, prompts on first use and
+on change), SFTP over the same connection, local port forwarding
+(`ssh -L`) with saved per-host forwards.
 
-### Phase 2 — UI shell (2-3 days)
-- [ ] Sidebar with host list, search/filter
-- [ ] Multiple terminal tabs
-- [ ] Add/edit/delete host dialog
-- [ ] Connection state indicators
-- [ ] Connect / disconnect / reconnect actions
+**Local shell** (3.1.0) — this machine's shell in a tab, plain or
+elevated on Windows, with the same snippets, history and tabs as a
+remote session.
 
-### Phase 3 — Matrix theme + i18n (2-3 days)
-- [ ] Color palette: deep bg #0a0e0e, accent green #00ff95 / cyan #00d4ff, monospace JetBrains Mono
-- [ ] Window chrome custom-titlebar
-- [ ] xterm.js theme matching
-- [ ] react-i18next, RU + EN translations
-- [ ] Language switcher
+**Security** — age-encrypted credential vault with idle auto-lock,
+envelope-encrypted host saves, encryptable host list, strict CSP. All
+findings of the 2026-07 security audit are closed.
 
-### Phase 4 — Vault integration (1-2 days)
-- [ ] Tauri command bridging our the local age-vault CLI
-- [ ] Lookup password/key by vault key path
-- [ ] Optional: write-back from "save to vault" button in add-host dialog
+**Sync** — end-to-end encrypted cloud sync of hosts, snippets and
+settings; recovery key; bulk import and cross-machine export.
 
-### Phase 5 — Sync (2-3 days)
-- [ ] Encrypt host config (AES-256-GCM, PBKDF2 from user master password)
-- [ ] Save to user-chosen path (Syncthing folder default)
-- [ ] Multi-backend: local file / Syncthing / Dropbox / Google Drive / OneDrive
-  - Local file: just write to disk
-  - Syncthing: write to user's Syncthing folder path
-  - Cloud: Tauri http plugin to backend APIs (later — file-based at first)
+**Transport** — per-host routing through the bundled
+[xray-core](https://github.com/XTLS/Xray-core) (userspace SOCKS, no TUN,
+no admin rights), corporate VPN via openconnect/ocproxy, and system L2TP
+profiles.
 
-### Phase 6 — Session History panel (3-5 days, KILLER FEATURE)
-- [ ] Capture all bytes from SSH session (incl. alternate-buffer)
-- [ ] Persist to per-session log file
-- [ ] Side panel UI: scrollable text history, ANSI-rendered
-- [ ] Search-in-history
-- [ ] Export session as text / .ansi / .typescript
-- [ ] Toggle live terminal ↔ history view
+**Interface** — command palette, snippet grid with hotkeys, encrypted
+session history with search, themes and fonts, Russian and English UI.
 
-### Phase 7 — SFTP (2 days)
-- [ ] File browser pane
-- [ ] Upload/download
-- [ ] Right-click rename/delete/chmod
+**AI assistant** — plain-language command suggestions (inserted, never
+auto-run) and explanations of on-screen output, with client-side
+redaction of secrets.
 
-### Phase 8 — Port forwarding (1-2 days)
-- [x] Local forward (ssh -L) — v2.3.0-beta.2+ (tunnel.rs direct-tcpip, saved per-host forwards, autostart, path, per-host VPN-aware)
-- [x] UI to add and monitor active forwards (TunnelsPanel + AddTunnelDialog + saved-forwards quick-start)
-- [ ] Remote forward (ssh -R) — not built (niche)
-- [ ] Dynamic (SOCKS, ssh -D) — not built (built-in xray VPN covers most routing needs)
+**Platforms and delivery** — Windows, Linux (`.deb` + `.rpm`, system
+WebKit), Android (signed APK); self-hosted updater with stable and beta
+channels.
 
-### Phase 9 — Build pipeline (1-2 days)
-- [ ] Tauri 2 cross-builds
-- [ ] Linux: AppImage + .deb
-- [ ] macOS: .dmg (unsigned for personal — signed needs Apple Dev $99/y)
-- [ ] Windows: .exe installer (unsigned for personal)
-- [ ] GitHub Actions CI for release builds
+## Next
 
-### Phase 10 — Polish, testing, docs
+- [ ] **macOS build** — the only desktop platform still missing;
+      unsigned build first, signing needs an Apple developer account.
+- [ ] **Telnet and RDP** entries in the new-tab menu, next to SSH, SFTP
+      and the local terminal.
+- [ ] Trim the startup diagnostics of the local terminal once the
+      feature settles (log and shell banner are there while it is new).
 
-## v0.2 — Android port (~2 weeks after v0.1)
-- Capacitor wrap of React UI (shared codebase with desktop)
-- Native Android Kotlin module for SSH (Capacitor plugin)
-- Or: react-native-ssh-sftp wrap with React Native (separate codebase)
-- Decision deferred to after v0.1 lands
+## Considered
 
-## v0.3+ ideas
-- AI integration: ask NexuSSH to explain a command, paste output, troubleshoot
-- Snippets library (shared via sync)
-- Themes marketplace
-- Hypervisor management panels (Proxmox/QEMU via API) — port TabSSH approach
+- Hypervisor panels (Proxmox / QEMU over their APIs).
+- Remote forwarding (`ssh -R`).
+
+## Decided against
+
+- **AppImage** — abandoned upstream for Tauri 2; `.deb` and `.rpm`
+  against the system WebKit are what ship.
+- **Dynamic SOCKS forwarding (`ssh -D`)** — the bundled VPN transport
+  covers the same need.
+- **RHEL 8 and 9** — no `webkit2gtk4.1` in base, EPEL or CRB; only the
+  4.0 webkit, which Tauri 2 cannot use. EL10 works (EPEL first).

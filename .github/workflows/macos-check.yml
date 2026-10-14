@@ -1,0 +1,58 @@
+# Проверка сборки под macOS — отдельно от релизного пути.
+#
+# ⛔ Зачем отдельный файл: macOS в клиенте ещё не поддерживается, и
+# неудачная проверка не должна ронять релизные сборки и трогать ключ
+# подписи. Запускается только руками (workflow_dispatch), секретов не
+# просит, артефактов не публикует.
+#
+# Собираем не бинарь, а проверку компиляции: цель — выяснить, какой код
+# не переносится, а не получить .dmg. Это минуты вместо десятков минут.
+name: macOS check (experimental)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: macos-latest        # arm64 (Apple silicon)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Rust stable (Apple + Intel)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            desktop/src-tauri/target/
+          key: macos-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      # Окно собирается заранее: сборочный скрипт Tauri требует готовый
+      # каталог dist, иначе падает ещё до компиляции Rust.
+      - name: Build frontend
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run build
+
+      - name: Check Apple silicon
+        working-directory: desktop/src-tauri
+        run: cargo check --target aarch64-apple-darwin --all-targets 2>&1 | tail -80
+
+      - name: Check Intel
+        if: always()
+        working-directory: desktop/src-tauri
+        run: cargo check --target x86_64-apple-darwin --all-targets 2>&1 | tail -80

@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Lock, Minus, X, Fingerprint } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { nativeFrame } from "./platform";
 import { useSettingValue } from "./settings/settings-store";
 import {
   vaultUnlock,
@@ -114,7 +115,7 @@ export function VaultLockScreen({ onUnlocked }: Props) {
         data-tauri-drag-region
         className="flex items-center justify-end h-9 shrink-0 select-none"
       >
-        {win && !nativeDecorations && (
+        {win && !nativeFrame(nativeDecorations) && (
           <div className="flex items-stretch h-9">
             <button className={ctrlBtn} onClick={() => win.minimize()} title="Minimize">
               <Minus size={14} />

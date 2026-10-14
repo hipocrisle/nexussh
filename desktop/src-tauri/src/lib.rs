@@ -143,13 +143,22 @@ fn open_extra_window(app: &tauri::AppHandle) {
     // corners too — but only with a compositor (else opaque/square, no black
     // corners). Builder windows don't inherit the config's `transparent`, so
     // set it explicitly. detect_composited() is non-Linux-safe (returns false).
-    let _ = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
+    let окно = tauri::WebviewWindowBuilder::new(app, &label, tauri::WebviewUrl::default())
         .title("NexuSSH")
         .inner_size(1280.0, 800.0)
-        .min_inner_size(800.0, 500.0)
+        .min_inner_size(800.0, 500.0);
+    // ⛔ На macOS прозрачности у окна не будет: Apple прячет её за приватным
+    // API, и Tauri не отдаёт метод `transparent` без отдельной сборочной
+    // возможности. Нам он там и не нужен — углы скругляет сама система.
+    // Заодно берём нативную рамку: без неё на маке окно осталось бы и без
+    // системных кнопок управления.
+    #[cfg(target_os = "macos")]
+    let окно = окно.decorations(true);
+    #[cfg(not(target_os = "macos"))]
+    let окно = окно
         .decorations(false)
-        .transparent(COMPOSITED.load(Ordering::Relaxed))
-        .build();
+        .transparent(COMPOSITED.load(Ordering::Relaxed));
+    let _ = окно.build();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

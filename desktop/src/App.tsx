@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, Fragment, Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
+import { isWindows, nativeFrame } from "./platform";
 import i18n from "./i18n";
 import {
   Lock,
@@ -528,7 +529,7 @@ function describeHostVpn(
 
 /** ⛔ Оболочка с правами администратора есть только в Windows: на Linux
  *  повышение делается через sudo прямо в самой оболочке. */
-const isWindows = /Windows/i.test(navigator.userAgent);
+
 
 function App() {
   const { t } = useTranslation();
@@ -548,7 +549,7 @@ function App() {
   // custom WindowControls + resize zones below. Applied at startup and on change.
   useEffect(() => {
     if (!HAS_TAURI) return;
-    getCurrentWindow().setDecorations(settings.nativeDecorations).catch(() => {});
+    getCurrentWindow().setDecorations(nativeFrame(settings.nativeDecorations)).catch(() => {});
   }, [settings.nativeDecorations]);
 
   // Round the borderless Linux window corners — but ONLY when a compositor is
@@ -566,7 +567,7 @@ function App() {
     let cancelled = false;
     // Native decorations draw the OS frame — the custom rounded-transparent-corner
     // hack must be off (it would fight the native title bar). Clear the attribute.
-    if (settings.nativeDecorations) {
+    if (nativeFrame(settings.nativeDecorations)) {
       document.documentElement.removeAttribute("data-os");
       return;
     }
@@ -4128,7 +4129,7 @@ function App() {
           <div className="ml-1">
             <LanguageSwitcher />
           </div>
-          {!settings.nativeDecorations && <WindowControls />}
+          {!nativeFrame(settings.nativeDecorations) && <WindowControls />}
         </div>
       </header>
       )}
@@ -4708,7 +4709,7 @@ function App() {
       {/* Window-edge resize zones (decorations:false has no native resize
        *  border/cursors). Desktop only — mobile windows aren't resized. Skipped
        *  when native decorations are on (the OS provides resize borders). */}
-      {HAS_TAURI && !isMobile && !settings.nativeDecorations && <ResizeHandles />}
+      {HAS_TAURI && !isMobile && !nativeFrame(settings.nativeDecorations) && <ResizeHandles />}
     </main>
   );
 }

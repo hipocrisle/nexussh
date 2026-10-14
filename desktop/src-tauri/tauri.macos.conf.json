@@ -1,0 +1,11 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "NexuSSH",
+        "decorations": true,
+        "titleBarStyle": "Overlay"
+      }
+    ]
+  }
+}

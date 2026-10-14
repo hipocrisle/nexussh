@@ -53,6 +53,48 @@ jobs:
         run: cargo check --target aarch64-apple-darwin --all-targets 2>&1 | tail -80
 
       - name: Check Intel
-        if: always()
         working-directory: desktop/src-tauri
         run: cargo check --target x86_64-apple-darwin --all-targets 2>&1 | tail -80
+
+      # Движок VPN вшивается в приложение как sidecar. Tauri ищет файл с
+      # суффиксом целевой тройки, поэтому для универсальной сборки кладём и
+      # обе архитектуры, и склеенный lipo вариант — что бы он ни спросил.
+      - name: Fetch xray-core (both architectures + universal)
+        working-directory: desktop/src-tauri
+        run: |
+          set -e
+          mkdir -p binaries
+          for pair in "Xray-macos-arm64-v8a.zip:aarch64-apple-darwin" "Xray-macos-64.zip:x86_64-apple-darwin"; do
+            ASSET="${pair%%:*}"; TRIPLE="${pair##*:}"
+            curl -fSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/$ASSET"
+            unzip -o xray.zip xray -d xray_tmp
+            mv xray_tmp/xray "binaries/xray-$TRIPLE"
+            chmod +x "binaries/xray-$TRIPLE"
+            rm -rf xray.zip xray_tmp
+          done
+          lipo -create -output binaries/xray-universal-apple-darwin \
+            binaries/xray-aarch64-apple-darwin binaries/xray-x86_64-apple-darwin
+          chmod +x binaries/xray-universal-apple-darwin
+          lipo -info binaries/xray-universal-apple-darwin
+
+      # ⛔ Артефакты обновления здесь отключаем: они требуют ключ подписи, а
+      # этот прогон намеренно идёт без секретов. Форматы задаём флагом, а не
+      # правкой tauri.conf.json, чтобы не затронуть рабочие сборки.
+      - name: Build universal bundle (unsigned, no updater artifacts)
+        working-directory: desktop
+        run: |
+          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Show what was built
+        if: always()
+        working-directory: desktop/src-tauri
+        run: find target -name "*.dmg" -o -name "*.app" -maxdepth 6 | head -20
+
+      - name: Upload bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexussh-macos-universal
+          path: desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

@@ -166,9 +166,18 @@ jobs:
             | OS | Команда |
             |----|---------|
             | **Windows** | запустить `NexuSSH_*_x64-setup.exe` |
+            | **macOS** (Apple Silicon + Intel) | открыть `NexuSSH_*_universal.dmg` |
             | **Debian/Ubuntu** | `sudo apt install ./NexuSSH_*_amd64.deb` |
             | **Fedora** | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
             | **RHEL / Rocky / Alma / Oracle / CentOS 10** | ⚠️ сначала EPEL (см. ниже) |
+
+            > ⚠️ **macOS — сборка без подписи Apple.** После переноса в
+            > «Программы» система скажет «повреждено». Снять карантин:
+            > ```
+            > xattr -dr com.apple.quarantine /Applications/NexuSSH.app
+            > ```
+            > Встроенного обновления на macOS пока нет — новую версию брать
+            > отсюда же.
 
             > ⚠️ **RHEL-семейство — поддерживается только версия 10.** На EL10
             > `webkit2gtk4.1` есть в EPEL; версии **8 и 9 его НЕ имеют** (там только
@@ -347,3 +356,116 @@ jobs:
           # Не роняем сборку, если зеркало недоступно (крон догонит за ≤5 мин) —
           # но громко предупреждаем.
           [ "$code" = "200" ] || echo "::warning::mirror trigger failed (HTTP $code); cron will catch up within 5 min"
+
+  # ── macOS ───────────────────────────────────────────────────────────────
+  # ⛔ Отдельным заданием, а НЕ строкой в матрице сборки. Манифест
+  # обновления ждёт матрицу целиком (needs: build): упади тут сборка —
+  # выпуск под Windows и Linux навсегда остался бы черновиком, а люди без
+  # обновления. Поэтому macOS идёт после публикации и своей неудачей
+  # ничего не роняет.
+  #
+  # ⛔ Подписи Apple нет, встроенного обновления на macOS тоже: артефакты
+  # обновления отключены флагом (ключ подписи тут не нужен). Снятие
+  # карантина описано в тексте выпуска.
+  macos:
+    name: macOS universal bundle
+    needs: generate-update-manifest
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-beta.') }}
+    runs-on: macos-latest
+    timeout-minutes: 45
+    # Неудача под macOS не портит уже опубликованный выпуск.
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Rust stable (Apple + Intel)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            desktop/src-tauri/target/
+          key: macos-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+          restore-keys: macos-cargo-
+
+      # Окно собирается заранее: сборочный скрипт Tauri требует готовый
+      # каталог dist, иначе падает ещё до компиляции Rust.
+      - name: Build frontend
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run build
+
+      # Движок VPN вшивается в приложение как sidecar. Tauri ищет файл с
+      # суффиксом целевой тройки, поэтому для универсальной сборки кладём и
+      # обе архитектуры, и склеенный lipo вариант — что бы он ни спросил.
+      - name: Fetch xray-core (both architectures + universal)
+        working-directory: desktop/src-tauri
+        run: |
+          set -e
+          mkdir -p binaries
+          for pair in "Xray-macos-arm64-v8a.zip:aarch64-apple-darwin" "Xray-macos-64.zip:x86_64-apple-darwin"; do
+            ASSET="${pair%%:*}"; TRIPLE="${pair##*:}"
+            curl -fSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/$ASSET"
+            unzip -o xray.zip xray -d xray_tmp
+            mv xray_tmp/xray "binaries/xray-$TRIPLE"
+            chmod +x "binaries/xray-$TRIPLE"
+            rm -rf xray.zip xray_tmp
+          done
+          lipo -create -output binaries/xray-universal-apple-darwin \
+            binaries/xray-aarch64-apple-darwin binaries/xray-x86_64-apple-darwin
+          chmod +x binaries/xray-universal-apple-darwin
+          lipo -info binaries/xray-universal-apple-darwin
+
+      - name: Build universal bundle (unsigned, no updater artifacts)
+        working-directory: desktop
+        run: |
+          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # ⛔ Проверяем, что файл вообще собрался, ДО попытки выложить: без
+      # этого задание с continue-on-error завершилось бы «зелёным», а
+      # выпуск остался бы без файла под macOS и никто бы не заметил.
+      - name: Verify bundle exists
+        id: dmg
+        working-directory: desktop/src-tauri
+        run: |
+          set -e
+          F=$(find target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
+          if [ -z "$F" ]; then
+            echo "::error::.dmg не собрался — выпуск останется без macOS"
+            find target -name '*.dmg' -o -name '*.app' -maxdepth 6 | head -20
+            exit 1
+          fi
+          ls -la "$F"
+          echo "path=desktop/src-tauri/$F" >> "$GITHUB_OUTPUT"
+
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "${{ steps.dmg.outputs.path }}" \
+            --repo "${{ github.repository }}" --clobber
+
+      # Копия в артефактах прогона: выпуск чистится от старых версий, а
+      # проверить предыдущую сборку иногда нужно.
+      - name: Upload bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexussh-macos-universal
+          path: desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

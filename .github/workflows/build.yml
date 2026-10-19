@@ -171,13 +171,11 @@ jobs:
             | **Fedora** | `sudo dnf install ./NexuSSH_*.x86_64.rpm` |
             | **RHEL / Rocky / Alma / Oracle / CentOS 10** | ⚠️ сначала EPEL (см. ниже) |
 
-            > ⚠️ **macOS — сборка без подписи Apple.** После переноса в
-            > «Программы» система скажет «повреждено». Снять карантин:
-            > ```
-            > xattr -dr com.apple.quarantine /Applications/NexuSSH.app
-            > ```
-            > Встроенного обновления на macOS пока нет — новую версию брать
-            > отсюда же.
+            > ⚠️ **macOS — подписи Apple нет.** При первом запуске система
+            > скажет «разработчик не проверен». Разрешить:
+            > **Системные настройки → Конфиденциальность и безопасность →**
+            > внизу **«Открыть всё равно»**. Терминал не нужен, и только
+            > один раз: дальше программа обновляется сама.
 
             > ⚠️ **RHEL-семейство — поддерживается только версия 10.** На EL10
             > `webkit2gtk4.1` есть в EPEL; версии **8 и 9 его НЕ имеют** (там только
@@ -356,17 +354,23 @@ jobs:
           # Не роняем сборку, если зеркало недоступно (крон догонит за ≤5 мин) —
           # но громко предупреждаем.
           [ "$code" = "200" ] || echo "::warning::mirror trigger failed (HTTP $code); cron will catch up within 5 min"
-
   # ── macOS ───────────────────────────────────────────────────────────────
   # ⛔ Отдельным заданием, а НЕ строкой в матрице сборки. Манифест
   # обновления ждёт матрицу целиком (needs: build): упади тут сборка —
   # выпуск под Windows и Linux навсегда остался бы черновиком, а люди без
-  # обновления. Поэтому macOS идёт после публикации и своей неудачей
-  # ничего не роняет.
+  # обновления. Поэтому macOS идёт ПОСЛЕ публикации и дописывает себя в
+  # уже выложенный манифест — своей неудачей он ничего не роняет.
   #
-  # ⛔ Подписи Apple нет, встроенного обновления на macOS тоже: артефакты
-  # обновления отключены флагом (ключ подписи тут не нужен). Снятие
-  # карантина описано в тексте выпуска.
+  # ⛔ Подпись — «для галочки» (ad-hoc, псевдоличность «-»), а не от
+  # Apple. На Apple Silicon совсем без подписи приложение не запускается
+  # вовсе («повреждено»), и починить это можно только командой в
+  # терминале. С ad-hoc система показывает обычное «разработчик не
+  # проверен», и человек разрешает запуск в Настройках → Конфиденциальность
+  # и безопасность → «Открыть всё равно». Команд вводить не нужно.
+  #
+  # Встроенное обновление работает: оно проверяет НАШУ подпись minisign,
+  # к Apple отношения не имеющую. Карантин вешается только на скачанный
+  # вручную файл, поэтому дальше человек обновляется из программы.
   macos:
     name: macOS universal bundle
     needs: generate-update-manifest
@@ -430,35 +434,101 @@ jobs:
           chmod +x binaries/xray-universal-apple-darwin
           lipo -info binaries/xray-universal-apple-darwin
 
-      - name: Build universal bundle (unsigned, no updater artifacts)
+      # Форматы задаём флагом, а не правкой tauri.conf.json: там targets
+      # перечислены для Windows и Linux, и трогать их ради macOS нельзя.
+      - name: Build universal bundle (ad-hoc signed, with updater artifacts)
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           npm run tauri build -- --target universal-apple-darwin --bundles app,dmg \
-            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+            --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
 
-      # ⛔ Проверяем, что файл вообще собрался, ДО попытки выложить: без
-      # этого задание с continue-on-error завершилось бы «зелёным», а
-      # выпуск остался бы без файла под macOS и никто бы не заметил.
-      - name: Verify bundle exists
-        id: dmg
-        working-directory: desktop/src-tauri
+      # ⛔ Проверяем делом, что всё три файла на месте, ДО попытки
+      # выложить: задание помечено continue-on-error, и без проверки оно
+      # зеленело бы при выпуске без macOS — никто бы не заметил.
+      # ⛔ Подпись проверяем тоже: без неё приложение на Apple Silicon не
+      # запустится, а узнать об этом от человека — худший способ.
+      - name: Verify bundle, signature and updater artifacts
+        id: mac
+        working-directory: desktop/src-tauri/target/universal-apple-darwin/release/bundle
         run: |
           set -e
-          F=$(find target/universal-apple-darwin/release/bundle/dmg -name '*.dmg' | head -1)
-          if [ -z "$F" ]; then
-            echo "::error::.dmg не собрался — выпуск останется без macOS"
-            find target -name '*.dmg' -o -name '*.app' -maxdepth 6 | head -20
-            exit 1
-          fi
-          ls -la "$F"
-          echo "path=desktop/src-tauri/$F" >> "$GITHUB_OUTPUT"
+          DMG=$(find dmg -name '*.dmg' | head -1)
+          TGZ=$(find macos -name '*.app.tar.gz' | head -1)
+          SIG=$(find macos -name '*.app.tar.gz.sig' | head -1)
+          APP=$(find macos -maxdepth 1 -name '*.app' | head -1)
+          for f in "$DMG" "$TGZ" "$SIG" "$APP"; do
+            if [ -z "$f" ]; then
+              echo "::error::не собрался один из файлов macOS (dmg/tar.gz/sig/app)"
+              find . -maxdepth 3 | head -40
+              exit 1
+            fi
+          done
+          codesign -dv "$APP" 2>&1 | head -5
+          codesign --verify --verbose "$APP"
+          ls -la "$DMG" "$TGZ" "$SIG"
+          B=desktop/src-tauri/target/universal-apple-darwin/release/bundle
+          {
+            echo "dmg=$B/$DMG"
+            echo "tgz=$B/$TGZ"
+            echo "sig=$B/$SIG"
+            echo "tgz_name=$(basename "$TGZ")"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Attach to release
+      - name: Attach macOS files to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" "${{ steps.dmg.outputs.path }}" \
+          gh release upload "${{ github.ref_name }}" \
+            "${{ steps.mac.outputs.dmg }}" \
+            "${{ steps.mac.outputs.tgz }}" \
+            "${{ steps.mac.outputs.sig }}" \
             --repo "${{ github.repository }}" --clobber
+
+      # ⛔ Манифест уже выложен Windows/Linux-заданием — мы его ДОПИСЫВАЕМ,
+      # а не пишем заново. Переписать целиком значило бы потерять их
+      # подписи, если формат разойдётся: берём опубликованный файл и
+      # добавляем в него только свои платформы.
+      # Сборка универсальная: один файл годится и для Apple, и для Intel.
+      - name: Add macOS to updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -e
+          REPO="${{ github.repository }}"
+          rm -rf /tmp/man && mkdir -p /tmp/man && cd /tmp/man
+          gh release download "$TAG" --repo "$REPO" -p latest.json
+          SIG_CONTENT=$(cat "$GITHUB_WORKSPACE/${{ steps.mac.outputs.sig }}")
+          URL="https://github.com/$REPO/releases/download/$TAG/${{ steps.mac.outputs.tgz_name }}"
+          SIG="$SIG_CONTENT" URL="$URL" python3 - <<'PY'
+          import json, os
+          m = json.load(open("latest.json"))
+          mac = {"signature": os.environ["SIG"].strip(), "url": os.environ["URL"]}
+          m["platforms"]["darwin-aarch64"] = mac
+          m["platforms"]["darwin-x86_64"] = mac
+          json.dump(m, open("latest.json", "w"), ensure_ascii=False, indent=2)
+          PY
+          cat latest.json
+          # ⛔ Обе точки: версионный выпуск отдаёт releases/latest/download,
+          # channel-stable — клиентам 2.0.0+. Разойдутся — часть людей
+          # обновления под macOS не увидит.
+          gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+          gh release upload channel-stable latest.json --repo "$REPO" --clobber
+
+      # Своё зеркало (upd.hipogas.org) синхронизируется кроном раз в пять
+      # минут; дёргаем сразу, иначе окно, где оно отдаёт манифест без macOS.
+      - name: Trigger self-host mirror (upd.hipogas.org)
+        env:
+          MIRROR_TOKEN: ${{ secrets.NEXUSSH_MIRROR_TOKEN }}
+        run: |
+          code=$(curl -s -o /tmp/mirror.json -w '%{http_code}' -m 160 -X POST \
+            -H "X-Mirror-Token: $MIRROR_TOKEN" \
+            https://upd.hipogas.org/trigger-mirror || echo 000)
+          echo "HTTP $code"; cat /tmp/mirror.json 2>/dev/null || true
+          [ "$code" = "200" ] || echo "::warning::зеркало не отозвалось (HTTP $code); крон догонит за ≤5 мин"
 
       # Копия в артефактах прогона: выпуск чистится от старых версий, а
       # проверить предыдущую сборку иногда нужно.
@@ -467,5 +537,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nexussh-macos-universal
-          path: desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          path: |
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
           if-no-files-found: warn

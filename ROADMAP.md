@@ -35,13 +35,16 @@ auto-run) and explanations of on-screen output, with client-side
 redaction of secrets.
 
 **Platforms and delivery** — Windows, Linux (`.deb` + `.rpm`, system
-WebKit), Android (signed APK); self-hosted updater with stable and beta
-channels.
+WebKit), macOS (universal `.dmg`, ad-hoc signed), Android (signed APK);
+self-hosted updater with stable and beta channels, in-app updates on
+every desktop platform.
 
 ## Next
 
-- [ ] **macOS build** — the only desktop platform still missing;
-      unsigned build first, signing needs an Apple developer account.
+- [ ] **Apple Developer ID + notarisation** for macOS, so the app opens
+      on a double click. Without it the build is ad-hoc signed and the
+      first launch has to be allowed once in Privacy & Security; updates
+      afterwards are unaffected. Costs $99/year.
 - [ ] **Telnet** entry in the new-tab menu, next to SSH, SFTP and the
       local terminal (the serial console joins them as a module).
 - [ ] Trim the startup diagnostics of the local terminal once the

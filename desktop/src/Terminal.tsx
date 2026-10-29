@@ -789,6 +789,14 @@ export function TerminalView({
       if (ctrlShift && (ev.key === "ArrowUp" || ev.key === "Up")) {
         return false;
       }
+      // Ctrl+Alt+D — выгрузить журнал набора в буфер обмена. Нужен, чтобы
+      // разбирать дублирование кириллицы: без выгрузки лог копился в памяти
+      // и достать его было нечем (кнопку-жучок когда-то убрали).
+      // Проверяем ev.code, а не ev.key: на русской раскладке key — кириллица.
+      if (ev.ctrlKey && ev.altKey && !ev.shiftKey && ev.code === "KeyD") {
+        writeClipboard(dbgRef.current.join("\n") || "(журнал пуст)");
+        return false;
+      }
       return true;
     });
 
@@ -815,6 +823,37 @@ export function TerminalView({
     const send = (s: string) => {
       if (s) sshSend(sessionId, new TextEncoder().encode(s)).catch(console.error);
     };
+    // Диагностика ввода — ПАССИВНАЯ, на всех системах. Ничего не блокирует.
+    // Повод: на Linux кириллица уходит нарастающим хвостом ("выыкыклыключ"),
+    // латиница цела. Подозреваемых двое и по результату их не различить:
+    // (1) скрытый textarea xterm копит набранное, и его diff шлёт весь буфер;
+    // (2) WebKitGTK с ibus доставляет символ дважды — клавишей и композицией.
+    // Эти слушатели только пишут в журнал; снять — Ctrl+Alt+D.
+    {
+      const taDiag = containerRef.current.querySelector<HTMLTextAreaElement>(
+        ".xterm-helper-textarea",
+      );
+      if (taDiag) {
+        const mark = (tag: string) => (e: Event) => {
+          const ie = e as InputEvent & CompositionEvent & KeyboardEvent;
+          dbg(
+            `${tag} data='${esc(ie.data ?? "")}' it='${ie.inputType ?? ""}' ` +
+              `key='${ie.key ?? ""}' comp=${(e as InputEvent).isComposing ?? false} ` +
+              `ta='${esc(taDiag.value)}'`,
+          );
+        };
+        for (const name of [
+          "keydown",
+          "compositionstart",
+          "compositionupdate",
+          "compositionend",
+          "beforeinput",
+          "input",
+        ]) {
+          taDiag.addEventListener(name, mark(name), { passive: true, capture: true });
+        }
+      }
+    }
     if (isMobileRef.current) {
       const ta = containerRef.current.querySelector<HTMLTextAreaElement>(
         ".xterm-helper-textarea",

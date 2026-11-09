@@ -41,3 +41,6 @@ target/
 *.AppImage
 *.exe
 *.msi
+
+# Локальные инструкции Kimi Code — не для репозитория.
+.kimi-code/

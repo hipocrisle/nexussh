@@ -1,7 +1,7 @@
 # NexuSSH Roadmap
 
-Current release: **3.1.0** (stable). The beta channel must always be
-numbered above stable, so the next beta is `3.2.0-beta.1`.
+Current release: **3.1.1** (stable). The beta channel must always be
+numbered above stable; the current beta is **3.2.0-beta.1**.
 
 ## Shipped
 
@@ -28,7 +28,9 @@ no admin rights), corporate VPN via openconnect/ocproxy, and system L2TP
 profiles.
 
 **Interface** — command palette, snippet grid with hotkeys, encrypted
-session history with search, themes and fonts, Russian and English UI.
+session history with search, themes and fonts, Russian and English UI,
+transient tab tags with a soft color tint (3.2.0-beta.1 — right-click a tab
+→ "Tag & color"; dies with the tab, never touches the host record or sync).
 
 **AI assistant** — plain-language command suggestions (inserted, never
 auto-run) and explanations of on-screen output, with client-side

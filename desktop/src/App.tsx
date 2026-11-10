@@ -18,6 +18,7 @@ import {
   SplitSquareVertical,
   ArrowLeftRight,
   SquarePen,
+  Tag,
   XSquare,
   FolderInput,
   Folder,
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { TabBar } from "./TabBar";
+import { TabTagDialog } from "./TabTagDialog";
 import { TerminalView } from "./Terminal";
 import { DialogHost } from "./DialogHost";
 import { askConfirm } from "./dialogs";
@@ -223,6 +225,9 @@ interface Workspace {
   id: string;
   /** User-renamed title; if absent, derive from the focused pane's host. */
   title?: string;
+  /** User-picked accent for the tab strip (faint bg + outline). Transient —
+   *  lives and dies with the tab, never written to the host record. */
+  color?: string;
   panes: Pane[];
   layout: LayoutNode;
   focusedPaneId: string;
@@ -293,6 +298,7 @@ interface PersistedPane {
 interface PersistedWorkspace {
   id: string;
   title?: string;
+  color?: string;
   focusedPaneId: string;
   layout: LayoutNode;
   panes: PersistedPane[];
@@ -787,6 +793,13 @@ function App() {
   // First-run vault nudge — a one-time, dismissible banner offering to set up
   // the vault. Shown only once no vault exists yet (decided after vaultStatus).
   const [vaultPromptOpen, setVaultPromptOpen] = useState(false);
+  // Tab tag/color dialog — right-click a tab → "Tag & color". Holds the
+  // workspace being tagged; title/color stay transient (die with the tab).
+  const [tagDialog, setTagDialog] = useState<{
+    wsId: string;
+    title: string;
+    color?: string;
+  } | null>(null);
   // SFTP browser state is PER-TAB: keyed by the focused session id, so a
   // collapsed/open browser belongs to one tab's session and never bleeds onto
   // other tabs. `collapsed` keeps the panel MOUNTED (cwd / selection / in-flight
@@ -1489,6 +1502,7 @@ function App() {
       workspaces: workspaces.map((w) => ({
         id: w.id,
         title: w.title,
+        color: w.color,
         focusedPaneId: w.focusedPaneId,
         layout: w.layout,
         panes: w.panes.map((p) => ({ id: p.id, hostId: p.session.host.id })),
@@ -1524,6 +1538,7 @@ function App() {
       restored.push({
         id: pw.id,
         title: pw.title,
+        color: pw.color,
         panes,
         layout,
         focusedPaneId,
@@ -2728,6 +2743,12 @@ function App() {
     const others = workspaces.filter((w) => w.id !== wsId);
     const items: MenuItem[] = [
       {
+        label: t("tabmenu.tag_color"),
+        icon: <Tag size={13} />,
+        onClick: () =>
+          setTagDialog({ wsId, title: ws.title ?? "", color: ws.color }),
+      },
+      {
         label: t("tabmenu.restart"),
         icon: <RotateCcw size={13} />,
         onClick: () => {
@@ -2866,6 +2887,20 @@ function App() {
 
   // Prompt to rename the workspace tab title. Empty string clears it (back to
   // auto-derived from focused pane's host).
+  // Set (or clear) a workspace's transient tag + accent color. An empty title
+  // resets to the auto host-derived name; null color removes the tint. Both
+  // die with the tab — nothing here touches the host record or sync.
+  function setWorkspaceTag(wsId: string, title: string, color: string | null) {
+    const trimmed = title.trim();
+    setWorkspaces((wss) =>
+      wss.map((w) =>
+        w.id === wsId
+          ? { ...w, title: trimmed || undefined, color: color ?? undefined }
+          : w,
+      ),
+    );
+  }
+
   // Merge `fromWsId` INTO `intoWsId`: panes are appended and the layout is
   // wrapped in a row-split with the existing layout on the left and the merged
   // workspace's layout on the right. The source workspace is removed.
@@ -4243,6 +4278,7 @@ function App() {
               return {
                 id: w.id,
                 title: w.title ?? fp?.session.host.name ?? "?",
+                color: w.color,
                 status: fp?.session.status ?? "closed",
                 paneCount: w.panes.length,
               };
@@ -4662,6 +4698,18 @@ function App() {
       )}
 
       <DialogHost />
+
+      {tagDialog && (
+        <TabTagDialog
+          initialTitle={tagDialog.title}
+          initialColor={tagDialog.color}
+          onSubmit={(title, color) => {
+            setWorkspaceTag(tagDialog.wsId, title, color);
+            setTagDialog(null);
+          }}
+          onCancel={() => setTagDialog(null)}
+        />
+      )}
 
       {/* Transient toast (tunnel started, …). */}
       {toast && (

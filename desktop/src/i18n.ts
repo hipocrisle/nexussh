@@ -1282,8 +1282,17 @@ const ru = {
     edit_host: "Изменить хост…",
     save_host: "Сохранить хост…",
     rename_tab_prompt: "Новое название (пусто — авто по хосту):",
+    tag_color: "Тег и цвет…",
     open_transcript: "Прокрутить историю (Ctrl+Shift+↑)",
     exit_transcript: "Вернуться в live (Esc)",
+  },
+  tabtag: {
+    title: "Тег вкладки",
+    prompt:
+      "Подпись над вкладкой — проект, задача, что угодно. Работает только до закрытия вкладки: в хост не пишется и не синкается. Пусто — название снова по имени хоста.",
+    placeholder: "например, tmb",
+    color_label: "Цвет подсветки",
+    color_none: "без цвета",
   },
   transcript: {
     title: "transcript · {{host}}",
@@ -2596,8 +2605,17 @@ const en = {
     edit_host: "Edit host…",
     save_host: "Save host…",
     rename_tab_prompt: "New title (empty = auto from host):",
+    tag_color: "Tag & color…",
     open_transcript: "Scroll history (Ctrl+Shift+↑)",
     exit_transcript: "Back to live (Esc)",
+  },
+  tabtag: {
+    title: "Tab tag",
+    prompt:
+      "A label for this tab — project, task, anything. Lives only until the tab closes: never written to the host or synced. Empty = back to the host name.",
+    placeholder: "e.g. tmb",
+    color_label: "Tint color",
+    color_none: "no color",
   },
   transcript: {
     title: "transcript · {{host}}",

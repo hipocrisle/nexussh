@@ -10,6 +10,8 @@ export interface TabInfo {
   status: "connecting" | "connected" | "closed";
   /** When > 1, render a small split badge to the left of the title. */
   paneCount?: number;
+  /** User-picked tag accent (#rrggbb) — faint bg + thin outline on the tab. */
+  color?: string;
 }
 
 interface Props {
@@ -197,17 +199,25 @@ export function TabBar({
                 e.preventDefault();
                 onContextMenu?.(t.id, e.clientX, e.clientY);
               }}
-              style={
-                dropTarget?.id === t.id
+              style={{
+                // Tag color — a whisper, not a shout: ~8% bg tint plus a thin
+                // outline. The active tab gets slightly more presence. Drop
+                // markers and the drag ghost override the outline.
+                ...(t.color
+                  ? {
+                      backgroundColor: active ? t.color + "26" : t.color + "14",
+                      boxShadow: `inset 0 0 0 1px ${t.color}${active ? "59" : "38"}`,
+                    }
+                  : {}),
+                ...(dropTarget?.id === t.id
                   ? {
                       boxShadow: dropTarget.before
                         ? "inset 2px 0 0 var(--nx-accent)"
                         : "inset -2px 0 0 var(--nx-accent)",
                     }
-                  : dragId === t.id
-                    ? { opacity: 0.5 }
-                    : undefined
-              }
+                  : {}),
+                ...(dragId === t.id ? { opacity: 0.5 } : {}),
+              }}
               className={
                 "nx-tab h-[calc(100%-4px)] mt-1 ml-1 px-3 flex items-center gap-2 cursor-pointer rounded-t-lg min-w-0 shrink-0 transition-colors select-none " +
                 (active

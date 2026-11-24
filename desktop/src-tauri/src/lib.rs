@@ -17,6 +17,7 @@ mod sftp;
 mod ssh;
 mod ssh_config;
 mod sshlog;
+mod ssh_transport;
 mod tunnel;
 mod updater;
 mod vault;

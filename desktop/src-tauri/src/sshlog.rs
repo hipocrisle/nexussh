@@ -51,6 +51,15 @@ pub fn clear() {
     }
 }
 
+/// Application diagnostics, independent of third-party tracing filters.
+/// Callers must supply metadata only, never auth arguments or packet bodies.
+pub fn note(line: String) {
+    if let Ok(mut q) = LOG.lock() {
+        if q.len() >= CAP { q.pop_front(); }
+        q.push_back(format!(" INFO nexussh::transport: {line}"));
+    }
+}
+
 /// The last `n` captured lines, newest last.
 pub fn tail(n: usize) -> String {
     LOG.lock()

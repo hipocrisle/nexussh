@@ -898,6 +898,45 @@ pub async fn ssh_pin_host_key(
     Ok(())
 }
 
+async fn observed_handshake(
+    config: Arc<client::Config>,
+    socket: tokio::net::TcpStream,
+    handler: TofuHandler,
+    route: &'static str,
+) -> Result<client::Handle<TofuHandler>, russh::Error> {
+    crate::sshlog::note(format!(
+        "route={route} local={:?} peer={:?} nodelay={:?} phase=identification-and-kex",
+        socket.local_addr().ok(), socket.peer_addr().ok(), socket.nodelay().ok()
+    ));
+    let (socket, probe) = crate::ssh_transport::Observed::new(socket);
+    let started = std::time::Instant::now();
+    let result = client::connect_stream(config, socket, handler).await;
+    // Nothing from authentication/shell traffic is retained or counted.
+    let snapshot = probe.finish();
+    crate::sshlog::note(format!(
+        "handshake_ok={} elapsed_ms={} received={} sent={} server_id={} eof={} io_error={:?}",
+        result.is_ok(), started.elapsed().as_millis(), snapshot.received,
+        snapshot.sent, snapshot.server_id, snapshot.eof, snapshot.io_error
+    ));
+    result
+}
+
+async fn observed_direct_connect(
+    config: Arc<client::Config>,
+    address: &str,
+    handler: TofuHandler,
+    route: &'static str,
+) -> Result<client::Handle<TofuHandler>, russh::Error> {
+    // Same socket/nodelay policy as russh::client::connect, with visible endpoints.
+    let socket = tokio::net::TcpStream::connect(address).await?;
+    if config.nodelay {
+        if let Err(e) = socket.set_nodelay(true) {
+            crate::sshlog::note(format!("nodelay_error={:?}", e.kind()));
+        }
+    }
+    observed_handshake(config, socket, handler, route).await
+}
+
 #[tauri::command]
 pub async fn ssh_connect(
     app: AppHandle,
@@ -963,7 +1002,7 @@ pub async fn ssh_connect(
             .await
             .map_err(SshError::Other)?;
             let addr = format!("{}:{}", args.host, args.port);
-            let session = client::connect(config, addr.as_str(), handler).await?;
+            let session = observed_direct_connect(config, addr.as_str(), handler, "system-l2tp").await?;
             Ok::<_, SshError>((session, crate::vpn::TransportHold::System(guard)))
         } else if let Some(corp) = &args.corp_vpn {
             // Acquire the SHARED corp tunnel (established once per profile, reused
@@ -977,7 +1016,7 @@ pub async fn ssh_connect(
                 .await
                 .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
             let session =
-                client::connect_stream(config, stream.into_inner(), handler).await?;
+                observed_handshake(config, stream.into_inner(), handler, "openconnect-socks").await?;
             Ok::<_, SshError>((session, crate::vpn::TransportHold::Corp(guard)))
         } else if let Some(node) = &args.vpn {
             let socks_port = free_local_port()?;
@@ -989,11 +1028,11 @@ pub async fn ssh_connect(
                 .await
                 .map_err(|e| SshError::Other(format!("socks connect: {e}")))?;
             let session =
-                client::connect_stream(config, stream.into_inner(), handler).await?;
+                observed_handshake(config, stream.into_inner(), handler, "xray-socks").await?;
             Ok::<_, SshError>((session, crate::vpn::TransportHold::Xray(child)))
         } else {
             let addr = format!("{}:{}", args.host, args.port);
-            let session = client::connect(config, addr.as_str(), handler).await?;
+            let session = observed_direct_connect(config, addr.as_str(), handler, "direct").await?;
             Ok((session, crate::vpn::TransportHold::None))
         }
     };

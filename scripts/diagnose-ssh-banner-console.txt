@@ -1,0 +1,28 @@
+
+$target = (Read-Host 'IP Cisco')
+foreach ($id in @('SSH-2.0-russh_0.61.1', 'SSH-2.0-PuTTY_0.73_RU_17')) {
+    $tcp = [Net.Sockets.TcpClient]::new()
+    try {
+        $task = $tcp.ConnectAsync($target, 22)
+        if (-not $task.Wait(4000)) { throw 'TCP timeout' }
+        $stream = $tcp.GetStream()
+        $stream.WriteTimeout = 4000
+        $hello = [Text.Encoding]::ASCII.GetBytes($id + "`r`n")
+        $stream.Write($hello, 0, $hello.Length)
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $line = ''
+        while ($line.Length -lt 255) {
+            $left = 4000 - [int]$watch.ElapsedMilliseconds
+            if ($left -le 0) { throw 'Read timeout' }
+            $stream.ReadTimeout = $left
+            $b = $stream.ReadByte()
+            if ($b -eq -1) { break }
+            if ($b -eq 10) { break }
+            if ($b -ge 32 -and $b -le 126) { $line += [char]$b }
+        }
+        if (-not $line) { $line = 'EOF: connection closed without server ID' }
+        "$id -> $line"
+    } catch { "$id -> timeout or socket error" }
+    finally { $tcp.Dispose() }
+    Start-Sleep -Milliseconds 500
+}

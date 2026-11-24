@@ -854,6 +854,7 @@ async fn authenticate<H: russh::client::Handler>(
     session_id: &str,
 ) -> Result<bool, russh::Error> {
     use russh::client::AuthResult;
+    crate::sshlog::note("phase=auth-none-probe".into());
     let methods = match session.authenticate_none(user).await? {
         AuthResult::Success => return Ok(true), // server allows no-auth
         AuthResult::Failure {
@@ -869,12 +870,15 @@ async fn authenticate<H: russh::client::Handler>(
                 s == name
             })
     };
-    if offers("password")
-        && session.authenticate_password(user, password).await?.success()
-    {
-        return Ok(true);
+    crate::sshlog::note(format!("auth_offers password={} keyboard_interactive={}", offers("password"), offers("keyboard-interactive")));
+    if offers("password") {
+        crate::sshlog::note("phase=auth-password".into());
+        if session.authenticate_password(user, password).await?.success() {
+            return Ok(true);
+        }
     }
     if offers("keyboard-interactive") {
+        crate::sshlog::note("phase=auth-keyboard-interactive".into());
         return try_keyboard_interactive(session, user, password, app, session_id).await;
     }
     Ok(false)
@@ -1062,6 +1066,7 @@ pub async fn ssh_connect(
         }
     };
 
+    crate::sshlog::note("phase=authentication".into());
     let auth_ok = match &args.auth {
         AuthMethod::Password { password } => {
             authenticate(&mut session, &args.user, password, &app, &session_id).await?
@@ -1092,6 +1097,7 @@ pub async fn ssh_connect(
         }
     };
     if !auth_ok {
+        crate::sshlog::note("phase=authentication-rejected".into());
         return Err(SshError::AuthFailed);
     }
 
@@ -1099,6 +1105,7 @@ pub async fn ssh_connect(
     // server refusing/killing the session, so map it to PostAuthClosed instead
     // of a bare protocol error — otherwise the user sees "Disconnected" and
     // reasonably assumes their 2FA code was wrong (it was not).
+    crate::sshlog::note("phase=authenticated-opening-channel".into());
     let mut channel = session
         .channel_open_session()
         .await

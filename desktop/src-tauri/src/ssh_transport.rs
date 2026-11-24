@@ -163,9 +163,14 @@ mod tests {
 
     #[tokio::test]
     async fn zero_capacity_read_is_not_eof() {
-        let (client, _peer) = tokio::io::duplex(8);
+        let (client, mut peer) = tokio::io::duplex(8);
         let (mut observed, probe) = Observed::new(client);
-        observed.read(&mut []).await.unwrap();
+        // DuplexStream waits on an empty source even for a zero-length read.
+        peer.write_all(b"x").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), observed.read(&mut []))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(!probe.finish().eof);
     }
 }

@@ -30,6 +30,7 @@ jobs:
           key: windows-cargo-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
           restore-keys: Windows-cargo-
       - name: Test transport observer before packaging
+        timeout-minutes: 5
         run: cargo test --manifest-path tests/ssh_transport_harness/Cargo.toml
       - name: Install frontend dependencies
         working-directory: desktop
